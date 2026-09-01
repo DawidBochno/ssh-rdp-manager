@@ -47,16 +47,36 @@ MainWindow
 
 ### Terminal SSH
 
-`SshTerminal` to `QPlainTextEdit`: wątek `_Reader` czyta z kanału i sygnałem oddaje
-tekst do wątku GUI, `keyPressEvent` wysyła klawisze do powłoki.
+Łączenie i sesja są rozdzielone:
+
+- `SshConnector` (QThread) — nawiązuje połączenie **w tle**.
+- `connect_with_progress()` — pokazuje `QProgressDialog` z licznikiem czasu,
+  zwraca gotowy `SshTerminal` albo `None` (anulowano lub błąd, już pokazany).
+- `SshTerminal` — dostaje **gotowe** połączenie, sam już się nie łączy.
+
+`_Reader` (QThread) czyta z kanału i sygnałem oddaje tekst do wątku GUI,
+`keyPressEvent` wysyła klawisze do powłoki.
 
 - **Brak emulacji VT100** — `strip_ansi()` wycina kolory i adresowanie kursora, więc
   `vim`/`htop`/`mc` będą wyglądać źle. Gdy będą potrzebne: `pyte` albo QTermWidget.
 - **Hasło pytane przy każdym połączeniu, nigdzie nie zapisywane.** Puste hasło =
   logowanie kluczem (agent lub `~/.ssh`).
-- **Nieznany klucz serwera** pokazuje odcisk i pyta o zgodę (`_AskHostKeyPolicy`).
-  Nie zamieniaj tego na `AutoAddPolicy` — to jedyna ochrona przed MITM.
-- `client.connect()` blokuje GUI do 10 s; przenieść do wątku, gdy zacznie przeszkadzać.
+- **Nieznany klucz serwera** pokazuje odcisk i pyta o zgodę. Pytanie idzie z wątku
+  roboczego do GUI sygnałem `BlockingQueuedConnection` — okien Qt nie wolno tworzyć
+  poza wątkiem GUI. Nie zamieniaj tego na `AutoAddPolicy`: to ochrona przed MITM.
+
+#### Pułapki, które już nas kosztowały czas
+
+- **Gniazdo tworzymy sami** (`socket.create_connection` + `sock=` do Paramiko),
+  żeby `cancel()` mogło je zamknąć i wybić Paramiko z blokującego odczytu.
+  Bez tego anulowany wątek mielił do końca limitu, a Qt **wywalało proces**
+  przy zamykaniu aplikacji („QThread: Destroyed while thread is still running").
+  Dlatego `closeEvent` woła `wait_for_pending()`.
+- **`QProgressDialog.cancel()` wywołane z kodu NIE emituje `canceled()`** — sygnał
+  leci tylko z kliknięcia w przycisk. W testach klikaj `findChild(QPushButton).click()`,
+  inaczej test wisi w nieskończoność.
+- Komunikaty Paramiko `WinError 10038` przy anulowaniu są **normalne** — to skutek
+  celowego zamknięcia gniazda.
 
 ## Pułapki Qt (już nas ugryzły)
 
@@ -66,13 +86,14 @@ tekst do wątku GUI, `keyPressEvent` wysyła klawisze do powłoki.
 
 ## Stan i plany
 
-Zrobione: drzewo grup/połączeń, formularz host/port/użytkownik, **działający terminal SSH**
-w zakładce, self-testy.
+Zrobione: drzewo grup/połączeń, formularz host/port/użytkownik, **terminal SSH**
+w zakładce, **zapis do `connections.json`**, **okno postępu z licznikiem czasu
+i anulowaniem**, self-testy.
 
 Świadomie pominięte — dodać gdy będzie potrzebne:
-- **Persystencja** — drzewo znika po restarcie. Docelowo JSON obok `main.py`.
 - **RDP** — niepodpięte (kierunek: FreeRDP osadzony w oknie).
 - **Edycja połączenia** — da się dodać i usunąć, nie da się zmienić.
+- Przeciąganie połączeń między grupami.
 - Emulacja VT100, zmiana rozmiaru PTY przy zmianie rozmiaru okna, ikony.
 
 ## Testy

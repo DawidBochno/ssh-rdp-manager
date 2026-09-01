@@ -3,7 +3,9 @@
 Lewa strona: drzewo katalogów z grupami i połączeniami.
 Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
+import json
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -23,10 +25,14 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
 )
 
-from ssh_terminal import SshTerminal
+from ssh_terminal import SshTerminal, connect_with_progress, wait_for_pending
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
+
+# Zapisujemy obok skryptu; .gitignore trzyma ten plik poza repozytorium.
+# Hasła NIE trafiają tutaj — celowo, plik jest zwykłym tekstem.
+CONFIG_FILE = Path(__file__).with_name("connections.json")
 
 
 class ConnectionDialog(QDialog):
@@ -83,6 +89,72 @@ class ConnectionTree(QTreeWidget):
         root = QTreeWidgetItem(["Wszystkie połączenia"])
         self.addTopLevelItem(root)
         root.setExpanded(True)
+        self.load()
+
+    # --- zapis i odczyt drzewa ---------------------------------------------
+
+    def _serialize(self, item):
+        node = {"name": item.text(0)}
+        if item.type() == CONNECTION_TYPE:
+            node["connection"] = item.data(0, CONNECTION_DATA)
+        else:
+            node["children"] = [
+                self._serialize(item.child(i)) for i in range(item.childCount())
+            ]
+        return node
+
+    def save(self):
+        """Zrzuca całe drzewo do JSON. Wołane po każdej zmianie."""
+        root = self.topLevelItem(0)
+        nodes = [self._serialize(root.child(i)) for i in range(root.childCount())]
+        try:
+            CONFIG_FILE.write_text(
+                json.dumps(nodes, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as error:
+            QMessageBox.warning(
+                self, "Błąd zapisu", f"Nie udało się zapisać połączeń:\n\n{error}"
+            )
+
+    def _build(self, parent, node):
+        name = str(node.get("name", "bez nazwy"))
+        if "connection" in node:
+            item = QTreeWidgetItem(parent, [name], CONNECTION_TYPE)
+            conn = node["connection"]
+            item.setData(0, CONNECTION_DATA, conn)
+            item.setToolTip(
+                0, f"{conn.get('username', '')}@{conn.get('host', '')}:{conn.get('port', 22)}"
+            )
+        else:
+            item = QTreeWidgetItem(parent, [name])
+            for child in node.get("children", []):
+                self._build(item, child)
+            item.setExpanded(True)
+
+    def load(self):
+        if not CONFIG_FILE.exists():
+            return
+        try:
+            nodes = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            # Uszkodzonego pliku nie nadpisujemy w ciszy — odkładamy kopię,
+            # żeby dało się odzyskać wpisy ręcznie.
+            backup = CONFIG_FILE.with_suffix(".json.bak")
+            try:
+                CONFIG_FILE.replace(backup)
+            except OSError:
+                backup = None
+            QMessageBox.warning(
+                self,
+                "Błąd odczytu",
+                f"Nie udało się wczytać zapisanych połączeń:\n\n{error}\n\n"
+                + (f"Kopia uszkodzonego pliku: {backup}" if backup else ""),
+            )
+            return
+
+        root = self.topLevelItem(0)
+        for node in nodes:
+            self._build(root, node)
 
     def _show_context_menu(self, pos):
         item = self.itemAt(pos)
@@ -101,6 +173,7 @@ class ConnectionTree(QTreeWidget):
         parent_item = parent_item or self.topLevelItem(0)
         QTreeWidgetItem(parent_item, [name])
         parent_item.setExpanded(True)
+        self.save()
 
     def _add_connection(self, parent_item):
         dialog = ConnectionDialog(self)
@@ -112,12 +185,22 @@ class ConnectionTree(QTreeWidget):
         item.setData(0, CONNECTION_DATA, data)
         item.setToolTip(0, f"{data['username']}@{data['host']}:{data['port']}")
         parent_item.setExpanded(True)
+        self.save()
 
     def _remove_item(self, item):
         parent = item.parent()
         if parent is None:
             return
+        if item.childCount() and QMessageBox.question(
+            self,
+            "Usunąć grupę?",
+            f"„{item.text(0)}” zawiera {item.childCount()} elementów. Usunąć wszystko?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
         parent.removeChild(item)
+        self.save()
 
 
 class MainWindow(QMainWindow):
@@ -165,14 +248,11 @@ class MainWindow(QMainWindow):
         if not ok:
             return
 
-        try:
-            terminal = SshTerminal(
-                conn["host"], conn["port"], conn["username"], password, self
-            )
-        except Exception as error:
-            QMessageBox.critical(
-                self, "Błąd połączenia", f"Nie udało się połączyć:\n\n{error}"
-            )
+        # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
+        terminal = connect_with_progress(
+            self, conn["host"], conn["port"], conn["username"], password
+        )
+        if terminal is None:
             return
 
         index = self.tabs.addTab(terminal, name)
@@ -191,15 +271,53 @@ class MainWindow(QMainWindow):
             widget = self.tabs.widget(i)
             if isinstance(widget, SshTerminal):
                 widget.close_session()
+        wait_for_pending()  # anulowane łączenia; inaczej Qt wywala proces
         super().closeEvent(event)
 
 
 def selftest():
-    """Sprawdza logikę drzewa i zakładek bez łączenia się po sieci."""
+    """Sprawdza logikę drzewa, zakładek i zapisu — bez sieci i bez okna."""
     import ssh_terminal
+    import tempfile
     from PySide6.QtWidgets import QWidget
 
+    global CONFIG_FILE
     app = QApplication.instance() or QApplication([])
+
+    # Nie dotykaj prawdziwego pliku użytkownika.
+    with tempfile.TemporaryDirectory() as tmp:
+        CONFIG_FILE = Path(tmp) / "connections.json"
+
+        tree = ConnectionTree()
+        root = tree.topLevelItem(0)
+        group = QTreeWidgetItem(root, ["Produkcja"])
+        conn_data = {"name": "srv-01", "host": "10.0.0.1", "port": 2222, "username": "admin"}
+        saved = QTreeWidgetItem(group, ["srv-01"], CONNECTION_TYPE)
+        saved.setData(0, CONNECTION_DATA, conn_data)
+        tree.save()
+        assert CONFIG_FILE.exists(), "plik konfiguracji nie powstał"
+
+        # Nowe drzewo = symulacja restartu aplikacji.
+        reloaded = ConnectionTree()
+        reloaded_root = reloaded.topLevelItem(0)
+        assert reloaded_root.childCount() == 1, "grupa nie przetrwała restartu"
+        reloaded_group = reloaded_root.child(0)
+        assert reloaded_group.text(0) == "Produkcja"
+        assert reloaded_group.childCount() == 1, "połączenie nie przetrwało restartu"
+        reloaded_conn = reloaded_group.child(0)
+        assert reloaded_conn.type() == CONNECTION_TYPE, "typ elementu zgubiony"
+        assert reloaded_conn.data(0, CONNECTION_DATA) == conn_data, "dane połączenia zmienione"
+
+        # Uszkodzony plik nie może wywalić aplikacji ani zniknąć bez śladu.
+        CONFIG_FILE.write_text("{to nie jest json", encoding="utf-8")
+        QMessageBox.warning = staticmethod(lambda *a, **k: None)
+        broken = ConnectionTree()
+        assert broken.topLevelItem(0).childCount() == 0
+        assert CONFIG_FILE.with_suffix(".json.bak").exists(), "brak kopii uszkodzonego pliku"
+        print("persystencja: OK")
+
+    # Celowo nieistniejąca ścieżka: reszta testu nie może ruszyć pliku użytkownika.
+    CONFIG_FILE = Path(tempfile.gettempdir()) / "nie-istnieje-selftest.json"
     window = MainWindow()
     root = window.tree.topLevelItem(0)
 
