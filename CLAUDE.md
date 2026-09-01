@@ -59,8 +59,11 @@ MainWindow
 
 - **Brak emulacji VT100** — `strip_ansi()` wycina kolory i adresowanie kursora, więc
   `vim`/`htop`/`mc` będą wyglądać źle. Gdy będą potrzebne: `pyte` albo QTermWidget.
-- **Hasło pytane przy każdym połączeniu, nigdzie nie zapisywane.** Puste hasło =
-  logowanie kluczem (agent lub `~/.ssh`).
+- **Hasło opcjonalnie zapisywane** w `connections.json`, zaszyfrowane **DPAPI**
+  (`CryptProtectData` przez `ctypes`, bez nowej zależności). Klucz jest związany
+  z kontem Windows — plik skopiowany gdzie indziej jest bezużyteczny.
+  Bez zapisanego hasła pytamy jak dotąd; puste = logowanie kluczem (`~/.ssh`, agent).
+  Poza Windows checkbox zapisu jest wyłączony.
 - **Nieznany klucz serwera** pokazuje odcisk i pyta o zgodę. Pytanie idzie z wątku
   roboczego do GUI sygnałem `BlockingQueuedConnection` — okien Qt nie wolno tworzyć
   poza wątkiem GUI. Nie zamieniaj tego na `AutoAddPolicy`: to ochrona przed MITM.
@@ -89,11 +92,16 @@ MainWindow
 Zrobione: drzewo grup/połączeń, formularz host/port/użytkownik, **terminal SSH**
 w zakładce, **zapis do `connections.json`**, **okno postępu z licznikiem czasu
 i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
-`dropEvent` odrzuca upuszczenie na połączenie i poza korzeń, po ruchu zapis), self-testy.
+`dropEvent` odrzuca upuszczenie na połączenie i poza korzeń, po ruchu zapis),
+**zmiana nazwy grupy i edycja połączenia**, **ikony (emoji) na elementach**,
+**zapis haseł szyfrowanych DPAPI**, self-testy.
+
+Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
+z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
+`item.text(0)` wprost, bo złapiesz emoji.
 
 Świadomie pominięte — dodać gdy będzie potrzebne:
 - **RDP** — niepodpięte (kierunek: FreeRDP osadzony w oknie).
-- **Edycja połączenia** — da się dodać i usunąć, nie da się zmienić.
 - Emulacja VT100, zmiana rozmiaru PTY przy zmianie rozmiaru okna, ikony.
 
 ## Testy
