@@ -3,13 +3,17 @@
 Lewa strona: drzewo katalogów z grupami i połączeniami.
 Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
+import base64
+import ctypes
 import json
 import sys
+from ctypes import wintypes
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -34,6 +38,47 @@ CONNECTION_DATA = Qt.UserRole + 1
 # Hasła NIE trafiają tutaj — celowo, plik jest zwykłym tekstem.
 CONFIG_FILE = Path(__file__).with_name("connections.json")
 
+# Ikona (emoji) jako sposób odróżnienia elementów; trzymana osobno od nazwy.
+ICON_DATA = Qt.UserRole + 2
+ICONS = ["📁", "🗂️", "🖥️", "🐧", "🪟",
+         "🌐", "🗄️", "🔒", "⭐", "🔥",
+         "🧪", "⚙️"]
+
+# Hasła szyfrujemy DPAPI: klucz jest przypisany do konta Windows,
+# więc plik skopiowany na inny komputer jest bezużyteczny.
+CAN_STORE_PASSWORDS = sys.platform == "win32"
+
+
+class _Blob(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi(func, data):
+    buffer = ctypes.create_string_buffer(data, len(data))
+    blob_in = _Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    blob_out = _Blob()
+    if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+        raise OSError("DPAPI odmówiło operacji")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def encrypt_password(text):
+    """Szyfruje hasło dla bieżącego konta Windows; zwraca tekst do JSON-a."""
+    blob = _dpapi(ctypes.windll.crypt32.CryptProtectData, text.encode("utf-8"))
+    return base64.b64encode(blob).decode("ascii")
+
+
+def decrypt_password(stored):
+    """Odwrotność `encrypt_password`. Cudze lub uszkodzone dane = None."""
+    try:
+        blob = _dpapi(ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(stored))
+    except (OSError, ValueError):
+        return None
+    return blob.decode("utf-8")
+
 
 class ConnectionDialog(QDialog):
     """Formularz danych połączenia SSH."""
@@ -50,11 +95,22 @@ class ConnectionDialog(QDialog):
         self.port.setValue(data.get("port", 22))
         self.username = QLineEdit(data.get("username", ""))
 
+        stored = decrypt_password(data["password"]) if data.get("password") else ""
+        self.password = QLineEdit(stored or "")
+        self.password.setEchoMode(QLineEdit.Password)
+        self.save_password = QCheckBox("Zapisz hasło (szyfrowane kontem Windows)")
+        self.save_password.setChecked(bool(stored))
+        self.save_password.setEnabled(CAN_STORE_PASSWORDS)
+        if not CAN_STORE_PASSWORDS:
+            self.save_password.setToolTip("Zapis hasła działa tylko na Windows.")
+
         form = QFormLayout(self)
         form.addRow("Nazwa:", self.name)
         form.addRow("Host:", self.host)
         form.addRow("Port:", self.port)
         form.addRow("Użytkownik:", self.username)
+        form.addRow("Hasło:", self.password)
+        form.addRow("", self.save_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -69,12 +125,15 @@ class ConnectionDialog(QDialog):
 
     def values(self):
         host = self.host.text().strip()
-        return {
+        data = {
             "name": self.name.text().strip() or host,
             "host": host,
             "port": self.port.value(),
             "username": self.username.text().strip(),
         }
+        if self.save_password.isChecked() and self.password.text():
+            data["password"] = encrypt_password(self.password.text())
+        return data
 
 
 class ConnectionTree(QTreeWidget):
@@ -97,10 +156,26 @@ class ConnectionTree(QTreeWidget):
         root.setExpanded(True)
         self.load()
 
+    # --- nazwa i ikona ------------------------------------------------------
+
+    @staticmethod
+    def item_name(item):
+        """Nazwa bez doklejonej ikony — to, co trafia do pliku."""
+        icon = item.data(0, ICON_DATA) or ""
+        text = item.text(0)
+        return text[len(icon):].strip() if icon and text.startswith(icon) else text
+
+    @staticmethod
+    def set_label(item, name, icon=""):
+        item.setData(0, ICON_DATA, icon)
+        item.setText(0, f"{icon} {name}" if icon else name)
+
     # --- zapis i odczyt drzewa ---------------------------------------------
 
     def _serialize(self, item):
-        node = {"name": item.text(0)}
+        node = {"name": self.item_name(item)}
+        if item.data(0, ICON_DATA):
+            node["icon"] = item.data(0, ICON_DATA)
         if item.type() == CONNECTION_TYPE:
             node["connection"] = item.data(0, CONNECTION_DATA)
         else:
@@ -125,17 +200,14 @@ class ConnectionTree(QTreeWidget):
     def _build(self, parent, node):
         name = str(node.get("name", "bez nazwy"))
         if "connection" in node:
-            item = QTreeWidgetItem(parent, [name], CONNECTION_TYPE)
-            conn = node["connection"]
-            item.setData(0, CONNECTION_DATA, conn)
-            item.setToolTip(
-                0, f"{conn.get('username', '')}@{conn.get('host', '')}:{conn.get('port', 22)}"
-            )
+            item = QTreeWidgetItem(parent, [], CONNECTION_TYPE)
+            self._apply_connection(item, node["connection"])
         else:
-            item = QTreeWidgetItem(parent, [name])
+            item = QTreeWidgetItem(parent, [])
             for child in node.get("children", []):
                 self._build(item, child)
             item.setExpanded(True)
+        self.set_label(item, name, str(node.get("icon", "")))
 
     def load(self):
         if not CONFIG_FILE.exists():
@@ -183,10 +255,58 @@ class ConnectionTree(QTreeWidget):
         menu = QMenu(self)
         menu.addAction("Nowa grupa", lambda: self._add_group(item))
         menu.addAction("Nowe połączenie", lambda: self._add_connection(item))
-        if item is not None:
+        if item is not None and item is not self.topLevelItem(0):
+            menu.addSeparator()
+            if item.type() == CONNECTION_TYPE:
+                menu.addAction("Edytuj połączenie…", lambda: self._edit_connection(item))
+            else:
+                menu.addAction("Zmień nazwę…", lambda: self._rename_group(item))
+            menu.addAction("Ikona…", lambda: self._pick_icon(item))
             menu.addSeparator()
             menu.addAction("Usuń", lambda: self._remove_item(item))
         menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _apply_connection(self, item, data):
+        """Wpisuje dane połączenia do elementu drzewa (etykieta, tooltip, dane)."""
+        item.setData(0, CONNECTION_DATA, data)
+        item.setToolTip(
+            0,
+            f"{data.get('username', '')}@{data.get('host', '')}:{data.get('port', 22)}"
+            + ("\n(hasło zapisane)" if data.get("password") else ""),
+        )
+        self.set_label(item, data["name"], item.data(0, ICON_DATA) or "")
+
+    def _edit_connection(self, item):
+        dialog = ConnectionDialog(self, item.data(0, CONNECTION_DATA))
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._apply_connection(item, dialog.values())
+        self.save()
+
+    def _rename_group(self, item):
+        name, ok = QInputDialog.getText(
+            self, "Zmień nazwę", "Nazwa grupy:", text=self.item_name(item)
+        )
+        if not ok or not name:
+            return
+        self.set_label(item, name, item.data(0, ICON_DATA) or "")
+        self.save()
+
+    def _pick_icon(self, item):
+        choices = ICONS + ["(bez ikony)"]
+        current = item.data(0, ICON_DATA) or ""
+        icon, ok = QInputDialog.getItem(
+            self,
+            "Ikona",
+            "Wybierz ikonę:",
+            choices,
+            choices.index(current) if current in choices else len(choices) - 1,
+            False,
+        )
+        if not ok:
+            return
+        self.set_label(item, self.item_name(item), "" if icon == choices[-1] else icon)
+        self.save()
 
     def _add_group(self, parent_item):
         name, ok = QInputDialog.getText(self, "Nowa grupa", "Nazwa grupy:")
@@ -203,9 +323,8 @@ class ConnectionTree(QTreeWidget):
             return
         data = dialog.values()
         parent_item = parent_item or self.topLevelItem(0)
-        item = QTreeWidgetItem(parent_item, [data["name"]], CONNECTION_TYPE)
-        item.setData(0, CONNECTION_DATA, data)
-        item.setToolTip(0, f"{data['username']}@{data['host']}:{data['port']}")
+        item = QTreeWidgetItem(parent_item, [], CONNECTION_TYPE)
+        self._apply_connection(item, data)
         parent_item.setExpanded(True)
         self.save()
 
@@ -216,7 +335,7 @@ class ConnectionTree(QTreeWidget):
         if item.childCount() and QMessageBox.question(
             self,
             "Usunąć grupę?",
-            f"„{item.text(0)}” zawiera {item.childCount()} elementów. Usunąć wszystko?",
+            f"„{self.item_name(item)}” zawiera {item.childCount()} elementów. Usunąć wszystko?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         ) != QMessageBox.Yes:
@@ -259,16 +378,18 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 return
 
-        # Hasło pytamy przy każdym połączeniu i nigdzie go nie zapisujemy.
+        # Zapisane hasło odszyfrowujemy, w przeciwnym razie pytamy.
         # Puste = logowanie kluczem z agenta lub ~/.ssh.
-        password, ok = QInputDialog.getText(
-            self,
-            "Uwierzytelnianie",
-            f"Hasło dla {conn['username']}@{conn['host']}\n(puste = klucz SSH):",
-            QLineEdit.Password,
-        )
-        if not ok:
-            return
+        password = decrypt_password(conn["password"]) if conn.get("password") else None
+        if password is None:
+            password, ok = QInputDialog.getText(
+                self,
+                "Uwierzytelnianie",
+                f"Hasło dla {conn['username']}@{conn['host']}\n(puste = klucz SSH):",
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
 
         # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
         terminal = connect_with_progress(
@@ -330,6 +451,26 @@ def selftest():
         assert reloaded_conn.type() == CONNECTION_TYPE, "typ elementu zgubiony"
         assert reloaded_conn.data(0, CONNECTION_DATA) == conn_data, "dane połączenia zmienione"
 
+        # Ikona jest doklejana do etykiety, ale w pliku nazwa zostaje czysta.
+        ConnectionTree.set_label(group, "Produkcja", "🗂️")
+        tree.save()
+        with_icon = ConnectionTree()
+        icon_group = with_icon.topLevelItem(0).child(0)
+        assert with_icon.item_name(icon_group) == "Produkcja", "ikona zjadła nazwę"
+        assert icon_group.data(0, ICON_DATA) == "🗂️", "ikona nie przetrwała restartu"
+        assert icon_group.text(0).endswith("Produkcja")
+
+        # Edycja połączenia: nowe dane muszą trafić do etykiety i do pliku.
+        with_icon._apply_connection(
+            icon_group.child(0),
+            {"name": "srv-99", "host": "10.0.0.9", "port": 22, "username": "root"},
+        )
+        with_icon.save()
+        after_edit = ConnectionTree()
+        edited = after_edit.topLevelItem(0).child(0).child(0)
+        assert edited.data(0, CONNECTION_DATA)["host"] == "10.0.0.9", "edycja nie zapisana"
+        assert edited.text(0) == "srv-99"
+
         # Uszkodzony plik nie może wywalić aplikacji ani zniknąć bez śladu.
         CONFIG_FILE.write_text("{to nie jest json", encoding="utf-8")
         QMessageBox.warning = staticmethod(lambda *a, **k: None)
@@ -373,6 +514,14 @@ def selftest():
     group.removeChild(conn)
     inna.addChild(conn)
     assert conn.parent() is inna and group.childCount() == 0
+
+    # Szyfrowanie haseł: tylko Windows, wynik nie może być czytelny gołym okiem.
+    if CAN_STORE_PASSWORDS:
+        stored = encrypt_password("tajne hasło")
+        assert "tajne" not in stored, "hasło leży w pliku otwartym tekstem"
+        assert decrypt_password(stored) == "tajne hasło", "odszyfrowanie nie działa"
+        assert decrypt_password("bmllIGRwYXBp") is None, "śmieci muszą dać None"
+        print("szyfrowanie haseł: OK")
 
     ssh_terminal.selftest()
     del app
