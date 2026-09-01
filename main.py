@@ -86,8 +86,14 @@ class ConnectionTree(QTreeWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
+        # Przenoszenie elementów myszą wewnątrz drzewa.
+        self.setDragDropMode(QTreeWidget.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+
         root = QTreeWidgetItem(["Wszystkie połączenia"])
         self.addTopLevelItem(root)
+        # Korzenia nie da się przeciągnąć — wszystko ma zostać pod nim.
+        root.setFlags(root.flags() & ~Qt.ItemIsDragEnabled)
         root.setExpanded(True)
         self.load()
 
@@ -155,6 +161,22 @@ class ConnectionTree(QTreeWidget):
         root = self.topLevelItem(0)
         for node in nodes:
             self._build(root, node)
+
+    def _drop_allowed(self, item, on_item):
+        # Upuszczenie w pustym miejscu zrobiłoby element najwyższego poziomu,
+        # obok korzenia — wtedy `save()` by go zgubił.
+        # Połączenie nie jest grupą, więc nic nie może pod nie wejść.
+        if item is None:
+            return False
+        return not (on_item and item.type() == CONNECTION_TYPE)
+
+    def dropEvent(self, event):
+        on_item = self.dropIndicatorPosition() == QTreeWidget.OnItem
+        if not self._drop_allowed(self.itemAt(event.position().toPoint()), on_item):
+            event.ignore()
+            return
+        super().dropEvent(event)
+        self.save()
 
     def _show_context_menu(self, pos):
         item = self.itemAt(pos)
@@ -338,6 +360,19 @@ def selftest():
     window.tabs.addTab(QWidget(), "srv-01")
     window._open_connection_tab(data)
     assert window.tabs.count() == 1, "ponowne otwarcie nie może duplikować zakładki"
+
+    # Przeciąganie: korzeń nie odjeżdża, połączenie nie przyjmuje dzieci.
+    assert not root.flags() & Qt.ItemIsDragEnabled, "korzeń musi zostać na miejscu"
+    assert not window.tree._drop_allowed(None, False), "pusty obszar to nie cel"
+    assert not window.tree._drop_allowed(conn, True), "połączenie nie może być grupą"
+    assert window.tree._drop_allowed(conn, False), "obok połączenia wolno"
+    assert window.tree._drop_allowed(group, True), "do grupy wolno"
+
+    # Sam ruch elementu między grupami musi przetrwać zapis i odczyt.
+    inna = QTreeWidgetItem(root, ["Testy"])
+    group.removeChild(conn)
+    inna.addChild(conn)
+    assert conn.parent() is inna and group.childCount() == 0
 
     ssh_terminal.selftest()
     del app
