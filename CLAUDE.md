@@ -88,12 +88,12 @@ MainWindow
 
 Zrobione: drzewo grup/połączeń, formularz host/port/użytkownik, **terminal SSH**
 w zakładce, **zapis do `connections.json`**, **okno postępu z licznikiem czasu
-i anulowaniem**, self-testy.
+i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
+`dropEvent` odrzuca upuszczenie na połączenie i poza korzeń, po ruchu zapis), self-testy.
 
 Świadomie pominięte — dodać gdy będzie potrzebne:
 - **RDP** — niepodpięte (kierunek: FreeRDP osadzony w oknie).
 - **Edycja połączenia** — da się dodać i usunąć, nie da się zmienić.
-- Przeciąganie połączeń między grupami.
 - Emulacja VT100, zmiana rozmiaru PTY przy zmianie rozmiaru okna, ikony.
 
 ## Testy
