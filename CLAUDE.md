@@ -111,10 +111,12 @@ na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
   dlatego „error" w ścieżce zostaje czerwone. Przełącznik: Widok →
   „Podświetlanie składni" (atrybut klasy, więc łapie też nowe zakładki).
 - **Backspace i przerysowanie linii**: powłoka kasuje znak sekwencją ` `,
-  a prompt odświeża przez ``. `output_ops()` tłumaczy oba znaki na operacje
+  a prompt odświeża przez `
+`. `output_ops()` tłumaczy oba znaki na operacje
   (`bs`/`cr`/`text`), `apply_output()` wykonuje je na kursorze dokumentu.
   Wcześniej wstawialiśmy je dosłownie i backspace **dorysowywał kwadracik**
-  zamiast kasować. `strip_ansi()` celowo **nie** usuwa już samotnego ``.
+  zamiast kasować. `strip_ansi()` celowo **nie** usuwa już samotnego `
+`.
 - **Brak emulacji VT100** — `strip_ansi()` wycina kolory i adresowanie kursora, więc
   `vim`/`htop`/`mc` będą wyglądać źle. Gdy będą potrzebne: `pyte` albo QTermWidget.
 - **Hasło opcjonalnie zapisywane** w `connections.json`, zaszyfrowane **DPAPI**
@@ -125,6 +127,21 @@ na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
 - **Nieznany klucz serwera** pokazuje odcisk i pyta o zgodę. Pytanie idzie z wątku
   roboczego do GUI sygnałem `BlockingQueuedConnection` — okien Qt nie wolno tworzyć
   poza wątkiem GUI. Nie zamieniaj tego na `AutoAddPolicy`: to ochrona przed MITM.
+
+#### Szukanie w tekście (Ctrl+F)
+
+`FindBar` + `install_find(editor)` w `ssh_terminal.py` doczepiają szukanie do
+**dowolnego** `QPlainTextEdit`: terminal sesji i okno z wynikiem skryptu.
+
+- Pasek jest **dzieckiem** pola tekstowego (pływa nad nim jak w przeglądarce),
+  więc nie trzeba przebudowywać układu zakładki. Pozycję poprawia `eventFilter`
+  na zdarzeniu `Resize` pola.
+- Enter = następne, Shift+Enter = poprzednie, Esc chowa, brak trafienia
+  podświetla pole na czerwono; szukanie **zawija** na drugi koniec dokumentu.
+- W terminalu `keyPressEvent` przechwytuje Ctrl+F **przed** wysłaniem do
+  powłoki — inaczej poleciałoby tam ``.
+- Menu pod prawym klawiszem to `createStandardContextMenu()` (kopiuj/zaznacz
+  wszystko) plus pozycja „Znajdź…"; stąd `Qt.CustomContextMenu` na polu.
 
 #### Statystyki serwera (dolny pasek)
 

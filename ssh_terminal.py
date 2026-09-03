@@ -19,14 +19,16 @@ from binascii import hexlify
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QFont,
     QKeySequence,
+    QShortcut,
     QSyntaxHighlighter,
     QTextCharFormat,
     QTextCursor,
+    QTextDocument,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -219,6 +221,119 @@ class TerminalHighlighter(QSyntaxHighlighter):
             if bold:
                 fmt.setFontWeight(QFont.Bold)
             self.setFormat(start, length, fmt)
+
+
+# --- wyszukiwanie w tekście (Ctrl+F) ----------------------------------------
+
+
+class FindBar(QWidget):
+    """Pasek szukania pływający nad polem tekstowym — jak w przeglądarce.
+
+    Jest *dzieckiem* pola tekstowego, a nie kolejnym wierszem układu: dzięki
+    temu da się go doczepić do gotowego widgetu (terminal, okno z wynikiem
+    skryptu) bez przebudowywania zakładki.
+    """
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+        self.setAutoFillBackground(True)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("Szukaj…")
+        self.query.setClearButtonEnabled(True)
+        self.query.returnPressed.connect(self.find_next)
+        self.query.textChanged.connect(self._reset_color)
+        layout.addWidget(self.query)
+        for text, tooltip, handler in (
+            ("◀", "Poprzednie (Shift+Enter)", self.find_previous),
+            ("▶", "Następne (Enter)", self.find_next),
+            ("✕", "Zamknij (Esc)", self.hide),
+        ):
+            button = QToolButton()
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.clicked.connect(handler)
+            layout.addWidget(button)
+
+        self.hide()
+        editor.installEventFilter(self)
+
+    # --- szukanie ---------------------------------------------------------
+
+    def _reset_color(self):
+        self.query.setStyleSheet("")
+
+    def find_next(self, backward=False):
+        text = self.query.text()
+        if not text:
+            return False
+        flags = QTextDocument.FindBackward if backward else QTextDocument.FindFlags()
+        if not self.editor.find(text, flags):
+            # Koniec dokumentu — zawijamy na drugi koniec i próbujemy raz jeszcze.
+            cursor = self.editor.textCursor()
+            cursor.movePosition(QTextCursor.Start if not backward else QTextCursor.End)
+            self.editor.setTextCursor(cursor)
+            if not self.editor.find(text, flags):
+                self.query.setStyleSheet("background: #e74c3c; color: white;")
+                return False
+        self._reset_color()
+        return True
+
+    def find_previous(self):
+        return self.find_next(backward=True)
+
+    # --- pokazywanie ------------------------------------------------------
+
+    def show_bar(self):
+        selected = self.editor.textCursor().selectedText()
+        if selected:
+            self.query.setText(selected)
+        self.show()
+        self.raise_()
+        self._reposition()
+        self.query.setFocus()
+        self.query.selectAll()
+
+    def _reposition(self):
+        width = min(360, self.editor.width() - 20)
+        self.setGeometry(self.editor.width() - width - 10, 6, width, self.sizeHint().height())
+
+    def eventFilter(self, obj, event):
+        if obj is self.editor and event.type() == QEvent.Resize and self.isVisible():
+            self._reposition()
+        return False
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+            self.editor.setFocus()
+            return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and event.modifiers() & Qt.ShiftModifier:
+            self.find_previous()
+            return
+        super().keyPressEvent(event)
+
+
+def install_find(editor):
+    """Dokłada polu tekstowemu szukanie: Ctrl+F i „Znajdź…" pod prawym klawiszem."""
+    bar = FindBar(editor)
+    shortcut = QShortcut(QKeySequence.Find, editor, bar.show_bar)
+    shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+    editor.setContextMenuPolicy(Qt.CustomContextMenu)
+
+    def menu(pos):
+        # Standardowe menu (kopiuj/wklej/zaznacz wszystko) plus nasza pozycja.
+        context = editor.createStandardContextMenu()
+        context.addSeparator()
+        context.addAction("Znajdź…\tCtrl+F", bar.show_bar)
+        context.exec(editor.viewport().mapToGlobal(pos))
+
+    editor.customContextMenuRequested.connect(menu)
+    editor.find_bar = bar
+    return bar
 
 
 def key_to_bytes(key, modifiers, text):
@@ -670,6 +785,7 @@ class SshTerminal(QPlainTextEdit):
         self.setUndoRedoEnabled(False)
         self.document().setMaximumBlockCount(5000)  # ogranicz zużycie pamięci
         self.highlighter = TerminalHighlighter(self.document())
+        install_find(self)
 
         self.client = client
         self.channel = channel
@@ -700,6 +816,9 @@ class SshTerminal(QPlainTextEdit):
         self.setReadOnly(True)
 
     def keyPressEvent(self, event):
+        if event.matches(QKeySequence.Find):
+            self.find_bar.show_bar()  # Ctrl+F zostaje u nas, nie leci do powłoki
+            return
         if event.matches(QKeySequence.Copy):
             super().keyPressEvent(event)
             return
@@ -1039,6 +1158,7 @@ def _show_script_output(parent, title, text):
     output = QPlainTextEdit(text)
     output.setReadOnly(True)
     output.setFont(QFont("Consolas", 10))
+    install_find(output)
     layout.addWidget(output)
     buttons = QDialogButtonBox(QDialogButtonBox.Close)
     buttons.rejected.connect(dialog.reject)
@@ -1088,6 +1208,18 @@ def selftest():
     assert editor.toPlainText() == "zabbix@srv:~$ as", repr(editor.toPlainText())
     apply_output(editor.textCursor(), strip_ansi("\rnowy prompt$ "))
     assert editor.toPlainText() == "nowy prompt$ ", repr(editor.toPlainText())
+
+    # Szukanie: Ctrl+F, zawijanie na koniec dokumentu i brak trafienia.
+    editor.setPlainText("pierwszy blad" + chr(10) + "drugi blad")
+    bar = install_find(editor)
+    bar.query.setText("blad")
+    assert bar.find_next(), "nie znalazlo pierwszego trafienia"
+    first = editor.textCursor().selectionStart()
+    assert bar.find_next() and editor.textCursor().selectionStart() > first
+    assert bar.find_next(), "szukanie musi zawijac na poczatek"
+    assert editor.textCursor().selectionStart() == first
+    bar.query.setText("czegos takiego nie ma")
+    assert not bar.find_next(), "brak trafienia ma zwrocic False"
     editor.deleteLater()
     assert strip_ansi("bez zmian") == "bez zmian"
 
