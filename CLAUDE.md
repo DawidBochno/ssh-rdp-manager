@@ -262,6 +262,20 @@ z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie cz
 - Transfer plików w tle (SFTP na wątku GUI) i przeciąganie plików myszką
   (na razie tylko przyciski/menu) — patrz ponytail-komentarz przy `SftpPanel`.
 
+## Praca z gitem
+
+**Nowe zadanie = nowa gałąź.** Zanim zaczniesz zmieniać pliki pod nową prośbę,
+załóż gałąź od `main` z nazwą opisującą temat (`git switch -c wyszukiwanie-home`).
+Nie pracuj bezpośrednio na `main` — tam trafiają tylko scalenia.
+
+**Zmiana tematu = pytanie do użytkownika.** Gdy nowa prośba nie ma związku z tym,
+co właśnie leży niezacommitowane w katalogu roboczym, **zapytaj przed pisaniem
+kodu**: skomitować i zacząć nową gałąź, czy najpierw dokończyć bieżącą rzecz?
+Nie mieszaj dwóch tematów w jednym commicie i nie decyduj o tym sam.
+
+Reszta jak dotąd: commit i push wyłącznie na wyraźną prośbę, komunikaty commitów
+po polsku (bez polskich znaków — konsola Windows je zjada), tryb rozkazujący.
+
 ## Testy
 
 `py main.py --selftest` pokrywa logikę drzewa/zakładek i czyste funkcje terminala.
