@@ -12,21 +12,33 @@ podmień renderowanie na `pyte` (emulator ekranu w czystym Pythonie) albo QTermW
 """
 import re
 import socket
+import stat
 import threading
 import time
 from binascii import hexlify
+from pathlib import Path
 
 import paramiko
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
+    QHBoxLayout,
     QInputDialog,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressDialog,
+    QSplitter,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 CONNECT_TIMEOUT = 15  # sekundy
@@ -606,6 +618,189 @@ class SshTerminal(QPlainTextEdit):
         self.stats.wait(3000)
 
 
+# --- graficzna przeglądarka plików (SFTP) -----------------------------------
+
+# ponytail: listdir/get/put wołane wprost na wątku GUI — dla admina po LAN/VPN
+# to milisekundy, więc osobny wątek na razie nie jest wart złożoności.
+# Przy wolnych/dużych transferach przenieść na QThread jak _StatsPoller.
+class SftpPanel(QWidget):
+    """Panel plików po lewej stronie zakładki sesji — wzorem MobaXterm."""
+
+    def __init__(self, client, parent=None):
+        super().__init__(parent)
+        self.sftp = None
+        self.path = "/"
+        try:
+            self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
+            self.path = self.sftp.normalize(".")
+        except Exception:
+            self.sftp = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+
+        toolbar = QHBoxLayout()
+        for text, tooltip, handler in (
+            ("⬆", "Do folderu nadrzędnego", self._go_up),
+            ("🔄", "Odśwież", self.refresh),
+            ("📁+", "Nowy folder", self._new_folder),
+            ("📤", "Wyślij plik", self._upload),
+        ):
+            button = QToolButton()
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.clicked.connect(handler)
+            toolbar.addWidget(button)
+        layout.addLayout(toolbar)
+
+        self.path_edit = QLineEdit(self.path)
+        self.path_edit.returnPressed.connect(self._go_to_typed_path)
+        layout.addWidget(self.path_edit)
+
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(self._open_item)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._context_menu)
+        layout.addWidget(self.list)
+
+        if self.sftp is None:
+            self.path_edit.setEnabled(False)
+            self.list.addItem("SFTP niedostępne dla tego serwera")
+            self.list.setEnabled(False)
+        else:
+            self.refresh()
+
+    # --- nawigacja ------------------------------------------------------
+
+    def refresh(self):
+        self.list.clear()
+        if not self.sftp:
+            return
+        try:
+            entries = self.sftp.listdir_attr(self.path)
+        except Exception as error:
+            self.list.addItem(f"Błąd: {error}")
+            return
+        entries.sort(key=lambda e: (not stat.S_ISDIR(e.st_mode), e.filename.lower()))
+        for entry in entries:
+            is_dir = stat.S_ISDIR(entry.st_mode)
+            item = QListWidgetItem(f"{'📁' if is_dir else '📄'} {entry.filename}")
+            item.setData(Qt.UserRole, (entry.filename, is_dir))
+            self.list.addItem(item)
+        self.path_edit.setText(self.path)
+
+    def _child_path(self, name):
+        return self.path.rstrip("/") + "/" + name
+
+    def _navigate(self, path):
+        self.path = path or "/"
+        self.refresh()
+
+    def _go_up(self):
+        if self.sftp:
+            self._navigate(self.path.rsplit("/", 1)[0] or "/")
+
+    def _go_to_typed_path(self):
+        self._navigate(self.path_edit.text().strip())
+
+    def _open_item(self, item):
+        name, is_dir = item.data(Qt.UserRole)
+        if is_dir:
+            self._navigate(self._child_path(name))
+        else:
+            self._download(self._child_path(name), name)
+
+    # --- akcje na plikach -------------------------------------------------
+
+    def _download(self, remote_path, name):
+        local_path, _ = QFileDialog.getSaveFileName(self, "Pobierz plik", name)
+        if not local_path:
+            return
+        try:
+            self.sftp.get(remote_path, local_path)
+        except Exception as error:
+            QMessageBox.warning(self, "Błąd pobierania", str(error))
+
+    def _upload(self):
+        if not self.sftp:
+            return
+        local_path, _ = QFileDialog.getOpenFileName(self, "Wyślij plik")
+        if not local_path:
+            return
+        try:
+            self.sftp.put(local_path, self._child_path(Path(local_path).name))
+        except Exception as error:
+            QMessageBox.warning(self, "Błąd wysyłania", str(error))
+        self.refresh()
+
+    def _new_folder(self):
+        if not self.sftp:
+            return
+        name, ok = QInputDialog.getText(self, "Nowy folder", "Nazwa:")
+        if not ok or not name:
+            return
+        try:
+            self.sftp.mkdir(self._child_path(name))
+        except Exception as error:
+            QMessageBox.warning(self, "Błąd", str(error))
+        self.refresh()
+
+    def _context_menu(self, pos):
+        item = self.list.itemAt(pos)
+        if item is None or not self.sftp:
+            return
+        name, is_dir = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        if not is_dir:
+            menu.addAction("Pobierz", lambda: self._download(self._child_path(name), name))
+        menu.addAction("Usuń", lambda: self._delete(name, is_dir))
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def _delete(self, name, is_dir):
+        if QMessageBox.question(
+            self, "Usunąć?", f"Usunąć „{name}”?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        try:
+            (self.sftp.rmdir if is_dir else self.sftp.remove)(self._child_path(name))
+        except Exception as error:
+            QMessageBox.warning(self, "Błąd usuwania", str(error))
+        self.refresh()
+
+    def closeEvent(self, event):
+        if self.sftp:
+            self.sftp.close()
+        super().closeEvent(event)
+
+
+class SessionTab(QWidget):
+    """Zawartość zakładki sesji: SFTP po lewej, terminal po prawej — wzorem MobaXterm."""
+
+    def __init__(self, terminal, parent=None):
+        super().__init__(parent)
+        self.terminal = terminal
+        self.sftp_panel = SftpPanel(terminal.client, self)
+
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.addWidget(self.sftp_panel)
+        splitter.addWidget(self.terminal)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([220, 780])
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(splitter)
+
+    @property
+    def last_stats(self):
+        return self.terminal.last_stats
+
+    def close_session(self):
+        self.sftp_panel.close()
+        self.terminal.close_session()
+
+
 # --- gotowe skrypty administracyjne -----------------------------------------
 
 # Każdy skrypt ma wariant Linux i (opcjonalnie) Windows — uruchamiamy Linux,
@@ -750,6 +945,7 @@ def run_script(parent, client, script):
 
 def selftest():
     """Sprawdza czyste funkcje — bez sieci."""
+    app = QApplication.instance() or QApplication([])
     assert strip_ansi("\x1b[31mczerwony\x1b[0m") == "czerwony"
     assert strip_ansi("\x1b]0;tytul\x07tekst") == "tekst"
     assert strip_ansi("linia\r\ndruga") == "linia\ndruga"
@@ -845,6 +1041,18 @@ def selftest():
     fallback_client = _FakeClient({"win": ("wynik win", 0)})
     assert _run_commands(fallback_client, "linux", "win") == "wynik win"
     assert "Nie udało się" in _run_commands(_FakeClient({}), "linux", None)
+
+    # Panel SFTP: gdy transport nie daje kanału SFTP (obcy serwer, brak
+    # uprawnień), panel ma się wyłączyć, a nie wywalić.
+    class _NoSftpClient:
+        def get_transport(self):
+            raise OSError("brak transportu")
+
+    panel = SftpPanel(_NoSftpClient())
+    assert panel.sftp is None, "atrapa bez transportu nie mogła dać działającego SFTP"
+    assert not panel.list.isEnabled(), "panel bez SFTP musi być wyłączony"
+    panel.deleteLater()
+    del app
 
     print("ssh_terminal selftest OK")
 
