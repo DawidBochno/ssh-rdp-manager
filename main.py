@@ -11,17 +11,21 @@ from ctypes import wintypes
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QBrush, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QColorDialog,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -33,13 +37,16 @@ from PySide6.QtWidgets import (
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
 
+from servers import SERVERS
 from ssh_terminal import (
     SCRIPTS,
     SessionTab,
+    TerminalHighlighter,
     connect_with_progress,
     run_script,
     wait_for_pending,
@@ -47,6 +54,8 @@ from ssh_terminal import (
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
+COLOR_DATA = Qt.UserRole + 3
+GROUP_ICON = "📁"
 
 # Zapisujemy obok skryptu; .gitignore trzyma ten plik poza repozytorium.
 # Hasła NIE trafiają tutaj — celowo, plik jest zwykłym tekstem.
@@ -193,6 +202,8 @@ class ConnectionTree(QTreeWidget):
         node = {"name": self.item_name(item)}
         if item.data(0, ICON_DATA):
             node["icon"] = item.data(0, ICON_DATA)
+        if item.data(0, COLOR_DATA):
+            node["color"] = item.data(0, COLOR_DATA)
         if item.type() == CONNECTION_TYPE:
             node["connection"] = item.data(0, CONNECTION_DATA)
         else:
@@ -216,6 +227,7 @@ class ConnectionTree(QTreeWidget):
 
     def _build(self, parent, node):
         name = str(node.get("name", "bez nazwy"))
+        default_icon = "" if "connection" in node else GROUP_ICON
         if "connection" in node:
             item = QTreeWidgetItem(parent, [], CONNECTION_TYPE)
             self._apply_connection(item, node["connection"])
@@ -224,7 +236,9 @@ class ConnectionTree(QTreeWidget):
             for child in node.get("children", []):
                 self._build(item, child)
             item.setExpanded(True)
-        self.set_label(item, name, str(node.get("icon", "")))
+        self.set_label(item, name, str(node.get("icon", "") or default_icon))
+        if node.get("color"):
+            self.set_color(item, str(node["color"]))
 
     def load(self):
         if not CONFIG_FILE.exists():
@@ -279,6 +293,9 @@ class ConnectionTree(QTreeWidget):
             else:
                 menu.addAction("Zmień nazwę…", lambda: self._rename_group(item))
             menu.addAction("Ikona…", lambda: self._pick_icon(item))
+            menu.addAction("Kolor…", lambda: self._pick_color(item))
+            if item.data(0, COLOR_DATA):
+                menu.addAction("Bez koloru", lambda: self._clear_color(item))
             menu.addSeparator()
             menu.addAction("Usuń", lambda: self._remove_item(item))
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -309,6 +326,27 @@ class ConnectionTree(QTreeWidget):
         self.set_label(item, name, item.data(0, ICON_DATA) or "")
         self.save()
 
+    @staticmethod
+    def set_color(item, color):
+        """Kolor tekstu elementu i wszystkiego, co pod nim (pusty = domyślny)."""
+        item.setData(0, COLOR_DATA, color or None)
+        brush = QBrush(QColor(color)) if color else QBrush()
+        item.setForeground(0, brush)
+        for i in range(item.childCount()):
+            ConnectionTree.set_color(item.child(i), color)
+
+    def _pick_color(self, item):
+        current = QColor(item.data(0, COLOR_DATA) or "#ffffff")
+        color = QColorDialog.getColor(current, self, "Kolor grupy")
+        if not color.isValid():
+            return
+        self.set_color(item, color.name())
+        self.save()
+
+    def _clear_color(self, item):
+        self.set_color(item, "")
+        self.save()
+
     def _pick_icon(self, item):
         choices = ICONS + ["(bez ikony)"]
         current = item.data(0, ICON_DATA) or ""
@@ -330,7 +368,7 @@ class ConnectionTree(QTreeWidget):
         if not ok or not name:
             return
         parent_item = parent_item or self.topLevelItem(0)
-        QTreeWidgetItem(parent_item, [name])
+        self.set_label(QTreeWidgetItem(parent_item, []), name, GROUP_ICON)
         parent_item.setExpanded(True)
         self.save()
 
@@ -366,6 +404,7 @@ class HomeTab(QWidget):
 
     def __init__(self, main_window):
         super().__init__()
+        self.main_window = main_window
         layout = QVBoxLayout(self)
         layout.addStretch()
 
@@ -388,7 +427,62 @@ class HomeTab(QWidget):
         buttons.addWidget(saved_btn)
         buttons.addStretch()
         layout.addLayout(buttons)
+
+        # Wyszukiwarka zapisanych połączeń — po nazwie, hoście i użytkowniku.
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("🔍 Szukaj połączenia (nazwa, host, użytkownik)…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.refresh)
+        self.search.returnPressed.connect(self._open_first)
+        layout.addWidget(self.search)
+
+        self.results = QListWidget()
+        self.results.itemActivated.connect(self._open_item)
+        self.results.itemDoubleClicked.connect(self._open_item)
+        layout.addWidget(self.results)
         layout.addStretch()
+        self.refresh()
+
+    def showEvent(self, event):
+        # Lista mogła się zmienić, gdy Home był schowany.
+        super().showEvent(event)
+        self.refresh()
+
+    def connections(self):
+        """Wszystkie zapisane połączenia z drzewa, płasko."""
+        found = []
+        it = QTreeWidgetItemIterator(self.main_window.tree)
+        while it.value():
+            item = it.value()
+            if item.type() == CONNECTION_TYPE:
+                found.append(item.data(0, CONNECTION_DATA) or {})
+            it += 1
+        return found
+
+    @staticmethod
+    def matches(data, query):
+        query = query.strip().lower()
+        if not query:
+            return True
+        haystack = " ".join(str(data.get(k, "")) for k in ("name", "host", "username"))
+        return query in haystack.lower()
+
+    def refresh(self):
+        self.results.clear()
+        for data in self.connections():
+            if not self.matches(data, self.search.text()):
+                continue
+            label = f"{data.get('name', '')} — {data.get('username', '')}@{data.get('host', '')}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, data)
+            self.results.addItem(item)
+
+    def _open_item(self, item):
+        self.main_window._open_connection_tab(item.data(Qt.UserRole))
+
+    def _open_first(self):
+        if self.results.count():
+            self._open_item(self.results.item(0))
 
 
 class MainWindow(QMainWindow):
@@ -425,6 +519,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([250, 750])
 
         self.setCentralWidget(splitter)
+        self._servers = {}  # uruchomione serwery wbudowane: etykieta -> obiekt
         self._build_menu()
         self._build_sidebar()
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
@@ -444,6 +539,20 @@ class MainWindow(QMainWindow):
         self.toggle_tree_action = QAction("Lista połączeń", self, checkable=True, checked=True)
         self.toggle_tree_action.toggled.connect(self.tree.setVisible)
         view_menu.addAction(self.toggle_tree_action)
+        highlight_action = QAction(
+            "Podświetlanie składni", self, checkable=True, checked=TerminalHighlighter.enabled
+        )
+        highlight_action.toggled.connect(self._toggle_highlighting)
+        view_menu.addAction(highlight_action)
+
+        # „Serwery wbudowane" — daemony po naszej stronie, wzorem MobaXterm.
+        servers_menu = menu.addMenu("Se&rwery")
+        for spec in SERVERS:
+            action = QAction(spec["label"], self, checkable=True)
+            action.triggered.connect(lambda _checked, s=spec, a=action: self._toggle_server(s, a))
+            servers_menu.addAction(action)
+        servers_menu.addSeparator()
+        servers_menu.addAction("Zatrzymaj wszystkie", self._stop_servers)
 
         scripts_menu = menu.addMenu("&Skrypty")
         for script in SCRIPTS:
@@ -451,6 +560,59 @@ class MainWindow(QMainWindow):
 
         help_menu = menu.addMenu("Pomo&c")
         help_menu.addAction("O programie…", self._show_about)
+
+    def _toggle_highlighting(self, on):
+        """Kolorowanie tekstu w terminalu — wspólne dla wszystkich zakładek."""
+        TerminalHighlighter.enabled = on
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, SessionTab):
+                widget.terminal.highlighter.rehighlight()
+
+    def _toggle_server(self, spec, action):
+        """Menu działa jak przełącznik: uruchom / zatrzymaj wybrany daemon."""
+        running = self._servers.pop(spec["label"], None)
+        if running:
+            running.stop()
+            action.setChecked(False)
+            self.statusBar().showMessage(f"{running.label}: zatrzymany", 5000)
+            return
+
+        directory = QFileDialog.getExistingDirectory(self, "Katalog do udostępnienia")
+        if not directory:
+            action.setChecked(False)
+            return
+        port, ok = QInputDialog.getInt(self, spec["label"], "Port:", spec["port"], 1, 65535)
+        if not ok:
+            action.setChecked(False)
+            return
+        try:
+            server = spec["cls"](directory, port)
+        except OSError as error:
+            action.setChecked(False)
+            QMessageBox.warning(
+                self,
+                spec["label"],
+                f"Nie udało się uruchomić na porcie {port}:\n\n{error}\n\n"
+                "Porty poniżej 1024 wymagają uprawnień administratora.",
+            )
+            return
+        self._servers[spec["label"]] = server
+        action.setChecked(True)
+        QMessageBox.information(
+            self,
+            spec["label"],
+            f"Serwer działa.\n\nAdres: {server.url}\nKatalog: {directory}",
+        )
+
+    def _stop_servers(self):
+        for server in self._servers.values():
+            server.stop()
+        self._servers.clear()
+        for action in self.menuBar().findChildren(QAction):
+            if action.isCheckable() and action.text() in [s["label"] for s in SERVERS]:
+                action.setChecked(False)
+        self.statusBar().showMessage("Serwery zatrzymane", 5000)
 
     def _run_script(self, script):
         session = self.tabs.currentWidget()
@@ -467,9 +629,6 @@ class MainWindow(QMainWindow):
         sidebar.setOrientation(Qt.Vertical)
         sidebar.setToolButtonStyle(Qt.ToolButtonTextOnly)
         sidebar.addAction(self.toggle_tree_action)
-        sidebar.addSeparator()
-        sidebar.addAction("📁", lambda: self.tree._add_group(self.tree.currentItem()))
-        sidebar.addAction("➕", lambda: self.tree._add_connection(self.tree.currentItem()))
         self.addToolBar(Qt.LeftToolBarArea, sidebar)
 
     def _show_about(self):
@@ -567,12 +726,14 @@ class MainWindow(QMainWindow):
             widget = self.tabs.widget(i)
             if isinstance(widget, SessionTab):
                 widget.close_session()
+        self._stop_servers()
         wait_for_pending()  # anulowane łączenia; inaczej Qt wywala proces
         super().closeEvent(event)
 
 
 def selftest():
     """Sprawdza logikę drzewa, zakładek i zapisu — bez sieci i bez okna."""
+    import servers
     import ssh_terminal
     import tempfile
     from PySide6.QtWidgets import QWidget
@@ -598,7 +759,9 @@ def selftest():
         reloaded_root = reloaded.topLevelItem(0)
         assert reloaded_root.childCount() == 1, "grupa nie przetrwała restartu"
         reloaded_group = reloaded_root.child(0)
-        assert reloaded_group.text(0) == "Produkcja"
+        assert reloaded.item_name(reloaded_group) == "Produkcja"
+        # Grupa bez własnej ikony dostaje domyślny folder.
+        assert reloaded_group.data(0, ICON_DATA) == GROUP_ICON, "brak ikony folderu"
         assert reloaded_group.childCount() == 1, "połączenie nie przetrwało restartu"
         reloaded_conn = reloaded_group.child(0)
         assert reloaded_conn.type() == CONNECTION_TYPE, "typ elementu zgubiony"
@@ -610,6 +773,17 @@ def selftest():
         with_icon = ConnectionTree()
         icon_group = with_icon.topLevelItem(0).child(0)
         assert with_icon.item_name(icon_group) == "Produkcja", "ikona zjadła nazwę"
+
+        # Kolor grupy schodzi na wszystko, co w niej siedzi, i przeżywa restart.
+        ConnectionTree.set_color(group, "#ff0000")
+        assert saved.foreground(0).color().name() == "#ff0000", "kolor nie zszedł na dziecko"
+        tree.save()
+        colored_tree = ConnectionTree()
+        colored = colored_tree.topLevelItem(0).child(0)
+        assert colored.data(0, COLOR_DATA) == "#ff0000", "kolor nie przetrwał restartu"
+        assert colored.child(0).foreground(0).color().name() == "#ff0000"
+        ConnectionTree.set_color(group, "")
+        assert saved.data(0, COLOR_DATA) is None, "czyszczenie koloru nie zeszło na dziecko"
         assert icon_group.data(0, ICON_DATA) == "🗂️", "ikona nie przetrwała restartu"
         assert icon_group.text(0).endswith("Produkcja")
 
@@ -645,6 +819,14 @@ def selftest():
     assert conn.type() == CONNECTION_TYPE
     assert group.type() != CONNECTION_TYPE
     assert conn.data(0, CONNECTION_DATA)["host"] == "10.0.0.1"
+
+    # Wyszukiwarka na Home: dopasowanie po nazwie, hoście i użytkowniku.
+    probe = {"name": "Serwer WWW", "host": "10.0.0.1", "username": "admin"}
+    assert HomeTab.matches(probe, ""), "puste zapytanie ma przepuszczać wszystko"
+    assert HomeTab.matches(probe, "www"), "brak dopasowania po nazwie"
+    assert HomeTab.matches(probe, "10.0.0"), "brak dopasowania po hoście"
+    assert HomeTab.matches(probe, "ADMIN"), "wyszukiwanie ma ignorować wielkość liter"
+    assert not HomeTab.matches(probe, "baza"), "fałszywe dopasowanie"
 
     # "Home" (pierwsza) i "+" (ostatnia) to stałe zakładki bez przycisku zamknięcia.
     assert window.tabs.count() == 2, "startowe zakładki: Home i +"
@@ -707,6 +889,7 @@ def selftest():
     assert window.statusBar().currentMessage() == IDLE_STATUS, "pasek pokazał nie tę zakładkę"
 
     ssh_terminal.selftest()
+    servers.selftest()
     del app
     print("main selftest OK")
 
