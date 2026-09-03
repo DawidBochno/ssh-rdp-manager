@@ -48,6 +48,8 @@ ICONS = ["📁", "🗂️", "🖥️", "🐧", "🪟",
 # więc plik skopiowany na inny komputer jest bezużyteczny.
 CAN_STORE_PASSWORDS = sys.platform == "win32"
 
+IDLE_STATUS = "Brak aktywnego połączenia"
+
 
 class _Blob(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
@@ -356,6 +358,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.tabs.currentChanged.connect(self._show_current_stats)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.tree)
@@ -365,6 +368,17 @@ class MainWindow(QMainWindow):
         splitter.setSizes([250, 750])
 
         self.setCentralWidget(splitter)
+        # Dolny pasek: statystyki serwera z aktywnej zakładki.
+        self.statusBar().showMessage(IDLE_STATUS)
+
+    def _show_stats(self, widget, text):
+        """Pasek pokazuje tylko serwer, którego zakładka jest na wierzchu."""
+        if widget is self.tabs.currentWidget():
+            self.statusBar().showMessage(text)
+
+    def _show_current_stats(self, _index=None):
+        widget = self.tabs.currentWidget()
+        self.statusBar().showMessage(getattr(widget, "last_stats", "") or IDLE_STATUS)
 
     def _on_item_activated(self, item, _column):
         if item.type() != CONNECTION_TYPE:
@@ -398,6 +412,9 @@ class MainWindow(QMainWindow):
         if terminal is None:
             return
 
+        terminal.stats_changed.connect(
+            lambda text, w=terminal: self._show_stats(w, text)
+        )
         index = self.tabs.addTab(terminal, name)
         self.tabs.setCurrentIndex(index)
         terminal.setFocus()
@@ -522,6 +539,13 @@ def selftest():
         assert decrypt_password(stored) == "tajne hasło", "odszyfrowanie nie działa"
         assert decrypt_password("bmllIGRwYXBp") is None, "śmieci muszą dać None"
         print("szyfrowanie haseł: OK")
+
+    # Dolny pasek: bez zakładek i dla obcego widgetu nie może się wywalić.
+    assert window.statusBar().currentMessage() == IDLE_STATUS
+    window._show_current_stats()
+    assert window.statusBar().currentMessage() == IDLE_STATUS
+    window._show_stats(QWidget(), "statystyki obcej zakładki")
+    assert window.statusBar().currentMessage() == IDLE_STATUS, "pasek pokazał nie tę zakładkę"
 
     ssh_terminal.selftest()
     del app

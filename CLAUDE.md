@@ -31,13 +31,15 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
 ## Architektura
 
 - [`main.py`](main.py) — okno, drzewo połączeń, zakładki, formularz połączenia.
-- [`ssh_terminal.py`](ssh_terminal.py) — sesja SSH na Paramiko jako widget zakładki.
+- [`ssh_terminal.py`](ssh_terminal.py) — sesja SSH na Paramiko jako widget zakładki
+  plus odpytywanie statystyk serwera.
 
 ```
 MainWindow
 └── QSplitter (poziomy)
     ├── ConnectionTree (QTreeWidget)  ← grupy i połączenia, menu pod prawym klikiem
     └── QTabWidget                    ← SshTerminal na każde otwarte połączenie
+statusBar()                           ← statystyki serwera z aktywnej zakładki
 ```
 
 - `CONNECTION_TYPE = QTreeWidgetItem.UserType + 1` odróżnia **połączenie** od **grupy**.
@@ -68,6 +70,36 @@ MainWindow
   roboczego do GUI sygnałem `BlockingQueuedConnection` — okien Qt nie wolno tworzyć
   poza wątkiem GUI. Nie zamieniaj tego na `AutoAddPolicy`: to ochrona przed MITM.
 
+#### Statystyki serwera (dolny pasek)
+
+`_StatsPoller` (QThread) co `STATS_INTERVAL` sekund puszcza **jedno** polecenie
+osobnym kanałem (`exec_command`) — powłoka w zakładce tego nie widzi.
+Sekcje wyjścia rozdzielają linie `@UP`, `@CPU`, … (`_sections()`), a
+`format_stats()` składa z nich jeden tekst na pasek.
+
+**Dwa warianty, jeden pasek** — przy pierwszym odpytaniu poller próbuje obu
+poleceń i zapamiętuje to, które odpowiedziało:
+
+- **Linux**: `STATS_CMD` czyta wprost `/proc` (+ `df -P /`, `who`), więc nie
+  zależymy od `top`/`vmstat`. CPU liczymy z różnicy liczników.
+- **Windows Server (OpenSSH)**: `WINDOWS_STATS_CMD` to jedna linijka PowerShella
+  (CIM + `Get-NetAdapterStatistics` + `quser`). Skrypt **nie może zawierać
+  cudzysłowów** — leci jako jeden argument w cudzysłowie, bo domyślną powłoką
+  OpenSSH bywa `cmd.exe` (inaczej zjadłby `|` i `>`). Liczby rzutujemy na
+  całkowite: `[string]` na ułamku dałby przecinek dziesiętny na polskim Windows.
+  CPU przychodzi gotowe (`cpu_pct`), więc widać je od pierwszej próbki;
+  liczniki sieci są opcjonalne — bez nich pasek pokazuje „—", nie zera.
+
+- **Tempo sieci (i CPU na Linuksie) wymaga dwóch próbek** — pierwsze odświeżenie
+  pokazuje „—". Odstęp czasu bierzemy z uptime'u z tej samej próbki, nie z
+  zegara lokalnego.
+- Gdy **żaden** wariant się nie rozebrał, pasek pisze „Statystyki niedostępne"
+  i **pętla się kończy**, żeby nie odpytywać w kółko.
+- Pasek pokazuje wyłącznie aktywną zakładkę; każdy terminal trzyma ostatni tekst
+  w `last_stats`, `MainWindow._show_current_stats()` przywraca go po przełączeniu.
+- `close_session()` najpierw ustawia stop, potem zamyka klienta (to wybija wątek
+  z blokującego odczytu), a `wait()` jest na końcu — inaczej Qt wywala proces.
+
 #### Pułapki, które już nas kosztowały czas
 
 - **Gniazdo tworzymy sami** (`socket.create_connection` + `sock=` do Paramiko),
@@ -94,7 +126,9 @@ w zakładce, **zapis do `connections.json`**, **okno postępu z licznikiem czasu
 i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 `dropEvent` odrzuca upuszczenie na połączenie i poza korzeń, po ruchu zapis),
 **zmiana nazwy grupy i edycja połączenia**, **ikony (emoji) na elementach**,
-**zapis haseł szyfrowanych DPAPI**, self-testy.
+**zapis haseł szyfrowanych DPAPI**, **statystyki serwera na dolnym pasku**
+(CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych; Linux i Windows),
+self-testy.
 
 Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
@@ -111,7 +145,9 @@ z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie cz
 Test **end-to-end** (klient gada z prawdziwym serwerem SSH postawionym na Paramiko)
 powstał w scratchpadzie sesji, nie w repo. Warto go odtworzyć przy zmianach w
 `ssh_terminal.py`: stawia serwer na losowym porcie, sprawdza odbiór bannera,
-wycięcie ANSI, wysyłkę klawiszy i zamknięcie sesji. Kluczowy szczegół: klient
+wycięcie ANSI, wysyłkę klawiszy, odpowiedź na `STATS_CMD` (pasek statystyk)
+i zamknięcie sesji. Serwer testowy musi odpowiadać na `exec` w osobnym wątku
+i nie zamykać kanału od razu — inaczej Paramiko dostaje „Channel closed". Kluczowy szczegół: klient
 wysyła **każdy klawisz osobnym pakietem**, więc serwer testowy musi zbierać bajty
 w pętli aż do `\r`, a nie robić jednego `recv()`.
 
