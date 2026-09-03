@@ -11,6 +11,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -25,11 +26,12 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabWidget,
+    QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
 )
 
-from ssh_terminal import SshTerminal, connect_with_progress, wait_for_pending
+from ssh_terminal import SCRIPTS, SshTerminal, connect_with_progress, run_script, wait_for_pending
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
@@ -143,7 +145,8 @@ class ConnectionTree(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderHidden(True)
+        self.setHeaderHidden(False)
+        self.setHeaderLabel("Połączenia")
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -368,8 +371,57 @@ class MainWindow(QMainWindow):
         splitter.setSizes([250, 750])
 
         self.setCentralWidget(splitter)
+        self._build_menu()
+        self._build_sidebar()
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
         self.statusBar().showMessage(IDLE_STATUS)
+
+    def _build_menu(self):
+        """Pasek menu u góry (wzorem MobaXterm), z akcjami znanymi już z menu drzewa."""
+        menu = self.menuBar()
+
+        connection_menu = menu.addMenu("&Połączenie")
+        connection_menu.addAction("Nowa grupa…", lambda: self.tree._add_group(self.tree.currentItem()))
+        connection_menu.addAction("Nowe połączenie…", lambda: self.tree._add_connection(self.tree.currentItem()))
+        connection_menu.addSeparator()
+        connection_menu.addAction("Zakończ", self.close)
+
+        view_menu = menu.addMenu("&Widok")
+        self.toggle_tree_action = QAction("Lista połączeń", self, checkable=True, checked=True)
+        self.toggle_tree_action.toggled.connect(self.tree.setVisible)
+        view_menu.addAction(self.toggle_tree_action)
+
+        scripts_menu = menu.addMenu("&Skrypty")
+        for script in SCRIPTS:
+            scripts_menu.addAction(script["label"], lambda s=script: self._run_script(s))
+
+        help_menu = menu.addMenu("Pomo&c")
+        help_menu.addAction("O programie…", self._show_about)
+
+    def _run_script(self, script):
+        terminal = self.tabs.currentWidget()
+        if not isinstance(terminal, SshTerminal):
+            QMessageBox.information(self, "Skrypty", "Otwórz najpierw połączenie SSH.")
+            return
+        run_script(self, terminal.client, script)
+
+    def _build_sidebar(self):
+        """Pionowy pasek ikon po lewej, wzorem MobaXterm (Sessions/Tools/…)."""
+        sidebar = QToolBar("Pasek boczny")
+        sidebar.setMovable(False)
+        sidebar.setFloatable(False)
+        sidebar.setOrientation(Qt.Vertical)
+        sidebar.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        sidebar.addAction(self.toggle_tree_action)
+        sidebar.addSeparator()
+        sidebar.addAction("📁", lambda: self.tree._add_group(self.tree.currentItem()))
+        sidebar.addAction("➕", lambda: self.tree._add_connection(self.tree.currentItem()))
+        self.addToolBar(Qt.LeftToolBarArea, sidebar)
+
+    def _show_about(self):
+        QMessageBox.information(
+            self, "O programie", "Menedżer połączeń SSH/RDP\nPython + PySide6"
+        )
 
     def _show_stats(self, widget, text):
         """Pasek pokazuje tylko serwer, którego zakładka jest na wierzchu."""
@@ -539,6 +591,12 @@ def selftest():
         assert decrypt_password(stored) == "tajne hasło", "odszyfrowanie nie działa"
         assert decrypt_password("bmllIGRwYXBp") is None, "śmieci muszą dać None"
         print("szyfrowanie haseł: OK")
+
+    # Menu i pasek boczny: akcja "Lista połączeń" musi realnie chować drzewo.
+    assert window.menuBar().actions(), "brak paska menu"
+    window.toggle_tree_action.setChecked(False)
+    assert window.tree.isHidden(), "toggle w menu/pasku bocznym nie ukrywa drzewa"
+    window.toggle_tree_action.setChecked(True)
 
     # Dolny pasek: bez zakładek i dla obcego widgetu nie może się wywalić.
     assert window.statusBar().currentMessage() == IDLE_STATUS

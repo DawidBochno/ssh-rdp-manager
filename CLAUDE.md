@@ -100,6 +100,24 @@ poleceń i zapamiętuje to, które odpowiedziało:
 - `close_session()` najpierw ustawia stop, potem zamyka klienta (to wybija wątek
   z blokującego odczytu), a `wait()` jest na końcu — inaczej Qt wywala proces.
 
+#### Skrypty administracyjne (menu „Skrypty”)
+
+`SCRIPTS` w `ssh_terminal.py` — lista gotowych poleceń (top procesów, miejsce na
+dysku, błędy w logach, porty, restart usługi, aktualizacje, nieudane logowania,
+kto zalogowany, ping, aktywne połączenia). `run_script()` odpala je na klientie
+**aktywnej zakładki** osobnym kanałem (`exec_command`, jak `_StatsPoller`) i
+pokazuje wynik w oknie dialogowym z `QPlainTextEdit`.
+
+- Skrypty z `{0}` (restart usługi, ping) najpierw pytają o parametr
+  (`QInputDialog`) — **`.format()` woła się tylko wtedy**, bo część poleceń
+  PowerShell ma dosłowne `{` (np. `@{LogName=...}`), które `.format()` inaczej
+  próbowałby rozebrać jako pole.
+- **Wariant Linux, potem Windows** — `_run_commands()` próbuje najpierw Linux;
+  gdy `exec_command` zwróci niezerowy kod bez wyjścia (obcy shell), próbuje
+  wariantu Windows. Ten sam wzorzec „spróbuj obu” co przy statystykach.
+- Menu „Skrypty” w `MainWindow` jest zawsze widoczne, ale bez otwartej
+  zakładki SSH pokazuje komunikat zamiast się wywalić (`_run_script`).
+
 #### Pułapki, które już nas kosztowały czas
 
 - **Gniazdo tworzymy sami** (`socket.create_connection` + `sock=` do Paramiko),
@@ -128,7 +146,8 @@ i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 **zmiana nazwy grupy i edycja połączenia**, **ikony (emoji) na elementach**,
 **zapis haseł szyfrowanych DPAPI**, **statystyki serwera na dolnym pasku**
 (CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych; Linux i Windows),
-self-testy.
+**pasek menu u góry i pasek boczny po lewej** (wzorem MobaXterm), **11 gotowych
+skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), self-testy.
 
 Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
