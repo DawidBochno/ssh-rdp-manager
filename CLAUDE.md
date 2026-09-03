@@ -223,6 +223,11 @@ starych wpisów bez ikony. Kolor (menu „Kolor…") siedzi w roli `COLOR_DATA`,
 się jako `"color"` i `set_color()` rozprowadza go **rekurencyjnie** na wszystkie
 elementy w grupie — dziecko nie trzyma własnego koloru, tylko odziedziczony.
 
+Eksport/import (menu „Połączenie") to ten sam format co `connections.json` —
+`nodes()` zwraca listę słowników dla obu ścieżek, `import_from(path, replace)`
+albo zastępuje drzewo, albo dopisuje. Hasła wędrują jako blob DPAPI, więc
+na innym koncie/komputerze się nie odszyfrują (plik i tak jest użyteczny).
+
 Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
 `item.text(0)` wprost, bo złapiesz emoji.

@@ -212,10 +212,14 @@ class ConnectionTree(QTreeWidget):
             ]
         return node
 
+    def nodes(self):
+        """Całe drzewo jako lista słowników — to samo, co ląduje w pliku."""
+        root = self.topLevelItem(0)
+        return [self._serialize(root.child(i)) for i in range(root.childCount())]
+
     def save(self):
         """Zrzuca całe drzewo do JSON. Wołane po każdej zmianie."""
-        root = self.topLevelItem(0)
-        nodes = [self._serialize(root.child(i)) for i in range(root.childCount())]
+        nodes = self.nodes()
         try:
             CONFIG_FILE.write_text(
                 json.dumps(nodes, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -264,6 +268,31 @@ class ConnectionTree(QTreeWidget):
         root = self.topLevelItem(0)
         for node in nodes:
             self._build(root, node)
+
+    # --- eksport i import ---------------------------------------------------
+
+    def export_to(self, path):
+        """Ten sam format co connections.json — plik da się wprost podmienić."""
+        Path(path).write_text(
+            json.dumps(self.nodes(), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def import_from(self, path, replace):
+        """Wczytuje drzewo z pliku: `replace` zastępuje wszystko, inaczej dopisuje.
+
+        Zwraca liczbę wczytanych gałęzi najwyższego poziomu.
+        """
+        nodes = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(nodes, list):
+            raise ValueError("plik nie zawiera listy połączeń")
+        root = self.topLevelItem(0)
+        if replace:
+            root.takeChildren()
+        for node in nodes:
+            self._build(root, node)
+        root.setExpanded(True)
+        self.save()
+        return len(nodes)
 
     def _drop_allowed(self, item, on_item):
         # Upuszczenie w pustym miejscu zrobiłoby element najwyższego poziomu,
@@ -533,6 +562,9 @@ class MainWindow(QMainWindow):
         connection_menu.addAction("Nowa grupa…", lambda: self.tree._add_group(self.tree.currentItem()))
         connection_menu.addAction("Nowe połączenie…", lambda: self.tree._add_connection(self.tree.currentItem()))
         connection_menu.addSeparator()
+        connection_menu.addAction("Eksportuj połączenia…", self._export_connections)
+        connection_menu.addAction("Importuj połączenia…", self._import_connections)
+        connection_menu.addSeparator()
         connection_menu.addAction("Zakończ", self.close)
 
         view_menu = menu.addMenu("&Widok")
@@ -560,6 +592,44 @@ class MainWindow(QMainWindow):
 
         help_menu = menu.addMenu("Pomo&c")
         help_menu.addAction("O programie…", self._show_about)
+
+    def _export_connections(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Eksport połączeń", "polaczenia.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self.tree.export_to(path)
+        except OSError as error:
+            QMessageBox.warning(self, "Eksport", f"Nie udało się zapisać:\n\n{error}")
+            return
+        QMessageBox.information(
+            self,
+            "Eksport",
+            f"Zapisano do:\n{path}\n\nZapisane hasła są szyfrowane kontem Windows —"
+            " na innym komputerze nie dadzą się odczytać.",
+        )
+
+    def _import_connections(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import połączeń", "", "JSON (*.json)")
+        if not path:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Import",
+            "Zastąpić obecną listę połączeń?\n\nTak = zastąp, Nie = dopisz do istniejącej.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Cancel:
+            return
+        try:
+            count = self.tree.import_from(path, answer == QMessageBox.Yes)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Import", f"Nie udało się wczytać:\n\n{error}")
+            return
+        QMessageBox.information(self, "Import", f"Wczytano gałęzi: {count}")
 
     def _toggle_highlighting(self, on):
         """Kolorowanie tekstu w terminalu — wspólne dla wszystkich zakładek."""
@@ -804,6 +874,28 @@ def selftest():
         broken = ConnectionTree()
         assert broken.topLevelItem(0).childCount() == 0
         assert CONFIG_FILE.with_suffix(".json.bak").exists(), "brak kopii uszkodzonego pliku"
+        # Eksport i import: ten sam format co plik konfiguracyjny.
+        export_file = Path(tmp) / "eksport.json"
+        tree.export_to(export_file)
+        assert json.loads(export_file.read_text(encoding="utf-8")) == tree.nodes()
+
+        empty = ConnectionTree()
+        empty.topLevelItem(0).takeChildren()
+        assert empty.import_from(export_file, replace=True) == 1
+        imported = empty.topLevelItem(0).child(0)
+        assert empty.item_name(imported) == "Produkcja"
+        assert imported.child(0).data(0, CONNECTION_DATA) == conn_data, "import zgubił dane"
+
+        # Dopisanie (replace=False) nie kasuje tego, co już jest.
+        empty.import_from(export_file, replace=False)
+        assert empty.topLevelItem(0).childCount() == 2, "dopisywanie skasowało istniejące"
+
+        try:
+            empty.import_from(export_file.with_name("brak.json"), replace=True)
+            raise AssertionError("brak pliku musi się zgłosić wyjątkiem")
+        except OSError:
+            pass
+
         print("persystencja: OK")
 
     # Celowo nieistniejąca ścieżka: reszta testu nie może ruszyć pliku użytkownika.
