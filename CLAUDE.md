@@ -73,16 +73,28 @@ statusBar()                           ← statystyki serwera z aktywnej zakładk
 #### Statystyki serwera (dolny pasek)
 
 `_StatsPoller` (QThread) co `STATS_INTERVAL` sekund puszcza **jedno** polecenie
-`STATS_CMD` osobnym kanałem (`exec_command`) — powłoka w zakładce tego nie widzi.
-Czytamy wprost `/proc` (+ `df -P /`, `who`), więc nie zależymy od `top`/`vmstat`.
-Sekcje wyjścia rozdzielają linie `@UP`, `@CPU`, … — `parse_stats()` je rozbiera,
-`format_stats()` składa tekst na pasek.
+osobnym kanałem (`exec_command`) — powłoka w zakładce tego nie widzi.
+Sekcje wyjścia rozdzielają linie `@UP`, `@CPU`, … (`_sections()`), a
+`format_stats()` składa z nich jeden tekst na pasek.
 
-- **CPU i tempo sieci wymagają dwóch próbek** (różnica liczników), więc pierwsze
-  odświeżenie pokazuje „—". Odstęp czasu bierzemy z `/proc/uptime` w tej samej
-  próbce, nie z zegara lokalnego.
-- `parse_stats()` zwraca `None`, gdy serwer nie ma `/proc` — wtedy pasek pisze
-  „Statystyki niedostępne" i **pętla się kończy**, żeby nie odpytywać w kółko.
+**Dwa warianty, jeden pasek** — przy pierwszym odpytaniu poller próbuje obu
+poleceń i zapamiętuje to, które odpowiedziało:
+
+- **Linux**: `STATS_CMD` czyta wprost `/proc` (+ `df -P /`, `who`), więc nie
+  zależymy od `top`/`vmstat`. CPU liczymy z różnicy liczników.
+- **Windows Server (OpenSSH)**: `WINDOWS_STATS_CMD` to jedna linijka PowerShella
+  (CIM + `Get-NetAdapterStatistics` + `quser`). Skrypt **nie może zawierać
+  cudzysłowów** — leci jako jeden argument w cudzysłowie, bo domyślną powłoką
+  OpenSSH bywa `cmd.exe` (inaczej zjadłby `|` i `>`). Liczby rzutujemy na
+  całkowite: `[string]` na ułamku dałby przecinek dziesiętny na polskim Windows.
+  CPU przychodzi gotowe (`cpu_pct`), więc widać je od pierwszej próbki;
+  liczniki sieci są opcjonalne — bez nich pasek pokazuje „—", nie zera.
+
+- **Tempo sieci (i CPU na Linuksie) wymaga dwóch próbek** — pierwsze odświeżenie
+  pokazuje „—". Odstęp czasu bierzemy z uptime'u z tej samej próbki, nie z
+  zegara lokalnego.
+- Gdy **żaden** wariant się nie rozebrał, pasek pisze „Statystyki niedostępne"
+  i **pętla się kończy**, żeby nie odpytywać w kółko.
 - Pasek pokazuje wyłącznie aktywną zakładkę; każdy terminal trzyma ostatni tekst
   w `last_stats`, `MainWindow._show_current_stats()` przywraca go po przełączeniu.
 - `close_session()` najpierw ustawia stop, potem zamyka klienta (to wybija wątek
@@ -115,7 +127,8 @@ i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 `dropEvent` odrzuca upuszczenie na połączenie i poza korzeń, po ruchu zapis),
 **zmiana nazwy grupy i edycja połączenia**, **ikony (emoji) na elementach**,
 **zapis haseł szyfrowanych DPAPI**, **statystyki serwera na dolnym pasku**
-(CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych), self-testy.
+(CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych; Linux i Windows),
+self-testy.
 
 Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
