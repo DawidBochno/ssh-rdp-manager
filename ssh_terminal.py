@@ -19,7 +19,15 @@ from binascii import hexlify
 import paramiko
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QKeySequence, QTextCursor
-from PySide6.QtWidgets import QMessageBox, QPlainTextEdit, QProgressDialog
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QInputDialog,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressDialog,
+    QVBoxLayout,
+)
 
 CONNECT_TIMEOUT = 15  # sekundy
 
@@ -598,6 +606,148 @@ class SshTerminal(QPlainTextEdit):
         self.stats.wait(3000)
 
 
+# --- gotowe skrypty administracyjne -----------------------------------------
+
+# Każdy skrypt ma wariant Linux i (opcjonalnie) Windows — uruchamiamy Linux,
+# a dopiero gdy się nie powiedzie (obcy shell, brak narzędzia), próbujemy
+# Windows. Ten sam wzorzec „spróbuj obu” co w _StatsPoller.
+# Skrypty z {0} przyjmują parametr od użytkownika (np. nazwę usługi, host).
+# Uwaga: polecenia PowerShell zawierają dosłowne `{` (np. `@{LogName=...}`),
+# dlatego .format() woła się WYŁĄCZNIE gdy skrypt ma "prompt" — inaczej
+# str.format wywaliłby się na tych nawiasach.
+SCRIPTS = [
+    {
+        "label": "Top procesów (CPU/RAM)",
+        "unix": "ps aux --sort=-%cpu | head -n 15",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 Name,CPU,WorkingSet"
+        " | Format-Table -AutoSize | Out-String -Width 200\"",
+    },
+    {
+        "label": "Miejsce na dyskach",
+        "unix": "df -hP",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,Size,FreeSpace"
+        " | Format-Table -AutoSize | Out-String -Width 200\"",
+    },
+    {
+        "label": "Ostatnie błędy w logach",
+        "unix": "journalctl -p err -n 50 --no-pager 2>/dev/null || dmesg | tail -n 50",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-EventLog -LogName System -EntryType Error -Newest 20"
+        " | Format-Table TimeGenerated,Source,Message -AutoSize -Wrap | Out-String -Width 200\"",
+    },
+    {
+        "label": "Nasłuchujące porty",
+        "unix": "ss -tulpn 2>/dev/null || netstat -tulpn",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess"
+        " | Format-Table -AutoSize | Out-String -Width 200\"",
+    },
+    {
+        "label": "Restart usługi…",
+        "prompt": "Nazwa usługi:",
+        "unix": "sudo systemctl restart {0} && systemctl status {0} --no-pager",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Restart-Service -Name '{0}' -Force; Get-Service -Name '{0}'\"",
+    },
+    {
+        "label": "Dostępne / ostatnie aktualizacje",
+        "unix": "apt list --upgradable 2>/dev/null || yum check-update || dnf check-update",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 10"
+        " | Format-Table -AutoSize | Out-String -Width 200\"",
+    },
+    {
+        "label": "Czyszczenie starych logów (7 dni)",
+        "unix": "sudo journalctl --vacuum-time=7d",
+        "windows": None,
+    },
+    {
+        "label": "Nieudane logowania SSH",
+        "unix": "sudo lastb -n 20 2>/dev/null || journalctl -u sshd -p err -n 20 --no-pager",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625} -MaxEvents 20"
+        " | Select-Object TimeCreated,Message | Format-Table -AutoSize -Wrap | Out-String -Width 200\"",
+    },
+    {
+        "label": "Kto jest zalogowany",
+        "unix": "who -u",
+        "windows": "quser",
+    },
+    {
+        "label": "Ping hosta…",
+        "prompt": "Host do sprawdzenia:",
+        "unix": "ping -c 4 {0}",
+        "windows": "ping -n 4 {0}",
+    },
+    {
+        "label": "Aktywne połączenia sieciowe",
+        "unix": "ss -tn state established 2>/dev/null || netstat -tn",
+        "windows": "powershell -NoProfile -NonInteractive -Command \""
+        "Get-NetTCPConnection -State Established"
+        " | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort"
+        " | Format-Table -AutoSize | Out-String -Width 200\"",
+    },
+]
+
+
+def _try_command(client, command):
+    """Uruchamia polecenie, zwraca tekst albo None (błąd/obcy shell)."""
+    try:
+        _, stdout, stderr = client.exec_command(command, timeout=15)
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        status = stdout.channel.recv_exit_status()
+    except Exception:
+        return None
+    if status != 0 and not out.strip():
+        return None
+    return out.strip() or err.strip() or "(brak wyniku)"
+
+
+def _run_commands(client, unix_cmd, windows_cmd):
+    """Próbuje wariantu Linux, potem Windows. Zawsze zwraca tekst do pokazania."""
+    text = _try_command(client, unix_cmd)
+    if text is None and windows_cmd:
+        text = _try_command(client, windows_cmd)
+    return text if text is not None else "Nie udało się uruchomić skryptu na tym serwerze."
+
+
+def _show_script_output(parent, title, text):
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.resize(700, 450)
+    layout = QVBoxLayout(dialog)
+    output = QPlainTextEdit(text)
+    output.setReadOnly(True)
+    output.setFont(QFont("Consolas", 10))
+    layout.addWidget(output)
+    buttons = QDialogButtonBox(QDialogButtonBox.Close)
+    buttons.rejected.connect(dialog.reject)
+    buttons.accepted.connect(dialog.accept)
+    layout.addWidget(buttons)
+    dialog.exec()
+
+
+def run_script(parent, client, script):
+    """Pyta o parametr (jeśli skrypt go wymaga), uruchamia i pokazuje wynik."""
+    param = None
+    if script.get("prompt"):
+        param, ok = QInputDialog.getText(parent, script["label"], script["prompt"])
+        if not ok or not param.strip():
+            return
+        param = param.strip()
+
+    unix_cmd = script["unix"].format(param) if param is not None else script["unix"]
+    windows_cmd = script.get("windows")
+    if windows_cmd and param is not None:
+        windows_cmd = windows_cmd.format(param)
+
+    text = _run_commands(client, unix_cmd, windows_cmd)
+    _show_script_output(parent, script["label"], text)
+
+
 def selftest():
     """Sprawdza czyste funkcje — bez sieci."""
     assert strip_ansi("\x1b[31mczerwony\x1b[0m") == "czerwony"
@@ -658,6 +808,43 @@ def selftest():
     del no_net["rx"], no_net["tx"]
     assert "↓ —" in format_stats(no_net, win_first), "brak liczników to nie zero"
 
+    # Skrypty administracyjne: każdy ma etykietę i wariant linuksowy;
+    # parametryzowane mają {0} w obu wariantach, gdzie występują.
+    for script in SCRIPTS:
+        assert script.get("label") and script.get("unix"), script
+        if script.get("prompt"):
+            assert "{0}" in script["unix"]
+            if script.get("windows"):
+                assert "{0}" in script["windows"]
+
+    class _FakeStream:
+        def __init__(self, text=""):
+            self._text = text.encode()
+
+        def read(self):
+            return self._text
+
+    class _FakeStdout(_FakeStream):
+        def __init__(self, text, status):
+            super().__init__(text)
+            self.channel = type("C", (), {"recv_exit_status": lambda self: status})()
+
+    class _FakeClient:
+        def __init__(self, responses):
+            self.responses = responses  # polecenie -> (wyjście, kod wyjścia)
+
+        def exec_command(self, command, timeout=None):
+            out, status = self.responses.get(command, ("", 127))
+            return None, _FakeStdout(out, status), _FakeStream("")
+
+    ok_client = _FakeClient({"echo linux": ("wynik linux", 0)})
+    assert _try_command(ok_client, "echo linux") == "wynik linux"
+    assert _try_command(ok_client, "brak takiego") is None, "obcy shell musi dać None"
+
+    # Linux nie odpowiada (obcy shell) -> pada próba Windows.
+    fallback_client = _FakeClient({"win": ("wynik win", 0)})
+    assert _run_commands(fallback_client, "linux", "win") == "wynik win"
+    assert "Nie udało się" in _run_commands(_FakeClient({}), "linux", None)
 
     print("ssh_terminal selftest OK")
 
