@@ -23,6 +23,26 @@ from PySide6.QtWidgets import QMessageBox, QPlainTextEdit, QProgressDialog
 
 CONNECT_TIMEOUT = 15  # sekundy
 
+# Wyjście `WINDOWS_STATS_CMD` do testów — Windows Server 2019.
+_WINDOWS_SAMPLE = """@UP
+{up}
+@CPUPCT
+{cpu}
+@MEMW
+16777216
+8388608
+@NETW
+{rx}
+{tx}
+@DISKW
+128000000000
+64000000000
+@USERSW
+3
+"""
+
+
+
 # Wyjście `STATS_CMD` do testów — układ jak na Debianie, przycięte.
 _STATS_SAMPLE = """@UP
 {up} 2000.00
@@ -309,14 +329,7 @@ def human_uptime(seconds):
 
 def parse_stats(text):
     """Rozbiera wyjście `STATS_CMD` na liczby. None = to nie jest Linux z /proc."""
-    sections, current = {}, None
-    for line in text.splitlines():
-        if line.startswith("@"):
-            current = line[1:].strip()
-            sections[current] = []
-        elif current:
-            sections[current].append(line)
-
+    sections = _sections(text)
     stats = {}
     try:
         stats["uptime"] = float(sections["UP"][0].split()[0])
@@ -356,12 +369,78 @@ def parse_stats(text):
     return stats
 
 
+# Windows Server przez OpenSSH: to samo, ale z PowerShella. Skrypt nie może
+# zawierać cudzysłowów — cały leci jako jeden argument w cudzysłowie, bo
+# domyślną powłoką OpenSSH na Windows bywa cmd.exe (inaczej zjadłby `|` i `>`).
+# Liczby rzutujemy na całkowite: `[string]` na ułamku dałby przecinek
+# dziesiętny na polskim Windows i parser by się wyłożył.
+WINDOWS_STATS_CMD = (
+    "powershell -NoProfile -NonInteractive -Command \""
+    "$ErrorActionPreference='SilentlyContinue';"
+    "$os=Get-CimInstance Win32_OperatingSystem;"
+    "$up=((Get-Date)-$os.LastBootUpTime).TotalSeconds;"
+    "$cpu=(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average;"
+    "$d=Get-CimInstance Win32_LogicalDisk | Where-Object {$_.DeviceID -eq $env:SystemDrive};"
+    "$n=Get-NetAdapterStatistics;"
+    "$rx=($n | Measure-Object -Property ReceivedBytes -Sum).Sum;"
+    "$tx=($n | Measure-Object -Property SentBytes -Sum).Sum;"
+    "$users=[Math]::Max(0,@(quser).Count-1);"
+    "Write-Output '@UP' ([string][int64]$up) '@CPUPCT' ([string][int]$cpu)"
+    " '@MEMW' ([string][int64]$os.TotalVisibleMemorySize) ([string][int64]$os.FreePhysicalMemory)"
+    " '@NETW' ([string][int64]$rx) ([string][int64]$tx)"
+    " '@DISKW' ([string][int64]$d.Size) ([string][int64]$d.FreeSpace)"
+    " '@USERSW' ([string][int]$users)"
+    "\""
+)
+
+
+def _sections(text):
+    """Wyjście podzielone liniami `@NAZWA` na listy linii."""
+    sections, current = {}, None
+    for line in text.splitlines():
+        if line.startswith("@"):
+            current = line[1:].strip()
+            sections[current] = []
+        elif current:
+            sections[current].append(line.strip())
+    return sections
+
+
+def parse_windows_stats(text):
+    """Rozbiera wyjście `WINDOWS_STATS_CMD`. None = to nie był Windows."""
+    sections = _sections(text)
+    stats = {}
+    try:
+        stats["uptime"] = float(sections["UP"][0])
+        stats["cpu_pct"] = float(sections["CPUPCT"][0])
+        # Pamięć CIM podaje w kilobajtach.
+        stats["mem_total"] = float(sections["MEMW"][0]) * 1024
+        stats["mem_free"] = float(sections["MEMW"][1]) * 1024
+        size = float(sections["DISKW"][0])
+        free = float(sections["DISKW"][1])
+        stats["disk_free"] = free
+        stats["disk_pct"] = 100 * (size - free) / size if size else 0.0
+        stats["users"] = int(sections["USERSW"][0])
+    except (KeyError, IndexError, ValueError):
+        return None
+    # Liczniki sieci są opcjonalne: starszy Windows nie ma
+    # Get-NetAdapterStatistics, wtedy pasek pokaże przy ruchu „—".
+    try:
+        stats["rx"] = float(sections["NETW"][0])
+        stats["tx"] = float(sections["NETW"][1])
+    except (KeyError, IndexError, ValueError):
+        pass
+    return stats
+
+
 def format_stats(current, previous=None):
     """Składa tekst na pasek. Bez poprzedniej próbki nie ma czym policzyć tempa."""
     seconds = current["uptime"] - previous["uptime"] if previous else 0
 
     busy = "—"
-    if previous and seconds > 0:
+    if "cpu_pct" in current:
+        busy = f"{current['cpu_pct']:.0f}%"
+    elif previous and seconds > 0:
         total = current["cpu_total"] - previous["cpu_total"]
         idle = current["cpu_idle"] - previous["cpu_idle"]
         if total > 0:
@@ -374,10 +453,10 @@ def format_stats(current, previous=None):
         f"RAM {human_bytes(used)} / {human_bytes(current['mem_total'])} ({share:.0f}%)"
     )
     parts.append(
-        f"dysk / {current['disk_pct']:.0f}% (wolne {human_bytes(current['disk_free'])})"
+        f"dysk {current['disk_pct']:.0f}% (wolne {human_bytes(current['disk_free'])})"
     )
 
-    if previous and seconds > 0:
+    if previous and seconds > 0 and "rx" in current and "rx" in previous:
         down = (current["rx"] - previous["rx"]) / seconds
         up = (current["tx"] - previous["tx"]) / seconds
         parts.append(f"↓ {human_bytes(max(0, down))}/s  ↑ {human_bytes(max(0, up))}/s")
@@ -406,14 +485,25 @@ class _StatsPoller(QThread):
     def stop(self):
         self._stop.set()
 
+    def _read(self, command, parse):
+        try:
+            _, out, _ = self.client.exec_command(command, timeout=10)
+            return parse(out.read().decode("utf-8", errors="replace"))
+        except Exception:
+            return None
+
     def run(self):
+        # Przy pierwszym odpytaniu nie wiemy, co stoi po drugiej stronie:
+        # próbujemy obu poleceń i zapamiętujemy to, które odpowiedziało.
+        variants = [(STATS_CMD, parse_stats), (WINDOWS_STATS_CMD, parse_windows_stats)]
         previous = None
         while not self._stop.is_set():
-            try:
-                _, out, _ = self.client.exec_command(STATS_CMD, timeout=10)
-                current = parse_stats(out.read().decode("utf-8", errors="replace"))
-            except Exception:
-                current = None
+            current = None
+            for command, parse in list(variants):
+                current = self._read(command, parse)
+                if current is not None:
+                    variants = [(command, parse)]
+                    break
             if current is None:
                 # Serwer bez /proc albo zamknięta sesja — nie ma sensu pytać dalej.
                 if not self._stop.is_set():
@@ -547,6 +637,27 @@ def selftest():
     assert human_uptime(59) == "0 min"
     assert human_uptime(3 * 3600 + 120) == "3 h 2 min"
     assert human_uptime(50 * 3600) == "2 d 2 h"
+
+    # Windows Server: inne polecenie, ten sam pasek. CPU dostajemy gotowe.
+    win_first = parse_windows_stats(_WINDOWS_SAMPLE.format(up=100000, cpu=37, rx=1_000_000, tx=2_000_000))
+    win_second = parse_windows_stats(_WINDOWS_SAMPLE.format(up=100010, cpu=37, rx=1_000_000, tx=12_000_000))
+    assert win_first is not None, "wzorcowe wyjście Windows się nie rozebrało"
+    assert win_first["users"] == 3 and win_first["disk_pct"] == 50
+    assert win_first["mem_total"] == 16 * 1024**3, "pamięć CIM jest w kB"
+    assert parse_windows_stats(_STATS_SAMPLE.format(up=1, busy=1, idle=1, rx=1, tx=1)) is None
+    assert parse_stats(_WINDOWS_SAMPLE.format(up=1, cpu=1, rx=1, tx=1)) is None
+
+    win_text = format_stats(win_second, win_first)
+    assert "CPU 37%" in win_text, win_text  # gotowy procent, bez dwóch próbek
+    assert "↑ 977 kB/s" in win_text, win_text
+    assert "uptime 1 d 3 h" in win_text and "zalogowani: 3" in win_text, win_text
+    assert "CPU 37%" in format_stats(win_first), "Windows nie potrzebuje próbki wstecz"
+
+    # Bez liczników sieci (stary Windows) pasek pokazuje kreski, nie zera.
+    no_net = dict(win_second)
+    del no_net["rx"], no_net["tx"]
+    assert "↓ —" in format_stats(no_net, win_first), "brak liczników to nie zero"
+
 
     print("ssh_terminal selftest OK")
 
