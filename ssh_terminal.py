@@ -20,7 +20,14 @@ from pathlib import Path
 
 import paramiko
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QFont, QKeySequence, QTextCursor
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QKeySequence,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -132,6 +139,61 @@ def wait_for_pending(timeout_ms=3000):
 def strip_ansi(text):
     """Usuwa sekwencje sterujące i normalizuje końce linii."""
     return ANSI_RE.sub("", text).replace("\r\n", "\n").replace("\r", "")
+
+
+# Podświetlanie składni w terminalu (wzorem MobaXterm): zdalny serwer nie musi
+# wysyłać kolorów — kolorujemy u siebie, po tym co widać w tekście.
+# Kolejność ma znaczenie: pierwsza pasująca reguła wygrywa dla danego fragmentu.
+HIGHLIGHT_RULES = [
+    (r"\b(?:error|err|fail(?:ed|ure)?|fatal|critical|denied|refused|unreachable|"
+     r"timed out|no such file|błąd|odmowa)\b", "#e74c3c", True),
+    (r"\b(?:warn(?:ing)?|deprecated|retry|degraded|missing|uwaga|ostrzeżenie)\b",
+     "#e67e22", True),
+    (r"\b(?:ok|success(?:ful)?|done|passed|started|active|running|enabled|listening|"
+     r"connected|gotowe)\b", "#27ae60", True),
+    (r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b", "#9b59b6", False),      # adresy IP
+    (r"\b[a-z][a-z0-9+.-]*://\S+", "#3498db", False),                  # URL-e
+    (r"(?:/[\w.+-]+){2,}/?", "#2980b9", False),                        # ścieżki
+    (r"\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?\b|\b\d{2}:\d{2}:\d{2}\b",
+     "#7f8c8d", False),                                                # data i godzina
+    (r"\b[\w.-]+@[\w.-]+\b", "#16a085", False),                        # user@host
+]
+
+_COMPILED_RULES = [(re.compile(p, re.IGNORECASE), color, bold) for p, color, bold in HIGHLIGHT_RULES]
+
+
+def highlight_spans(text):
+    """Fragmenty do pokolorowania: (start, długość, kolor, pogrubienie).
+
+    Reguła nie nadpisuje fragmentu zajętego przez wcześniejszą — dzięki temu
+    „error" w ścieżce zostaje czerwone, a ścieżka nie przemalowuje słowa.
+    """
+    taken = [False] * len(text)
+    spans = []
+    for pattern, color, bold in _COMPILED_RULES:
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if any(taken[start:end]):
+                continue
+            taken[start:end] = [True] * (end - start)
+            spans.append((start, end - start, color, bold))
+    return spans
+
+
+class TerminalHighlighter(QSyntaxHighlighter):
+    """Koloruje tekst już wyświetlony w terminalu — bez udziału serwera."""
+
+    enabled = True  # atrybut klasy: nowe zakładki dziedziczą ustawienie z menu
+
+    def highlightBlock(self, text):
+        if not TerminalHighlighter.enabled:
+            return
+        for start, length, color, bold in highlight_spans(text):
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            if bold:
+                fmt.setFontWeight(QFont.Bold)
+            self.setFormat(start, length, fmt)
 
 
 def key_to_bytes(key, modifiers, text):
@@ -570,6 +632,7 @@ class SshTerminal(QPlainTextEdit):
         self.setFont(QFont("Consolas", 10))
         self.setUndoRedoEnabled(False)
         self.document().setMaximumBlockCount(5000)  # ogranicz zużycie pamięci
+        self.highlighter = TerminalHighlighter(self.document())
 
         self.client = client
         self.channel = channel
@@ -639,8 +702,13 @@ class SftpPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
 
+        # Historia jak w przeglądarce: gdzie byliśmy (back) i dokąd cofnęliśmy (forward).
+        self._back, self._forward = [], []
+
         toolbar = QHBoxLayout()
         for text, tooltip, handler in (
+            ("◀", "Wstecz", self._go_back),
+            ("▶", "Do przodu", self._go_forward),
             ("⬆", "Do folderu nadrzędnego", self._go_up),
             ("🔄", "Odśwież", self.refresh),
             ("📁+", "Nowy folder", self._new_folder),
@@ -693,8 +761,23 @@ class SftpPanel(QWidget):
         return self.path.rstrip("/") + "/" + name
 
     def _navigate(self, path):
+        if (path or "/") != self.path:
+            self._back.append(self.path)
+            self._forward.clear()
         self.path = path or "/"
         self.refresh()
+
+    def _go_back(self):
+        if self._back:
+            self._forward.append(self.path)
+            self.path = self._back.pop()
+            self.refresh()
+
+    def _go_forward(self):
+        if self._forward:
+            self._back.append(self.path)
+            self.path = self._forward.pop()
+            self.refresh()
 
     def _go_up(self):
         if self.sftp:
@@ -1051,8 +1134,37 @@ def selftest():
     panel = SftpPanel(_NoSftpClient())
     assert panel.sftp is None, "atrapa bez transportu nie mogła dać działającego SFTP"
     assert not panel.list.isEnabled(), "panel bez SFTP musi być wyłączony"
+
+    # Historia katalogów: wstecz/do przodu jak w przeglądarce.
+    panel.path = "/"
+    panel._navigate("/etc")
+    panel._navigate("/etc/ssh")
+    panel._go_back()
+    assert panel.path == "/etc", panel.path
+    panel._go_back()
+    assert panel.path == "/"
+    panel._go_back()
+    assert panel.path == "/", "pusta historia nie może cofać dalej"
+    panel._go_forward()
+    assert panel.path == "/etc", panel.path
+    panel._navigate("/var")
+    panel._go_forward()
+    assert panel.path == "/var", "nowa ścieżka kasuje gałąź do przodu"
     panel.deleteLater()
     del app
+
+    # Podświetlanie składni: słowa kluczowe, IP, ścieżka, data.
+    line = "2024-01-02 10:00:00 ERROR: refused from 192.168.0.36 to /var/log/syslog"
+    colors = {line[start:start + n]: color for start, n, color, _ in highlight_spans(line)}
+    assert colors.get("ERROR") == "#e74c3c", colors
+    assert colors.get("refused") == "#e74c3c", colors
+    assert colors.get("192.168.0.36") == "#9b59b6", colors
+    assert colors.get("/var/log/syslog") == "#2980b9", colors
+    assert colors.get("2024-01-02 10:00:00") == "#7f8c8d", colors
+    assert not highlight_spans("zwykly tekst bez niczego"), "nie ma co kolorowac"
+    # Pierwsza reguła wygrywa: slowo kluczowe w sciezce nie gubi koloru bledu.
+    spans = highlight_spans("/var/log/error.log")
+    assert spans and spans[0][2] == "#e74c3c", spans
 
     print("ssh_terminal selftest OK")
 

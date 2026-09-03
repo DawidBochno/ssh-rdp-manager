@@ -76,7 +76,8 @@ przycisku zamknięcia (`tabBar().setTabButton(i, QTabBar.RightSide, None)`):
 `SftpPanel` otwiera **osobny kanał** (`paramiko.SFTPClient.from_transport(...)`)
 na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
 
-- Pasek ścieżki + przyciski: ▲ (do góry), 🔄 (odśwież), 📁+ (nowy folder),
+- Pasek ścieżki + przyciski: ◀ ▶ (historia jak w przeglądarce — `_back`/`_forward`,
+  nowa ścieżka kasuje gałąź „do przodu"), ▲ (do góry), 🔄 (odśwież), 📁+ (nowy folder),
   📤 (wyślij). Dwuklik na folder = wejście, na plik = pobranie
   (`QFileDialog.getSaveFileName`); menu pod prawym klawiszem = pobierz/usuń.
 - Gdy serwer nie daje SFTP (stary/ograniczony OpenSSH), `SftpPanel.sftp` zostaje
@@ -101,6 +102,14 @@ na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
 `_Reader` (QThread) czyta z kanału i sygnałem oddaje tekst do wątku GUI,
 `keyPressEvent` wysyła klawisze do powłoki.
 
+- **Podświetlanie składni** (wzorem MobaXterm): `TerminalHighlighter`
+  (`QSyntaxHighlighter` na dokumencie terminala) koloruje po **naszej** stronie,
+  więc działa też, gdy zdalny serwer nie wysyła kolorów. Reguły to lista
+  `HIGHLIGHT_RULES` (regex, kolor, pogrubienie) — błędy, ostrzeżenia, sukcesy,
+  IP, URL, ścieżki, daty, `user@host`. `highlight_spans()` jest czystą funkcją
+  (stąd asercje w `selftest()`), a **pierwsza pasująca reguła wygrywa** —
+  dlatego „error" w ścieżce zostaje czerwone. Przełącznik: Widok →
+  „Podświetlanie składni" (atrybut klasy, więc łapie też nowe zakładki).
 - **Brak emulacji VT100** — `strip_ansi()` wycina kolory i adresowanie kursora, więc
   `vim`/`htop`/`mc` będą wyglądać źle. Gdy będą potrzebne: `pyte` albo QTermWidget.
 - **Hasło opcjonalnie zapisywane** w `connections.json`, zaszyfrowane **DPAPI**
@@ -141,6 +150,22 @@ poleceń i zapamiętuje to, które odpowiedziało:
   w `last_stats`, `MainWindow._show_current_stats()` przywraca go po przełączeniu.
 - `close_session()` najpierw ustawia stop, potem zamyka klienta (to wybija wątek
   z blokującego odczytu), a `wait()` jest na końcu — inaczej Qt wywala proces.
+
+#### Serwery wbudowane (menu „Serwery")
+
+[`servers.py`](servers.py) — daemony po *naszej* stronie (wzorem „Embedded
+servers" z MobaXterm): zdalny serwer pobiera plik od nas, zamiast stawiać
+cokolwiek u siebie. Bez nowych zależności.
+
+- `HttpShare` — `http.server` ze stdlib, katalog tylko do odczytu.
+- `TftpShare` — RFC 1350 na gołym `socket` (odczyt i zapis, tryb octet); transfer
+  leci z **nowego portu**, tak działa TFTP. `_safe_path()` blokuje `../`.
+  Port 69 wymaga uprawnień administratora, więc domyślnie proponujemy 6969.
+- Menu działa jak przełącznik (`QAction` checkable): drugi klik zatrzymuje.
+  `MainWindow._servers` trzyma uruchomione, `closeEvent` je zamyka.
+- `selftest()` w `servers.py` robi **prawdziwy** transfer po pętli lokalnej
+  (HTTP `urlopen`, TFTP ręcznie sklecony RRQ + ACK) — plik 1500 B, czyli
+  ponad dwa bloki, żeby złapać błąd numerowania.
 
 #### Skrypty administracyjne (menu „Skrypty”)
 
@@ -192,6 +217,11 @@ i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), **zakładka
 „Home” i „+” (tymczasowe połączenia, wzorem MobaXterm)**, **graficzny SFTP po
 lewej w każdej sesji** (`SftpPanel`), self-testy.
+
+Grupy dostają domyślną ikonę `GROUP_ICON` („📁") przy tworzeniu i przy wczytywaniu
+starych wpisów bez ikony. Kolor (menu „Kolor…") siedzi w roli `COLOR_DATA`, zapisuje
+się jako `"color"` i `set_color()` rozprowadza go **rekurencyjnie** na wszystkie
+elementy w grupie — dziecko nie trzyma własnego koloru, tylko odziedziczony.
 
 Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
