@@ -137,8 +137,33 @@ def wait_for_pending(timeout_ms=3000):
 
 
 def strip_ansi(text):
-    """Usuwa sekwencje sterujące i normalizuje końce linii."""
-    return ANSI_RE.sub("", text).replace("\r\n", "\n").replace("\r", "")
+    r"""Usuwa sekwencje ANSI i normalizuje końce linii (samotne \r zostaje)."""
+    return ANSI_RE.sub("", text).replace("\r\n", "\n")
+
+
+# Reszta znaków sterujących (dzwonek itp.) — bez tego terminal rysuje kwadraciki.
+CONTROL_RE = re.compile(r"[\x00-\x07\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def output_ops(text):
+    r"""Rozbija wyjście powłoki na operacje: tekst, backspace, powrót karetki.
+
+    Powłoka kasuje znak sekwencją `\b \b` (cofnij, zamaluj spacją, cofnij),
+    a prompt przerysowuje przez `\r`. Bez zamiany tych dwóch znaków na
+    faktyczne operacje w dokumencie backspace zamiast kasować dorysowywał
+    kwadracik — znak sterujący wstawiony dosłownie.
+    """
+    ops = []
+    for chunk in re.split(r"([\x08\r])", text):
+        if chunk == "\x08":
+            ops.append(("bs", ""))
+        elif chunk == "\r":
+            ops.append(("cr", ""))
+        elif chunk:
+            cleaned = CONTROL_RE.sub("", chunk)
+            if cleaned:
+                ops.append(("text", cleaned))
+    return ops
 
 
 # Podświetlanie składni w terminalu (wzorem MobaXterm): zdalny serwer nie musi
@@ -208,6 +233,18 @@ def key_to_bytes(key, modifiers, text):
 def format_wait(seconds, timeout=CONNECT_TIMEOUT):
     """Tekst komunikatu o czasie oczekiwania."""
     return f"Czas oczekiwania: {int(seconds)} s (limit {timeout} s)"
+
+
+def apply_output(cursor, text):
+    """Wpisuje wyjście powłoki do dokumentu, wykonując backspace i powrót karetki."""
+    for op, payload in output_ops(text):
+        if op == "text":
+            cursor.insertText(payload)
+        elif op == "bs":
+            cursor.deletePreviousChar()
+        else:  # "cr" — powłoka przerysowuje linię od początku
+            cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
 
 
 class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -652,9 +689,11 @@ class SshTerminal(QPlainTextEdit):
         self.stats_changed.emit(text)
 
     def _append(self, text):
-        self.moveCursor(QTextCursor.End)
-        self.insertPlainText(strip_ansi(text))
-        self.moveCursor(QTextCursor.End)
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        apply_output(cursor, strip_ansi(text))
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
 
     def _on_closed(self):
         self._append("\n[sesja zakończona]\n")
@@ -1032,6 +1071,24 @@ def selftest():
     assert strip_ansi("\x1b[31mczerwony\x1b[0m") == "czerwony"
     assert strip_ansi("\x1b]0;tytul\x07tekst") == "tekst"
     assert strip_ansi("linia\r\ndruga") == "linia\ndruga"
+    assert strip_ansi("prompt\rnowy") == "prompt\rnowy", "samotny \\r rozbiera _append"
+
+    # Backspace: powłoka odsyła "\b \b" — ma skasować znak, a nie dorysować kwadracik.
+    assert output_ops("abc") == [("text", "abc")]
+    assert output_ops("abc\x08 \x08") == [
+        ("text", "abc"), ("bs", ""), ("text", " "), ("bs", ""),
+    ]
+    assert output_ops("\x07brzęk") == [("text", "brzęk")], "dzwonek to nie tekst"
+    assert output_ops("\rprompt") == [("cr", ""), ("text", "prompt")]
+    assert output_ops("") == []
+
+    # Ten sam ciąg wpisany do dokumentu ma faktycznie skasować znak.
+    editor = QPlainTextEdit()
+    apply_output(editor.textCursor(), strip_ansi("zabbix@srv:~$ asd\x08 \x08"))
+    assert editor.toPlainText() == "zabbix@srv:~$ as", repr(editor.toPlainText())
+    apply_output(editor.textCursor(), strip_ansi("\rnowy prompt$ "))
+    assert editor.toPlainText() == "nowy prompt$ ", repr(editor.toPlainText())
+    editor.deleteLater()
     assert strip_ansi("bez zmian") == "bez zmian"
 
     assert key_to_bytes(Qt.Key_Return, Qt.NoModifier, "\r") == "\r"

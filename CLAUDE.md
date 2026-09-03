@@ -110,6 +110,11 @@ na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
   (stąd asercje w `selftest()`), a **pierwsza pasująca reguła wygrywa** —
   dlatego „error" w ścieżce zostaje czerwone. Przełącznik: Widok →
   „Podświetlanie składni" (atrybut klasy, więc łapie też nowe zakładki).
+- **Backspace i przerysowanie linii**: powłoka kasuje znak sekwencją ` `,
+  a prompt odświeża przez ``. `output_ops()` tłumaczy oba znaki na operacje
+  (`bs`/`cr`/`text`), `apply_output()` wykonuje je na kursorze dokumentu.
+  Wcześniej wstawialiśmy je dosłownie i backspace **dorysowywał kwadracik**
+  zamiast kasować. `strip_ansi()` celowo **nie** usuwa już samotnego ``.
 - **Brak emulacji VT100** — `strip_ansi()` wycina kolory i adresowanie kursora, więc
   `vim`/`htop`/`mc` będą wyglądać źle. Gdy będą potrzebne: `pyte` albo QTermWidget.
 - **Hasło opcjonalnie zapisywane** w `connections.json`, zaszyfrowane **DPAPI**
