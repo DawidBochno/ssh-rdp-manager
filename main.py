@@ -18,20 +18,32 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QSplitter,
+    QTabBar,
     QTabWidget,
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ssh_terminal import SCRIPTS, SshTerminal, connect_with_progress, run_script, wait_for_pending
+from ssh_terminal import (
+    SCRIPTS,
+    SessionTab,
+    connect_with_progress,
+    run_script,
+    wait_for_pending,
+)
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
@@ -349,6 +361,36 @@ class ConnectionTree(QTreeWidget):
         self.save()
 
 
+class HomeTab(QWidget):
+    """Pulpit startowy — pierwsza, niezamykalna zakładka (wzorem MobaXterm)."""
+
+    def __init__(self, main_window):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.addStretch()
+
+        title = QLabel("Menedżer połączeń SSH/RDP")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Wybierz zapisane połączenie po lewej albo:")
+        subtitle.setAlignment(Qt.AlignCenter)
+        layout.addWidget(subtitle)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        quick_btn = QPushButton("➕ Nowe połączenie tymczasowe")
+        quick_btn.clicked.connect(main_window._quick_connect)
+        buttons.addWidget(quick_btn)
+        saved_btn = QPushButton("💾 Nowe zapisane połączenie")
+        saved_btn.clicked.connect(lambda: main_window.tree._add_connection(None))
+        buttons.addWidget(saved_btn)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        layout.addStretch()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -362,6 +404,18 @@ class MainWindow(QMainWindow):
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._show_current_stats)
+        self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
+
+        # "Home": pulpit startowy, zawsze pierwsza zakładka, bez przycisku zamknięcia.
+        home_index = self.tabs.addTab(HomeTab(self), "🏠 Home")
+        self.tabs.tabBar().setTabButton(home_index, QTabBar.RightSide, None)
+
+        # "+" jako ostatnia zakładka w pasku (jak nowa karta w przeglądarce) —
+        # nie jak zwykła zakładka: klik ma otwierać dialog, a nie stawać się aktywny.
+        self._plus_tab = QWidget()
+        plus_index = self.tabs.addTab(self._plus_tab, "+")
+        self.tabs.tabBar().setTabButton(plus_index, QTabBar.RightSide, None)
+        self.tabs.setTabToolTip(plus_index, "Nowe połączenie tymczasowe")
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.tree)
@@ -399,11 +453,11 @@ class MainWindow(QMainWindow):
         help_menu.addAction("O programie…", self._show_about)
 
     def _run_script(self, script):
-        terminal = self.tabs.currentWidget()
-        if not isinstance(terminal, SshTerminal):
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
             QMessageBox.information(self, "Skrypty", "Otwórz najpierw połączenie SSH.")
             return
-        run_script(self, terminal.client, script)
+        run_script(self, session.terminal.client, script)
 
     def _build_sidebar(self):
         """Pionowy pasek ikon po lewej, wzorem MobaXterm (Sessions/Tools/…)."""
@@ -457,6 +511,25 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
 
+        self._connect_and_add_tab(conn, password)
+
+    def _quick_connect(self):
+        """Połączenie „na szybko” z przycisku + — nie trafia do drzewa/pliku."""
+        dialog = ConnectionDialog(self)
+        dialog.setWindowTitle("Nowe połączenie tymczasowe")
+        dialog.save_password.setVisible(False)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        host = dialog.host.text().strip()
+        conn = {
+            "name": dialog.name.text().strip() or host,
+            "host": host,
+            "port": dialog.port.value(),
+            "username": dialog.username.text().strip(),
+        }
+        self._connect_and_add_tab(conn, dialog.password.text() or None)
+
+    def _connect_and_add_tab(self, conn, password):
         # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
         terminal = connect_with_progress(
             self, conn["host"], conn["port"], conn["username"], password
@@ -464,24 +537,35 @@ class MainWindow(QMainWindow):
         if terminal is None:
             return
 
-        terminal.stats_changed.connect(
-            lambda text, w=terminal: self._show_stats(w, text)
+        session = SessionTab(terminal)
+        session.terminal.stats_changed.connect(
+            lambda text, w=session: self._show_stats(w, text)
         )
-        index = self.tabs.addTab(terminal, name)
+        # Nowa karta wchodzi PRZED "+", żeby "+" zawsze zostawało ostatnie.
+        index = self.tabs.insertTab(self.tabs.count() - 1, session, conn["name"])
         self.tabs.setCurrentIndex(index)
-        terminal.setFocus()
+        session.terminal.setFocus()
+
+    def _on_tab_bar_clicked(self, index):
+        """"+" nie jest zwykłą zakładką — klik otwiera dialog, a nie ją aktywuje."""
+        if self.tabs.widget(index) is not self._plus_tab:
+            return
+        self.tabs.setCurrentIndex(index - 1)  # "+" jest zawsze ostatnie
+        self._quick_connect()
 
     def _close_tab(self, index):
         widget = self.tabs.widget(index)
+        if index == 0 or widget is self._plus_tab:
+            return  # "Home" i "+" nie mają przycisku zamknięcia, ale na wszelki wypadek
         self.tabs.removeTab(index)
-        if isinstance(widget, SshTerminal):
+        if isinstance(widget, SessionTab):
             widget.close_session()
         widget.deleteLater()
 
     def closeEvent(self, event):
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
-            if isinstance(widget, SshTerminal):
+            if isinstance(widget, SessionTab):
                 widget.close_session()
         wait_for_pending()  # anulowane łączenia; inaczej Qt wywala proces
         super().closeEvent(event)
@@ -562,14 +646,31 @@ def selftest():
     assert group.type() != CONNECTION_TYPE
     assert conn.data(0, CONNECTION_DATA)["host"] == "10.0.0.1"
 
+    # "Home" (pierwsza) i "+" (ostatnia) to stałe zakładki bez przycisku zamknięcia.
+    assert window.tabs.count() == 2, "startowe zakładki: Home i +"
+    assert window.tabs.tabBar().tabButton(0, QTabBar.RightSide) is None, "Home nie może mieć X"
+    assert window.tabs.tabBar().tabButton(1, QTabBar.RightSide) is None, "+ nie może mieć X"
+    window._close_tab(0)
+    window._close_tab(1)
+    assert window.tabs.count() == 2, "Home i + nie mogą dać się zamknąć"
+
+    # Klik w "+" ma otworzyć dialog (tu podmieniony), a nie zostać aktywną zakładką.
+    quick_connect_calls = []
+    window._quick_connect = lambda: quick_connect_calls.append(True)
+    window.tabs.setCurrentIndex(0)
+    window._on_tab_bar_clicked(1)  # "+" jest zawsze ostatnie
+    assert quick_connect_calls == [True], "klik w + nie otworzył dialogu"
+    assert window.tabs.currentIndex() == 0, "+ nie może zostać aktywną zakładką"
+
     window._on_item_activated(group, 0)
-    assert window.tabs.count() == 0, "grupa nie powinna otwierać zakładki"
+    assert window.tabs.count() == 2, "grupa nie powinna otwierać zakładki"
 
     # Istniejąca zakładka o tej nazwie musi zostać wybrana, zanim padnie
     # pytanie o hasło — inaczej dwuklik łączyłby się drugi raz.
-    window.tabs.addTab(QWidget(), "srv-01")
+    window.tabs.insertTab(window.tabs.count() - 1, QWidget(), "srv-01")
     window._open_connection_tab(data)
-    assert window.tabs.count() == 1, "ponowne otwarcie nie może duplikować zakładki"
+    assert window.tabs.count() == 3, "ponowne otwarcie nie może duplikować zakładki"
+    assert window.tabs.widget(window.tabs.count() - 1) is window._plus_tab, "+ musi zostać ostatnie"
 
     # Przeciąganie: korzeń nie odjeżdża, połączenie nie przyjmuje dzieci.
     assert not root.flags() & Qt.ItemIsDragEnabled, "korzeń musi zostać na miejscu"

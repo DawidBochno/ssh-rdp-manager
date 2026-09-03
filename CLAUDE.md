@@ -38,7 +38,9 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
 MainWindow
 └── QSplitter (poziomy)
     ├── ConnectionTree (QTreeWidget)  ← grupy i połączenia, menu pod prawym klikiem
-    └── QTabWidget                    ← SshTerminal na każde otwarte połączenie
+    └── QTabWidget                    ← "🏠 Home" | SessionTab... | "+" (zawsze pierwsza/ostatnia)
+        └── SessionTab (na każde otwarte połączenie)
+            └── QSplitter (poziomy): SftpPanel | SshTerminal
 statusBar()                           ← statystyki serwera z aktywnej zakładki
 ```
 
@@ -46,6 +48,46 @@ statusBar()                           ← statystyki serwera z aktywnej zakładk
   Dwuklik otwiera zakładkę tylko dla elementów tego typu.
 - Dane połączenia (`name`/`host`/`port`/`username`) siedzą w `item.setData(0, CONNECTION_DATA, ...)`.
 - Zakładki nie duplikują się — ponowne otwarcie przełącza na istniejącą.
+
+#### Zakładka „Home” i „+” (pulpit startowy, wzorem MobaXterm)
+
+`self.tabs` ma dwie **stałe** zakładki, dodane raz w `MainWindow.__init__`, obie bez
+przycisku zamknięcia (`tabBar().setTabButton(i, QTabBar.RightSide, None)`):
+
+- **„🏠 Home”** — zawsze indeks `0`. Prosty `HomeTab` z dwoma przyciskami:
+  nowe połączenie tymczasowe / nowe zapisane.
+- **„+”** — zawsze **ostatnia** zakładka. To nie jest przycisk w rogu widgetu
+  (`setCornerWidget`) — taki ląduje na krańcu całego okna, nie zaraz za ostatnią
+  kartą. Zamiast tego to zwykła (pusta) zakładka, a `tabBarClicked` (nie
+  `currentChanged` — musi złapać *każdy* klik, nawet gdy indeks się nie zmienia)
+  woła `_on_tab_bar_clicked()`: jeśli kliknięto „+”, **cofa** `currentIndex` na
+  poprzednią zakładkę i dopiero wtedy otwiera dialog — „+” nigdy nie staje się
+  aktywną, prawdziwą zakładką.
+- Nowe sesje wchodzą przez `insertTab(tabs.count() - 1, ...)`, czyli **przed**
+  „+” — dzięki temu „+” zawsze zostaje na końcu paska.
+- Tymczasowe połączenie (`_quick_connect`) używa `ConnectionDialog` z ukrytym
+  checkboxem zapisu hasła — nic nie trafia do drzewa ani do `connections.json`,
+  sesja znika bez śladu po zamknięciu karty.
+
+#### Graficzny SFTP po lewej stronie zakładki
+
+`SessionTab` (w `ssh_terminal.py`) to widget faktycznie wkładany do `QTabWidget`:
+`QSplitter` z `SftpPanel` po lewej i `SshTerminal` po prawej — jak w MobaXterm.
+`SftpPanel` otwiera **osobny kanał** (`paramiko.SFTPClient.from_transport(...)`)
+na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
+
+- Pasek ścieżki + przyciski: ▲ (do góry), 🔄 (odśwież), 📁+ (nowy folder),
+  📤 (wyślij). Dwuklik na folder = wejście, na plik = pobranie
+  (`QFileDialog.getSaveFileName`); menu pod prawym klawiszem = pobierz/usuń.
+- Gdy serwer nie daje SFTP (stary/ograniczony OpenSSH), `SftpPanel.sftp` zostaje
+  `None`, a panel się **wyłącza** (lista nieaktywna, komunikat) zamiast wywalić
+  aplikację — testowane atrapą klienta bez transportu w `selftest()`.
+- `SessionTab.last_stats` to `@property` przekazujące do `self.terminal.last_stats`
+  — dzięki temu `MainWindow._show_current_stats()` nie musi wiedzieć, że pod
+  zakładką siedzi teraz splitter, a nie sam terminal.
+- ponytail: `listdir`/`get`/`put` wołane wprost na wątku GUI — dla admina po
+  LAN/VPN to milisekundy. Przy wolnych/dużych transferach przenieść na `QThread`
+  jak `_StatsPoller`.
 
 ### Terminal SSH
 
@@ -147,15 +189,21 @@ i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 **zapis haseł szyfrowanych DPAPI**, **statystyki serwera na dolnym pasku**
 (CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych; Linux i Windows),
 **pasek menu u góry i pasek boczny po lewej** (wzorem MobaXterm), **11 gotowych
-skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), self-testy.
+skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), **zakładka
+„Home” i „+” (tymczasowe połączenia, wzorem MobaXterm)**, **graficzny SFTP po
+lewej w każdej sesji** (`SftpPanel`), self-testy.
 
 Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skleja ją
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
 `item.text(0)` wprost, bo złapiesz emoji.
 
 Świadomie pominięte — dodać gdy będzie potrzebne:
-- **RDP** — niepodpięte (kierunek: FreeRDP osadzony w oknie).
+- **RDP** — niepodpięte (kierunek: FreeRDP osadzony w oknie). To osobna, większa
+  funkcja niż SSH/SFTP: inny protokół, inna zależność (FreeRDP), nie da się
+  dołożyć do `paramiko.Transport` jak SFTP.
 - Emulacja VT100, zmiana rozmiaru PTY przy zmianie rozmiaru okna, ikony.
+- Transfer plików w tle (SFTP na wątku GUI) i przeciąganie plików myszką
+  (na razie tylko przyciski/menu) — patrz ponytail-komentarz przy `SftpPanel`.
 
 ## Testy
 
