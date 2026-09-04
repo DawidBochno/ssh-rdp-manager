@@ -120,3 +120,62 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
   Manager, poza naszym plikiem i poza naszą kontrolą przy odinstalowaniu.
 - **Kolorowanie po stronie serwera (pełne ANSI)** — do czasu emulacji VT100
   własne `HIGHLIGHT_RULES` działają nawet gdy serwer kolorów nie wysyła.
+
+## Pomysły na przyszłość (druga runda)
+
+Zebrane po przeglądzie, **poza** listami powyżej. Bez oceny kosztu tam, gdzie
+zależy od zakresu; ⭐ = najtańsze z realnym zyskiem.
+
+### Sesje i połączenia
+
+- [ ] **Menedżer poświadczeń** (M) — jedno konto (login + hasło + klucz) współdzielone
+      przez wiele wpisów, zamiast wpisywać to samo w każdym.
+- [ ] **Zmienne w połączeniach** (`%h`, `%u`) (S) — w poleceniach startowych i skryptach.
+- [ ] **Historia połączeń / „ostatnio używane"** (S) — lista pod Home, z czasem
+      ostatniego logowania.
+- [ ] ⭐ **Filtrowanie drzewa i ulubione** (S) — pole szukania nad drzewem, filtr po
+      nazwie i hoście.
+- [ ] **Tagi na połączeniach** (S) — `prod`, `db`, `klient-X`, plus filtr po tagu.
+- [ ] **Telnet i połączenie szeregowe (COM)** (M) — `pyserial`, przydatne przy
+      switchach i UPS-ach.
+- [ ] **Serwer skoku dla całej grupy** (S) — bastion ustawiany raz na grupie,
+      dziedziczony jak kolor; wymaga wpierw jump hosta z listy wyżej.
+- [ ] **„Połącz na próbę" w formularzu** (S) — sprawdza dane bez otwierania zakładki.
+
+### Terminal
+
+- [ ] **Autouzupełnianie z historii poleceń** (M) — podpowiedź jak w fish, z lokalnej
+      historii wpisanych komend.
+- [ ] **Makra — własne przyciski wysyłające tekst** (S) do bieżącej sesji.
+- [ ] **Wyzwalacze na tekst** (S) — regex w wyjściu → powiadomienie systemowe
+      (`FAILED`, `Kernel panic`). `HIGHLIGHT_RULES` już mają połowę roboty.
+- [ ] ⭐ **Timestampy na linii** (S) — przełącznik: każda linia poprzedzona godziną.
+- [ ] **Kopiowanie zaznaczenia automatycznie** (S) — zwyczaj X11, plus Ctrl+Shift+C.
+- [ ] **Eksport wyjścia sesji do HTML** (S) — z kolorami z podświetlania.
+
+### SFTP i pliki
+
+- [ ] **Drugi panel — lokalny** (M) — klasyczny widok dwupanelowy, kopiowanie w obie strony.
+- [ ] **Synchronizacja katalogu** (M) — jednostronna, porównanie po rozmiarze i dacie.
+- [ ] **Kolejka transferów** (M) — zamiast blokowania `QEventLoop` po jednym pliku.
+- [ ] **Podgląd pliku tekstowego bez pobierania** (S) — pierwsze N kB do okna z Ctrl+F.
+- [ ] ⭐ **Zakładki katalogów** (S) — `/var/log`, `/etc/nginx`, per połączenie.
+
+### Administracja
+
+- [ ] **Lista procesów z zabijaniem** (M) — tabela z `ps` / `Get-Process` i przyciskiem kill.
+- [ ] ⭐ **Menedżer usług** (M) — start/stop/restart `systemctl` / `Get-Service` z listy.
+- [ ] ⭐ **Podgląd logu na żywo** (M) — `tail -f` w osobnej zakładce, z filtrem.
+- [ ] **Wykresy CPU/RAM/sieci w czasie** (M) — sparkline na `QPainter` pod paskiem
+      statusu, historia prosto z pollera.
+- [ ] **Panel dysków i inode'ów** (S) — `df -h` w tabeli, ostrzeżenie przy >90%.
+- [ ] **Lista aktualizacji pakietów z instalacją jednym kliknięciem** (M).
+
+### Reszta
+
+- [ ] ⭐ **Powiadomienia systemowe** (S) — koniec długiego polecenia albo transferu.
+- [ ] **Tryb tylko do odczytu dla zakładki** (S) — blokada wysyłania klawiszy,
+      do demonstracji i prezentacji.
+- [ ] **Dziennik audytu** (S) — kto, kiedy, co uruchomił; plik lokalny.
+- [ ] **Sprawdzanie certyfikatów TLS hosta** (S) — data wygaśnięcia, stdlib `ssl`.
+- [ ] ⭐ **Generator kluczy SSH** (M) — plus wgranie do `authorized_keys` jednym kliknięciem.
