@@ -17,6 +17,10 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
 - [x] **Klucz SSH per połączenie** — pole `key_file` w formularzu i w `client.connect()`.
 - [x] **Transfer SFTP w tle** — `_Transfer` (QThread) z paskiem postępu.
 - [x] **Zapamiętywanie układu okna** — rozmiar okna i podział splittera w `QSettings`.
+- [x] **Sprawdzanie aktualizacji z GitHuba** — `update.py`, pytanie przy starcie,
+      pobranie przez `git pull --ff-only`.
+- [x] **Skaner sieci** — `scanner.py`, menu „Programy”; ping + tablica ARP,
+      otwieranie sesji i kopiowanie z menu podręcznego.
 
 ## Proponowana kolejność dalej
 
@@ -67,9 +71,9 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
 - [ ] **Automatyczne ponowne łączenie po zerwaniu** (M) — z limitem prób,
       inaczej zrobi się pętla dobijająca się do wyłączonego serwera.
 - [ ] **Notatki do połączenia** (S).
-- [ ] **Sprawdzanie dostępności (port 22) i kropka statusu w drzewie** (M) — kuszące,
-      ale to wątek odpytujący *wszystkie* wpisy; łatwo zrobić z tego skaner portów
-      po całej sieci klienta. Odstęp konfigurowalny, domyślnie rzadko.
+- [ ] **Kropka statusu przy wpisach w drzewie** (M) — sprawdzanie samych zapisanych
+      połączeń; odstęp konfigurowalny, domyślnie rzadko. Sprawdzanie portu jest już
+      w `scanner.py`, więc zostaje wątek i odświeżanie drzewa.
 - [ ] **Wake-on-LAN** (S) — magic packet to kilkanaście linii na `socket`.
 
 ## SFTP
