@@ -11,7 +11,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QBrush, QColor
+from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -42,6 +42,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import i18n
+from i18n import t
 from servers import SERVERS
 from ssh_terminal import (
     SCRIPTS,
@@ -71,9 +73,6 @@ ICONS = ["📁", "🗂️", "🖥️", "🐧", "🪟",
 # więc plik skopiowany na inny komputer jest bezużyteczny.
 CAN_STORE_PASSWORDS = sys.platform == "win32"
 
-IDLE_STATUS = "Brak aktywnego połączenia"
-
-
 class _Blob(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
@@ -83,7 +82,7 @@ def _dpapi(func, data):
     blob_in = _Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
     blob_out = _Blob()
     if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
-        raise OSError("DPAPI odmówiło operacji")
+        raise OSError("DPAPI refused the operation")
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
     finally:
@@ -110,7 +109,7 @@ class ConnectionDialog(QDialog):
 
     def __init__(self, parent=None, data=None):
         super().__init__(parent)
-        self.setWindowTitle("Połączenie SSH")
+        self.setWindowTitle(t("dlg_ssh_connection"))
         data = data or {}
 
         self.name = QLineEdit(data.get("name", ""))
@@ -123,18 +122,18 @@ class ConnectionDialog(QDialog):
         stored = decrypt_password(data["password"]) if data.get("password") else ""
         self.password = QLineEdit(stored or "")
         self.password.setEchoMode(QLineEdit.Password)
-        self.save_password = QCheckBox("Zapisz hasło (szyfrowane kontem Windows)")
+        self.save_password = QCheckBox(t("chk_save_password"))
         self.save_password.setChecked(bool(stored))
         self.save_password.setEnabled(CAN_STORE_PASSWORDS)
         if not CAN_STORE_PASSWORDS:
-            self.save_password.setToolTip("Zapis hasła działa tylko na Windows.")
+            self.save_password.setToolTip(t("tip_save_password_windows_only"))
 
         form = QFormLayout(self)
-        form.addRow("Nazwa:", self.name)
-        form.addRow("Host:", self.host)
-        form.addRow("Port:", self.port)
-        form.addRow("Użytkownik:", self.username)
-        form.addRow("Hasło:", self.password)
+        form.addRow(t("fld_name"), self.name)
+        form.addRow(t("fld_host"), self.host)
+        form.addRow(t("fld_port"), self.port)
+        form.addRow(t("fld_user"), self.username)
+        form.addRow(t("fld_password"), self.password)
         form.addRow("", self.save_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -144,7 +143,7 @@ class ConnectionDialog(QDialog):
 
     def accept(self):
         if not self.host.text().strip():
-            QMessageBox.warning(self, "Brak danych", "Podaj adres hosta.")
+            QMessageBox.warning(self, t("err_missing_data_title"), t("err_missing_host"))
             return
         super().accept()
 
@@ -167,7 +166,7 @@ class ConnectionTree(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderHidden(False)
-        self.setHeaderLabel("Połączenia")
+        self.setHeaderLabel(t("tree_header"))
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -175,7 +174,7 @@ class ConnectionTree(QTreeWidget):
         self.setDragDropMode(QTreeWidget.InternalMove)
         self.setDefaultDropAction(Qt.MoveAction)
 
-        root = QTreeWidgetItem(["Wszystkie połączenia"])
+        root = QTreeWidgetItem([t("tree_root")])
         self.addTopLevelItem(root)
         # Korzenia nie da się przeciągnąć — wszystko ma zostać pod nim.
         root.setFlags(root.flags() & ~Qt.ItemIsDragEnabled)
@@ -226,11 +225,11 @@ class ConnectionTree(QTreeWidget):
             )
         except OSError as error:
             QMessageBox.warning(
-                self, "Błąd zapisu", f"Nie udało się zapisać połączeń:\n\n{error}"
+                self, t("err_save_title"), t("err_save_body", error)
             )
 
     def _build(self, parent, node):
-        name = str(node.get("name", "bez nazwy"))
+        name = str(node.get("name", t("unnamed")))
         default_icon = "" if "connection" in node else GROUP_ICON
         if "connection" in node:
             item = QTreeWidgetItem(parent, [], CONNECTION_TYPE)
@@ -259,9 +258,9 @@ class ConnectionTree(QTreeWidget):
                 backup = None
             QMessageBox.warning(
                 self,
-                "Błąd odczytu",
-                f"Nie udało się wczytać zapisanych połączeń:\n\n{error}\n\n"
-                + (f"Kopia uszkodzonego pliku: {backup}" if backup else ""),
+                t("err_load_title"),
+                t("err_load_body", error)
+                + (t("err_load_backup", backup) if backup else ""),
             )
             return
 
@@ -284,7 +283,7 @@ class ConnectionTree(QTreeWidget):
         """
         nodes = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(nodes, list):
-            raise ValueError("plik nie zawiera listy połączeń")
+            raise ValueError(t("err_not_a_list"))
         root = self.topLevelItem(0)
         if replace:
             root.takeChildren()
@@ -313,20 +312,20 @@ class ConnectionTree(QTreeWidget):
     def _show_context_menu(self, pos):
         item = self.itemAt(pos)
         menu = QMenu(self)
-        menu.addAction("Nowa grupa", lambda: self._add_group(item))
-        menu.addAction("Nowe połączenie", lambda: self._add_connection(item))
+        menu.addAction(t("menu_new_group"), lambda: self._add_group(item))
+        menu.addAction(t("menu_new_connection"), lambda: self._add_connection(item))
         if item is not None and item is not self.topLevelItem(0):
             menu.addSeparator()
             if item.type() == CONNECTION_TYPE:
-                menu.addAction("Edytuj połączenie…", lambda: self._edit_connection(item))
+                menu.addAction(t("menu_edit_connection"), lambda: self._edit_connection(item))
             else:
-                menu.addAction("Zmień nazwę…", lambda: self._rename_group(item))
-            menu.addAction("Ikona…", lambda: self._pick_icon(item))
-            menu.addAction("Kolor…", lambda: self._pick_color(item))
+                menu.addAction(t("menu_rename"), lambda: self._rename_group(item))
+            menu.addAction(t("menu_icon"), lambda: self._pick_icon(item))
+            menu.addAction(t("menu_color"), lambda: self._pick_color(item))
             if item.data(0, COLOR_DATA):
-                menu.addAction("Bez koloru", lambda: self._clear_color(item))
+                menu.addAction(t("menu_no_color"), lambda: self._clear_color(item))
             menu.addSeparator()
-            menu.addAction("Usuń", lambda: self._remove_item(item))
+            menu.addAction(t("menu_delete"), lambda: self._remove_item(item))
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _apply_connection(self, item, data):
@@ -335,7 +334,7 @@ class ConnectionTree(QTreeWidget):
         item.setToolTip(
             0,
             f"{data.get('username', '')}@{data.get('host', '')}:{data.get('port', 22)}"
-            + ("\n(hasło zapisane)" if data.get("password") else ""),
+            + (t("tip_password_saved") if data.get("password") else ""),
         )
         self.set_label(item, data["name"], item.data(0, ICON_DATA) or "")
 
@@ -348,7 +347,7 @@ class ConnectionTree(QTreeWidget):
 
     def _rename_group(self, item):
         name, ok = QInputDialog.getText(
-            self, "Zmień nazwę", "Nazwa grupy:", text=self.item_name(item)
+            self, t("dlg_rename_title"), t("dlg_group_name"), text=self.item_name(item)
         )
         if not ok or not name:
             return
@@ -366,7 +365,7 @@ class ConnectionTree(QTreeWidget):
 
     def _pick_color(self, item):
         current = QColor(item.data(0, COLOR_DATA) or "#ffffff")
-        color = QColorDialog.getColor(current, self, "Kolor grupy")
+        color = QColorDialog.getColor(current, self, t("dlg_group_color"))
         if not color.isValid():
             return
         self.set_color(item, color.name())
@@ -377,12 +376,12 @@ class ConnectionTree(QTreeWidget):
         self.save()
 
     def _pick_icon(self, item):
-        choices = ICONS + ["(bez ikony)"]
+        choices = ICONS + [t("icon_none")]
         current = item.data(0, ICON_DATA) or ""
         icon, ok = QInputDialog.getItem(
             self,
-            "Ikona",
-            "Wybierz ikonę:",
+            t("dlg_icon_title"),
+            t("dlg_icon_prompt"),
             choices,
             choices.index(current) if current in choices else len(choices) - 1,
             False,
@@ -393,7 +392,7 @@ class ConnectionTree(QTreeWidget):
         self.save()
 
     def _add_group(self, parent_item):
-        name, ok = QInputDialog.getText(self, "Nowa grupa", "Nazwa grupy:")
+        name, ok = QInputDialog.getText(self, t("menu_new_group"), t("dlg_group_name"))
         if not ok or not name:
             return
         parent_item = parent_item or self.topLevelItem(0)
@@ -418,8 +417,8 @@ class ConnectionTree(QTreeWidget):
             return
         if item.childCount() and QMessageBox.question(
             self,
-            "Usunąć grupę?",
-            f"„{self.item_name(item)}” zawiera {item.childCount()} elementów. Usunąć wszystko?",
+            t("confirm_delete_group_title"),
+            t("confirm_delete_group_body", self.item_name(item), item.childCount()),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         ) != QMessageBox.Yes:
@@ -437,21 +436,21 @@ class HomeTab(QWidget):
         layout = QVBoxLayout(self)
         layout.addStretch()
 
-        title = QLabel("Menedżer połączeń SSH/RDP")
+        title = QLabel(t("app_title"))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 20px; font-weight: bold;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Wybierz zapisane połączenie po lewej albo:")
+        subtitle = QLabel(t("home_subtitle"))
         subtitle.setAlignment(Qt.AlignCenter)
         layout.addWidget(subtitle)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
-        quick_btn = QPushButton("➕ Nowe połączenie tymczasowe")
+        quick_btn = QPushButton(t("home_quick_btn"))
         quick_btn.clicked.connect(main_window._quick_connect)
         buttons.addWidget(quick_btn)
-        saved_btn = QPushButton("💾 Nowe zapisane połączenie")
+        saved_btn = QPushButton(t("home_saved_btn"))
         saved_btn.clicked.connect(lambda: main_window.tree._add_connection(None))
         buttons.addWidget(saved_btn)
         buttons.addStretch()
@@ -459,7 +458,7 @@ class HomeTab(QWidget):
 
         # Wyszukiwarka zapisanych połączeń — po nazwie, hoście i użytkowniku.
         self.search = QLineEdit()
-        self.search.setPlaceholderText("🔍 Szukaj połączenia (nazwa, host, użytkownik)…")
+        self.search.setPlaceholderText(t("home_search_placeholder"))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.refresh)
         self.search.returnPressed.connect(self._open_first)
@@ -517,7 +516,7 @@ class HomeTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Menedżer połączeń SSH/RDP")
+        self.setWindowTitle(t("app_title"))
         self.resize(1000, 650)
 
         self.tree = ConnectionTree()
@@ -530,7 +529,7 @@ class MainWindow(QMainWindow):
         self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
 
         # "Home": pulpit startowy, zawsze pierwsza zakładka, bez przycisku zamknięcia.
-        home_index = self.tabs.addTab(HomeTab(self), "🏠 Home")
+        home_index = self.tabs.addTab(HomeTab(self), t("tab_home"))
         self.tabs.tabBar().setTabButton(home_index, QTabBar.RightSide, None)
 
         # "+" jako ostatnia zakładka w pasku (jak nowa karta w przeglądarce) —
@@ -538,7 +537,7 @@ class MainWindow(QMainWindow):
         self._plus_tab = QWidget()
         plus_index = self.tabs.addTab(self._plus_tab, "+")
         self.tabs.tabBar().setTabButton(plus_index, QTabBar.RightSide, None)
-        self.tabs.setTabToolTip(plus_index, "Nowe połączenie tymczasowe")
+        self.tabs.setTabToolTip(plus_index, t("dlg_quick_title"))
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.tree)
@@ -552,73 +551,86 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_sidebar()
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
-        self.statusBar().showMessage(IDLE_STATUS)
+        self.statusBar().showMessage(t("status_idle"))
 
     def _build_menu(self):
         """Pasek menu u góry (wzorem MobaXterm), z akcjami znanymi już z menu drzewa."""
         menu = self.menuBar()
 
-        connection_menu = menu.addMenu("&Połączenie")
-        connection_menu.addAction("Nowa grupa…", lambda: self.tree._add_group(self.tree.currentItem()))
-        connection_menu.addAction("Nowe połączenie…", lambda: self.tree._add_connection(self.tree.currentItem()))
+        connection_menu = menu.addMenu(t("menu_connection"))
+        connection_menu.addAction(t("menu_new_group_dots"), lambda: self.tree._add_group(self.tree.currentItem()))
+        connection_menu.addAction(t("menu_new_connection_dots"), lambda: self.tree._add_connection(self.tree.currentItem()))
         connection_menu.addSeparator()
-        connection_menu.addAction("Eksportuj połączenia…", self._export_connections)
-        connection_menu.addAction("Importuj połączenia…", self._import_connections)
+        connection_menu.addAction(t("menu_export"), self._export_connections)
+        connection_menu.addAction(t("menu_import"), self._import_connections)
         connection_menu.addSeparator()
-        connection_menu.addAction("Zakończ", self.close)
+        connection_menu.addAction(t("menu_quit"), self.close)
 
-        view_menu = menu.addMenu("&Widok")
-        self.toggle_tree_action = QAction("Lista połączeń", self, checkable=True, checked=True)
+        view_menu = menu.addMenu(t("menu_view"))
+        self.toggle_tree_action = QAction(t("menu_connection_list"), self, checkable=True, checked=True)
         self.toggle_tree_action.toggled.connect(self.tree.setVisible)
         view_menu.addAction(self.toggle_tree_action)
         highlight_action = QAction(
-            "Podświetlanie składni", self, checkable=True, checked=TerminalHighlighter.enabled
+            t("menu_highlighting"), self, checkable=True, checked=TerminalHighlighter.enabled
         )
         highlight_action.toggled.connect(self._toggle_highlighting)
         view_menu.addAction(highlight_action)
 
+        # Wybór języka: zapis idzie do QSettings, okno czyta go przy starcie.
+        language_menu = view_menu.addMenu(t("menu_language"))
+        language_group = QActionGroup(self)  # kropka przy jednym języku, nie przy obu
+        for code, name in i18n.LANGUAGES.items():
+            action = QAction(name, self, checkable=True, checked=code == i18n.language())
+            action.triggered.connect(lambda _checked, c=code: self._set_language(c))
+            language_group.addAction(action)
+            language_menu.addAction(action)
+
         # „Serwery wbudowane" — daemony po naszej stronie, wzorem MobaXterm.
-        servers_menu = menu.addMenu("Se&rwery")
+        servers_menu = menu.addMenu(t("menu_servers"))
         for spec in SERVERS:
-            action = QAction(spec["label"], self, checkable=True)
+            action = QAction(t(spec["label"]), self, checkable=True)
             action.triggered.connect(lambda _checked, s=spec, a=action: self._toggle_server(s, a))
             servers_menu.addAction(action)
         servers_menu.addSeparator()
-        servers_menu.addAction("Zatrzymaj wszystkie", self._stop_servers)
+        servers_menu.addAction(t("menu_stop_all"), self._stop_servers)
 
-        scripts_menu = menu.addMenu("&Skrypty")
+        scripts_menu = menu.addMenu(t("menu_scripts"))
         for script in SCRIPTS:
-            scripts_menu.addAction(script["label"], lambda s=script: self._run_script(s))
+            scripts_menu.addAction(t(script["label"]), lambda s=script: self._run_script(s))
 
-        help_menu = menu.addMenu("Pomo&c")
-        help_menu.addAction("O programie…", self._show_about)
+        help_menu = menu.addMenu(t("menu_help"))
+        help_menu.addAction(t("menu_about"), self._show_about)
+
+    def _set_language(self, code):
+        """Zapisuje wybór; przebudowa całego okna zabiłaby otwarte sesje SSH."""
+        i18n.save(code)
+        QMessageBox.information(self, t("menu_language"), t("lang_restart"))
 
     def _export_connections(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Eksport połączeń", "polaczenia.json", "JSON (*.json)"
+            self, t("dlg_export_title"), t("export_default_name"), t("json_filter")
         )
         if not path:
             return
         try:
             self.tree.export_to(path)
         except OSError as error:
-            QMessageBox.warning(self, "Eksport", f"Nie udało się zapisać:\n\n{error}")
+            QMessageBox.warning(self, t("export_short"), t("err_export", error))
             return
         QMessageBox.information(
             self,
-            "Eksport",
-            f"Zapisano do:\n{path}\n\nZapisane hasła są szyfrowane kontem Windows —"
-            " na innym komputerze nie dadzą się odczytać.",
+            t("export_short"),
+            t("export_done", path),
         )
 
     def _import_connections(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import połączeń", "", "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, t("dlg_import_title"), "", t("json_filter"))
         if not path:
             return
         answer = QMessageBox.question(
             self,
-            "Import",
-            "Zastąpić obecną listę połączeń?\n\nTak = zastąp, Nie = dopisz do istniejącej.",
+            t("import_short"),
+            t("import_question"),
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
             QMessageBox.No,
         )
@@ -627,9 +639,9 @@ class MainWindow(QMainWindow):
         try:
             count = self.tree.import_from(path, answer == QMessageBox.Yes)
         except (OSError, ValueError) as error:
-            QMessageBox.warning(self, "Import", f"Nie udało się wczytać:\n\n{error}")
+            QMessageBox.warning(self, t("import_short"), t("err_import", error))
             return
-        QMessageBox.information(self, "Import", f"Wczytano gałęzi: {count}")
+        QMessageBox.information(self, t("import_short"), t("import_done", count))
 
     def _toggle_highlighting(self, on):
         """Kolorowanie tekstu w terminalu — wspólne dla wszystkich zakładek."""
@@ -645,14 +657,16 @@ class MainWindow(QMainWindow):
         if running:
             running.stop()
             action.setChecked(False)
-            self.statusBar().showMessage(f"{running.label}: zatrzymany", 5000)
+            self.statusBar().showMessage(t("srv_stopped_one", running.label), 5000)
             return
 
-        directory = QFileDialog.getExistingDirectory(self, "Katalog do udostępnienia")
+        directory = QFileDialog.getExistingDirectory(self, t("srv_dir_prompt"))
         if not directory:
             action.setChecked(False)
             return
-        port, ok = QInputDialog.getInt(self, spec["label"], "Port:", spec["port"], 1, 65535)
+        port, ok = QInputDialog.getInt(
+            self, t(spec["label"]), t("fld_port"), spec["port"], 1, 65535
+        )
         if not ok:
             action.setChecked(False)
             return
@@ -662,17 +676,16 @@ class MainWindow(QMainWindow):
             action.setChecked(False)
             QMessageBox.warning(
                 self,
-                spec["label"],
-                f"Nie udało się uruchomić na porcie {port}:\n\n{error}\n\n"
-                "Porty poniżej 1024 wymagają uprawnień administratora.",
+                t(spec["label"]),
+                t("srv_start_error", port, error),
             )
             return
         self._servers[spec["label"]] = server
         action.setChecked(True)
         QMessageBox.information(
             self,
-            spec["label"],
-            f"Serwer działa.\n\nAdres: {server.url}\nKatalog: {directory}",
+            t(spec["label"]),
+            t("srv_running", server.url, directory),
         )
 
     def _stop_servers(self):
@@ -680,20 +693,20 @@ class MainWindow(QMainWindow):
             server.stop()
         self._servers.clear()
         for action in self.menuBar().findChildren(QAction):
-            if action.isCheckable() and action.text() in [s["label"] for s in SERVERS]:
+            if action.isCheckable() and action.text() in [t(s["label"]) for s in SERVERS]:
                 action.setChecked(False)
-        self.statusBar().showMessage("Serwery zatrzymane", 5000)
+        self.statusBar().showMessage(t("srv_all_stopped"), 5000)
 
     def _run_script(self, script):
         session = self.tabs.currentWidget()
         if not isinstance(session, SessionTab):
-            QMessageBox.information(self, "Skrypty", "Otwórz najpierw połączenie SSH.")
+            QMessageBox.information(self, t("scripts_short"), t("scripts_need_session"))
             return
         run_script(self, session.terminal.client, script)
 
     def _build_sidebar(self):
         """Pionowy pasek ikon po lewej, wzorem MobaXterm (Sessions/Tools/…)."""
-        sidebar = QToolBar("Pasek boczny")
+        sidebar = QToolBar(t("sidebar"))
         sidebar.setMovable(False)
         sidebar.setFloatable(False)
         sidebar.setOrientation(Qt.Vertical)
@@ -703,7 +716,7 @@ class MainWindow(QMainWindow):
 
     def _show_about(self):
         QMessageBox.information(
-            self, "O programie", "Menedżer połączeń SSH/RDP\nPython + PySide6"
+            self, t("about_title"), t("about_body")
         )
 
     def _show_stats(self, widget, text):
@@ -713,7 +726,7 @@ class MainWindow(QMainWindow):
 
     def _show_current_stats(self, _index=None):
         widget = self.tabs.currentWidget()
-        self.statusBar().showMessage(getattr(widget, "last_stats", "") or IDLE_STATUS)
+        self.statusBar().showMessage(getattr(widget, "last_stats", "") or t("status_idle"))
 
     def _on_item_activated(self, item, _column):
         if item.type() != CONNECTION_TYPE:
@@ -733,8 +746,8 @@ class MainWindow(QMainWindow):
         if password is None:
             password, ok = QInputDialog.getText(
                 self,
-                "Uwierzytelnianie",
-                f"Hasło dla {conn['username']}@{conn['host']}\n(puste = klucz SSH):",
+                t("dlg_auth_title"),
+                t("dlg_auth_body", conn["username"], conn["host"]),
                 QLineEdit.Password,
             )
             if not ok:
@@ -745,7 +758,7 @@ class MainWindow(QMainWindow):
     def _quick_connect(self):
         """Połączenie „na szybko” z przycisku + — nie trafia do drzewa/pliku."""
         dialog = ConnectionDialog(self)
-        dialog.setWindowTitle("Nowe połączenie tymczasowe")
+        dialog.setWindowTitle(t("dlg_quick_title"))
         dialog.save_password.setVisible(False)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -806,6 +819,8 @@ def selftest():
     import servers
     import ssh_terminal
     import tempfile
+
+    i18n.use("en")  # testy sprawdzaja napisy domyslnego jezyka
     from PySide6.QtWidgets import QWidget
 
     global CONFIG_FILE
@@ -974,13 +989,23 @@ def selftest():
     window.toggle_tree_action.setChecked(True)
 
     # Dolny pasek: bez zakładek i dla obcego widgetu nie może się wywalić.
-    assert window.statusBar().currentMessage() == IDLE_STATUS
+    assert window.statusBar().currentMessage() == t("status_idle")
     window._show_current_stats()
-    assert window.statusBar().currentMessage() == IDLE_STATUS
+    assert window.statusBar().currentMessage() == t("status_idle")
     window._show_stats(QWidget(), "statystyki obcej zakładki")
-    assert window.statusBar().currentMessage() == IDLE_STATUS, "pasek pokazał nie tę zakładkę"
+    assert window.statusBar().currentMessage() == t("status_idle"), "pasek pokazał nie tę zakładkę"
+
+    # Wybór języka: menu i napisy muszą realnie się przełączać.
+    assert window.tabs.tabText(0) == "🏠 Home", window.tabs.tabText(0)
+    i18n.use("pl")
+    assert ConnectionDialog().windowTitle() == "Połączenie SSH", "dialog nie idzie z i18n"
+    i18n.use("en")
+    assert ConnectionDialog().windowTitle() == "SSH connection"
+
+    i18n.selftest()
 
     ssh_terminal.selftest()
+    i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
     servers.selftest()
     del app
     print("main selftest OK")
@@ -988,6 +1013,7 @@ def selftest():
 
 def main():
     app = QApplication(sys.argv)
+    i18n.load()  # przed zbudowaniem okna — napisy czytane są raz
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

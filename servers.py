@@ -110,7 +110,7 @@ class TftpShare:
         path = self._safe_path(name)
         with self._session_socket() as session:
             if not path or not os.path.isfile(path):
-                self._error(session, client, "Nie ma takiego pliku")
+                self._error(session, client, "File not found")
                 return
             try:
                 with open(path, "rb") as handle:
@@ -133,7 +133,7 @@ class TftpShare:
         path = self._safe_path(name)
         with self._session_socket() as session:
             if not path:
-                self._error(session, client, "Ścieżka poza katalogiem")
+                self._error(session, client, "Path outside shared directory")
                 return
             try:
                 with open(path, "wb") as handle:
@@ -162,9 +162,11 @@ class TftpShare:
 # (plik ponad 32 MB). Dla „podaj plik do routera po LAN" wystarcza;
 # przy zawodnej sieci albo dużych obrazach przenieść na tftpy.
 
+# `label` to klucz tlumaczenia z i18n.py, nie gotowy napis — menu tlumaczy
+# go dopiero przy budowaniu, po wczytaniu wybranego jezyka.
 SERVERS = [
-    {"label": "Serwer HTTP…", "cls": HttpShare, "port": 8080},
-    {"label": "Serwer TFTP…", "cls": TftpShare, "port": 6969},
+    {"label": "srv_http", "cls": HttpShare, "port": 8080},
+    {"label": "srv_tftp", "cls": TftpShare, "port": 6969},
 ]
 
 
