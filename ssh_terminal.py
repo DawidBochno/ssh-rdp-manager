@@ -10,6 +10,7 @@ ponytail: brak emulacji VT100 — kolory i adresowanie kursora są odrzucane, wi
 programy pełnoekranowe (vim, htop, mc) będą wyglądać źle. Gdy będą potrzebne,
 podmień renderowanie na `pyte` (emulator ekranu w czystym Pythonie) albo QTermWidget.
 """
+import json
 import re
 import socket
 import stat
@@ -50,9 +51,35 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import i18n
+import notify
 from i18n import t
 
 CONNECT_TIMEOUT = 15  # sekundy
+
+# Czcionka terminala: jedna dla wszystkich zakładek i okien wyniku skryptu.
+# Wybór siedzi w QSettings, więc przeżywa restart, i wczytuje się leniwie —
+# `QFont` przed `QApplication` potrafi ostrzegać.
+DEFAULT_FONT = ("Consolas", 10)
+_font = None
+
+
+def terminal_font():
+    """Zapisana czcionka terminala; brak wpisu = `DEFAULT_FONT`."""
+    global _font
+    if _font is None:
+        stored = i18n.settings().value("terminal_font")
+        _font = QFont()
+        if not (stored and _font.fromString(stored)):
+            _font = QFont(*DEFAULT_FONT)
+    return _font
+
+
+def set_terminal_font(font):
+    """Zapamiętuje wybór i oddaje go nowym widgetom; istniejące zmienia menu."""
+    global _font
+    _font = font
+    i18n.settings().setValue("terminal_font", font.toString())
 
 # Wyjście `WINDOWS_STATS_CMD` do testów — Windows Server 2019.
 _WINDOWS_SAMPLE = """@UP
@@ -361,6 +388,27 @@ def terminal_size(width_px, height_px, char_width, line_height):
 def paste_bytes(text):
     r"""Tekst ze schowka w postaci oczekiwanej przez powłokę — Enter to `\r`."""
     return text.replace("\r\n", "\r").replace("\n", "\r")
+
+
+def stamp_lines(text, stamp, at_line_start):
+    r"""Dokleja znacznik czasu na początku każdej linii wyjścia.
+
+    Zwraca `(tekst, czy_kolejny_kawałek_zaczyna_linię)`. Stan trzeba przenosić
+    między wywołaniami, bo serwer przysyła linię w kilku kawałkach — inaczej
+    znacznik lądowałby w środku zdania. Czysta funkcja, stąd asercje w testach.
+    """
+    if not text:
+        return text, at_line_start
+    parts = text.split("\n")
+    out = []
+    for index, part in enumerate(parts):
+        if index and part == "" and index == len(parts) - 1:
+            break  # tekst kończy się \n — znacznik dopiero przy następnym kawałku
+        if (index or at_line_start) and part:
+            out.append(stamp + part)
+        else:
+            out.append(part)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else ""), text.endswith("\n")
 
 
 def format_wait(seconds, timeout=CONNECT_TIMEOUT):
@@ -798,9 +846,14 @@ class SshTerminal(QPlainTextEdit):
 
     stats_changed = Signal(str)
 
+    # Atrybuty klasy, nie instancji — przełącznik z menu ma łapać także zakładki
+    # otwarte później, dokładnie jak `TerminalHighlighter.enabled`.
+    timestamps = False
+
     def __init__(self, client, channel, parent=None):
         super().__init__(parent)
-        self.setFont(QFont("Consolas", 10))
+        self.setFont(terminal_font())
+        self._at_line_start = True
         self.setUndoRedoEnabled(False)
         self.document().setMaximumBlockCount(5000)  # ogranicz zużycie pamięci
         self.highlighter = TerminalHighlighter(self.document())
@@ -825,9 +878,14 @@ class SshTerminal(QPlainTextEdit):
         self.stats_changed.emit(text)
 
     def _append(self, text):
+        text = strip_ansi(text)
+        if self.timestamps:
+            text, self._at_line_start = stamp_lines(
+                text, time.strftime("[%H:%M:%S] "), self._at_line_start
+            )
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.End)
-        apply_output(cursor, strip_ansi(text))
+        apply_output(cursor, text)
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
 
@@ -862,6 +920,14 @@ class SshTerminal(QPlainTextEdit):
             channel.resize_pty(width=size[0], height=size[1])
         except Exception:
             pass  # zerwana sesja — czytelnik i tak zaraz to zgłosi
+
+    def send_startup(self, commands):
+        """Wysyła polecenia startowe (jedno na linię) tuż po zalogowaniu."""
+        if not commands or not self.channel or self.channel.closed:
+            return
+        for line in commands.splitlines():
+            if line.strip():
+                self.channel.send(line.strip() + "\r")
 
     def _paste(self):
         if not self.channel or self.channel.closed:
@@ -963,7 +1029,12 @@ def run_transfer(parent, sftp, mode, remote_path, local_path, title):
     loop.exec()
     dialog.close()
     worker.wait(1000)
-    return result.get("error", "")
+    error = result.get("error", "")
+    if not error:
+        # Duży transfer to moment, w którym admin robi coś innego — dymek
+        # w zasobniku wraca do niego, nawet gdy okno jest zminimalizowane.
+        notify.notify(t("notify_title"), t("notify_transfer_done", Path(remote_path).name))
+    return error
 
 # ponytail: listdir/get/put wołane wprost na wątku GUI — dla admina po LAN/VPN
 # to milisekundy, więc osobny wątek na razie nie jest wart złożoności.
@@ -1260,6 +1331,36 @@ SCRIPTS = [
 ]
 
 
+# Własne skrypty użytkownika: ten sam kształt słownika co wyżej, tylko "label"
+# jest gotowym napisem, nie kluczem tłumaczenia (własnego skryptu nie tłumaczymy).
+USER_SCRIPTS_FILE = Path(__file__).with_name("scripts.json")
+
+
+def load_user_scripts(path=USER_SCRIPTS_FILE):
+    """Dopisuje skrypty z pliku JSON do `SCRIPTS`. Zwraca tekst błędu albo pusty.
+
+    Plik to lista obiektów `{"label", "unix", "windows", "prompt"}` — wpis bez
+    etykiety albo bez polecenia pomijamy zamiast wywalać całą listę.
+    """
+    if not Path(path).exists():
+        return ""
+    try:
+        entries = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            raise ValueError(t("err_not_a_list"))
+    except (OSError, ValueError) as error:
+        return str(error)
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("label") and entry.get("unix"):
+            SCRIPTS.append({"user": True, **entry})
+    return ""
+
+
+def script_label(script):
+    """Etykieta gotowego skryptu idzie przez tłumaczenie, użytkownika — nie."""
+    return script["label"] if script.get("user") else t(script["label"])
+
+
 def _try_command(client, command):
     """Uruchamia polecenie, zwraca tekst albo None (błąd/obcy shell)."""
     try:
@@ -1282,6 +1383,19 @@ def _run_commands(client, unix_cmd, windows_cmd):
     return text if text is not None else t("script_failed")
 
 
+def save_text(parent, text, default_name, title):
+    """Zapisuje tekst do wskazanego pliku. Zwraca ścieżkę albo pusty tekst."""
+    path, _ = QFileDialog.getSaveFileName(parent, title, default_name, t("text_filter"))
+    if not path:
+        return ""
+    try:
+        Path(path).write_text(text, encoding="utf-8")
+    except OSError as error:
+        QMessageBox.warning(parent, title, t("err_log", error))
+        return ""
+    return path
+
+
 def _show_script_output(parent, title, text):
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
@@ -1289,10 +1403,14 @@ def _show_script_output(parent, title, text):
     layout = QVBoxLayout(dialog)
     output = QPlainTextEdit(text)
     output.setReadOnly(True)
-    output.setFont(QFont("Consolas", 10))
+    output.setFont(terminal_font())
     install_find(output)
     layout.addWidget(output)
     buttons = QDialogButtonBox(QDialogButtonBox.Close)
+    # Wynik skryptu bywa materiałem do zgłoszenia — niech da się go odłożyć.
+    buttons.addButton(t("script_save"), QDialogButtonBox.ActionRole).clicked.connect(
+        lambda: save_text(dialog, output.toPlainText(), t("script_default_name"), title)
+    )
     buttons.rejected.connect(dialog.reject)
     buttons.accepted.connect(dialog.accept)
     layout.addWidget(buttons)
@@ -1302,9 +1420,10 @@ def _show_script_output(parent, title, text):
 def run_script(parent, client, script):
     """Pyta o parametr (jeśli skrypt go wymaga), uruchamia i pokazuje wynik."""
     param = None
+    label = script_label(script)
     if script.get("prompt"):
         param, ok = QInputDialog.getText(
-            parent, t(script["label"]), t(script["prompt"])
+            parent, label, t(script["prompt"])
         )
         if not ok or not param.strip():
             return
@@ -1316,7 +1435,8 @@ def run_script(parent, client, script):
         windows_cmd = windows_cmd.format(param)
 
     text = _run_commands(client, unix_cmd, windows_cmd)
-    _show_script_output(parent, t(script["label"]), text)
+    notify.notify(t("notify_title"), t("notify_script_done", label))
+    _show_script_output(parent, label, text)
 
 
 def selftest():
@@ -1527,6 +1647,36 @@ def selftest():
     # Pierwsza reguła wygrywa: slowo kluczowe w sciezce nie gubi koloru bledu.
     spans = highlight_spans("/var/log/error.log")
     assert spans and spans[0][2] == "#e74c3c", spans
+
+    # Znaczniki czasu: tylko na początku linii, stan przechodzi między kawałkami.
+    text, at_start = stamp_lines("pierwsza\ndruga\n", "[T] ", True)
+    assert text == "[T] pierwsza\n[T] druga\n", repr(text)
+    assert at_start, "tekst konczacy sie \\n zostawia kursor na poczatku linii"
+    text, at_start = stamp_lines("ciag ", "[T] ", False)
+    assert text == "ciag ", "srodek linii nie dostaje znacznika"
+    assert not at_start
+    text, _ = stamp_lines("dalej\n", "[T] ", False)
+    assert text == "dalej\n", "dokonczenie linii nie dostaje znacznika"
+    assert stamp_lines("", "[T] ", True) == ("", True), "pusty kawalek nic nie zmienia"
+
+    # Skrypty użytkownika: wpis bez polecenia odpada, reszta dochodzi do listy.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        script_file = Path(tmp) / "scripts.json"
+        before = len(SCRIPTS)
+        assert load_user_scripts(script_file) == "", "brak pliku to nie blad"
+        script_file.write_text(
+            '[{"label": "Moj skrypt", "unix": "uname -a"}, {"label": "bez polecenia"}]',
+            encoding="utf-8",
+        )
+        assert load_user_scripts(script_file) == ""
+        assert len(SCRIPTS) == before + 1, "wpis bez polecenia mial odpasc"
+        assert script_label(SCRIPTS[-1]) == "Moj skrypt", "etykiety uzytkownika nie tlumaczymy"
+        assert script_label(SCRIPTS[0]) == t(SCRIPTS[0]["label"]), "gotowe skrypty ida przez i18n"
+        SCRIPTS.pop()
+        script_file.write_text("{to nie lista}", encoding="utf-8")
+        assert load_user_scripts(script_file), "uszkodzony plik musi zwrocic tekst bledu"
+        assert len(SCRIPTS) == before, "uszkodzony plik nie moze nic dopisac"
 
     print("ssh_terminal selftest OK")
 

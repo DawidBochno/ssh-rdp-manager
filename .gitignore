@@ -7,3 +7,6 @@ env/
 .vscode/
 # Zapisane połączenia (z hasłami w DPAPI) — nie trafiają do repo.
 connections.json
+
+# Wlasne skrypty uzytkownika — plik lokalny, nie repo.
+scripts.json

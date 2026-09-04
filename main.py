@@ -10,8 +10,9 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
+import paramiko
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor
+from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFontDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -44,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 import i18n
+import notify
 import scanner
 import update
 from i18n import t
@@ -52,15 +56,25 @@ from servers import SERVERS
 from ssh_terminal import (
     SCRIPTS,
     SessionTab,
+    SshTerminal,
     TerminalHighlighter,
     connect_with_progress,
+    load_user_scripts,
     run_script,
+    save_text,
+    script_label,
+    set_terminal_font,
+    terminal_font,
     wait_for_pending,
 )
 
 # Menu „Programy”: klucz napisu -> metoda `MainWindow`. Kolejny dodatek
 # narzędziowy to jeden wiersz tutaj, bez dotykania budowania menu.
-TOOLS = (("menu_network_scanner", "_open_scanner"),)
+TOOLS = (
+    ("menu_network_scanner", "_open_scanner"),
+    ("menu_wol", "_wake_on_lan"),
+    ("menu_tls", "_check_certificate"),
+)
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
@@ -155,6 +169,13 @@ class ConnectionDialog(QDialog):
         if not CAN_STORE_PASSWORDS:
             self.save_password.setToolTip(t("tip_save_password_windows_only"))
 
+        # Polecenia startowe dotyczą powłoki, więc tylko SSH; notatki obu.
+        self.startup = QPlainTextEdit(data.get("startup", ""))
+        self.startup.setToolTip(t("tip_startup"))
+        self.startup.setFixedHeight(60)
+        self.notes = QPlainTextEdit(data.get("notes", ""))
+        self.notes.setFixedHeight(60)
+
         form = QFormLayout(self)
         form.addRow(t("fld_protocol"), self.protocol)
         form.addRow(t("fld_name"), self.name)
@@ -164,6 +185,9 @@ class ConnectionDialog(QDialog):
         form.addRow(t("fld_password"), self.password)
         self._key_row = form.rowCount()
         form.addRow(t("fld_key_file"), key_box)
+        self._startup_row = form.rowCount()
+        form.addRow(t("fld_startup"), self.startup)
+        form.addRow(t("fld_notes"), self.notes)
         form.addRow("", self.save_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -190,6 +214,7 @@ class ConnectionDialog(QDialog):
         if self.port.value() == other_default:
             self.port.setValue(self._default_port())
         self._form.setRowVisible(self._key_row, not is_rdp)
+        self._form.setRowVisible(self._startup_row, not is_rdp)
 
     def _pick_key_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -216,6 +241,10 @@ class ConnectionDialog(QDialog):
         }
         if protocol == "ssh" and self.key_file.text().strip():
             data["key_file"] = self.key_file.text().strip()
+        if protocol == "ssh" and self.startup.toPlainText().strip():
+            data["startup"] = self.startup.toPlainText().strip()
+        if self.notes.toPlainText().strip():
+            data["notes"] = self.notes.toPlainText().strip()
         if self.save_password.isChecked() and self.password.text():
             data["password"] = encrypt_password(self.password.text())
         return data
@@ -354,6 +383,42 @@ class ConnectionTree(QTreeWidget):
         self.save()
         return len(nodes)
 
+    def import_ssh_config(self, path=None):
+        """Wpisy z `~/.ssh/config` jako nowa grupa. Zwraca liczbę połączeń.
+
+        Parser jest w Paramiko (`SSHConfig`), więc nie piszemy własnego —
+        rozumie `Include`, `Match` i skróty, których nasz i tak by nie ogarnął.
+        """
+        path = Path(path) if path else Path.home() / ".ssh" / "config"
+        if not path.exists():
+            return None  # brak pliku to nie błąd, tylko inny komunikat
+        config = paramiko.SSHConfig.from_path(str(path))
+        connections = []
+        for name in sorted(config.get_hostnames()):
+            if "*" in name or "?" in name:
+                continue  # wzorzec, nie host — nie ma czego otwierać
+            entry = config.lookup(name)
+            data = {
+                "name": name,
+                "host": entry.get("hostname", name),
+                "port": int(entry.get("port", SSH_PORT)),
+                "username": entry.get("user", ""),
+                "protocol": "ssh",
+            }
+            keys = entry.get("identityfile")
+            if keys:
+                data["key_file"] = str(Path(keys[0]).expanduser())
+            connections.append(data)
+        if not connections:
+            return 0
+        group = QTreeWidgetItem(self.topLevelItem(0), [])
+        self.set_label(group, t("ssh_config_group"), GROUP_ICON)
+        for data in connections:
+            self._apply_connection(QTreeWidgetItem(group, [], CONNECTION_TYPE), data)
+        group.setExpanded(True)
+        self.save()
+        return len(connections)
+
     def _drop_allowed(self, item, on_item):
         # Upuszczenie w pustym miejscu zrobiłoby element najwyższego poziomu,
         # obok korzenia — wtedy `save()` by go zgubił.
@@ -379,6 +444,7 @@ class ConnectionTree(QTreeWidget):
             menu.addSeparator()
             if item.type() == CONNECTION_TYPE:
                 menu.addAction(t("menu_edit_connection"), lambda: self._edit_connection(item))
+                menu.addAction(t("menu_duplicate"), lambda: self._duplicate(item))
             else:
                 menu.addAction(t("menu_rename"), lambda: self._rename_group(item))
             menu.addAction(t("menu_icon"), lambda: self._pick_icon(item))
@@ -395,7 +461,8 @@ class ConnectionTree(QTreeWidget):
         item.setToolTip(
             0,
             f"{data.get('username', '')}@{data.get('host', '')}:{data.get('port', 22)}"
-            + (t("tip_password_saved") if data.get("password") else ""),
+            + (t("tip_password_saved") if data.get("password") else "")
+            + (f"\n\n{data['notes']}" if data.get("notes") else ""),
         )
         self.set_label(item, data["name"], item.data(0, ICON_DATA) or "")
 
@@ -405,6 +472,39 @@ class ConnectionTree(QTreeWidget):
             return
         self._apply_connection(item, dialog.values())
         self.save()
+
+    def _duplicate(self, item):
+        """Kopia połączenia obok oryginału — szybsze niż przeklikanie formularza."""
+        data = dict(item.data(0, CONNECTION_DATA))
+        data["name"] = t("copy_suffix", data.get("name", ""))
+        copy = QTreeWidgetItem(item.parent(), [], CONNECTION_TYPE)
+        copy.setData(0, ICON_DATA, item.data(0, ICON_DATA))
+        self._apply_connection(copy, data)
+        if item.data(0, COLOR_DATA):
+            self.set_color(copy, item.data(0, COLOR_DATA))
+        self.save()
+        return copy
+
+    def filter(self, query):
+        """Chowa wpisy, które nie pasują; grupa zostaje, gdy coś w niej pasuje."""
+        root = self.topLevelItem(0)
+        for i in range(root.childCount()):
+            self._filter_item(root.child(i), query.strip().lower())
+
+    def _filter_item(self, item, query):
+        """Zwraca True, gdy element (albo cokolwiek pod nim) pasuje do zapytania."""
+        data = item.data(0, CONNECTION_DATA) or {}
+        haystack = " ".join(
+            [self.item_name(item)] + [str(data.get(k, "")) for k in ("host", "username")]
+        ).lower()
+        hit = not query or query in haystack
+        for i in range(item.childCount()):
+            # Bez `or hit` po prawej krótkie spięcie pominęłoby chowanie dzieci.
+            hit = self._filter_item(item.child(i), query) or hit
+        item.setHidden(not hit)
+        if query and hit and item.childCount():
+            item.setExpanded(True)
+        return hit
 
     def _rename_group(self, item):
         name, ok = QInputDialog.getText(
@@ -600,8 +700,20 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setTabButton(plus_index, QTabBar.RightSide, None)
         self.tabs.setTabToolTip(plus_index, t("dlg_quick_title"))
 
+        # Drzewo z polem filtru nad nim — chowanie z menu dotyczy całej kolumny,
+        # więc do splittera idzie kontener, nie samo drzewo.
+        self.tree_filter = QLineEdit()
+        self.tree_filter.setPlaceholderText(t("tree_filter_placeholder"))
+        self.tree_filter.setClearButtonEnabled(True)
+        self.tree_filter.textChanged.connect(self.tree.filter)
+        self.tree_panel = QWidget()
+        tree_layout = QVBoxLayout(self.tree_panel)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.addWidget(self.tree_filter)
+        tree_layout.addWidget(self.tree)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.tree)
+        splitter.addWidget(self.tree_panel)
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -612,6 +724,7 @@ class MainWindow(QMainWindow):
         self._servers = {}  # uruchomione serwery wbudowane: etykieta -> obiekt
         self._build_menu()
         self._build_sidebar()
+        self._build_shortcuts()
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
         self.statusBar().showMessage(t("status_idle"))
         self._restore_layout()
@@ -663,18 +776,27 @@ class MainWindow(QMainWindow):
         connection_menu.addSeparator()
         connection_menu.addAction(t("menu_export"), self._export_connections)
         connection_menu.addAction(t("menu_import"), self._import_connections)
+        connection_menu.addAction(t("menu_import_ssh_config"), self._import_ssh_config)
         connection_menu.addSeparator()
         connection_menu.addAction(t("menu_quit"), self.close)
 
         view_menu = menu.addMenu(t("menu_view"))
         self.toggle_tree_action = QAction(t("menu_connection_list"), self, checkable=True, checked=True)
-        self.toggle_tree_action.toggled.connect(self.tree.setVisible)
+        self.toggle_tree_action.toggled.connect(self.tree_panel.setVisible)
         view_menu.addAction(self.toggle_tree_action)
         highlight_action = QAction(
             t("menu_highlighting"), self, checkable=True, checked=TerminalHighlighter.enabled
         )
         highlight_action.toggled.connect(self._toggle_highlighting)
         view_menu.addAction(highlight_action)
+
+        timestamps_action = QAction(
+            t("menu_timestamps"), self, checkable=True, checked=SshTerminal.timestamps
+        )
+        timestamps_action.toggled.connect(self._toggle_timestamps)
+        view_menu.addAction(timestamps_action)
+        view_menu.addAction(t("menu_font"), self._pick_font)
+        view_menu.addAction(t("menu_save_log"), self._save_session_log)
 
         # Wybór języka: zapis idzie do QSettings, okno czyta go przy starcie.
         language_menu = view_menu.addMenu(t("menu_language"))
@@ -694,9 +816,14 @@ class MainWindow(QMainWindow):
         servers_menu.addSeparator()
         servers_menu.addAction(t("menu_stop_all"), self._stop_servers)
 
+        # Skrypty użytkownika z `scripts.json` dochodzą do listy przed zbudowaniem
+        # menu — inaczej dopisane wpisy nie miałyby gdzie się pokazać.
+        error = load_user_scripts()
+        if error:
+            QMessageBox.warning(self, t("menu_scripts"), t("err_user_scripts", error))
         scripts_menu = menu.addMenu(t("menu_scripts"))
         for script in SCRIPTS:
-            scripts_menu.addAction(t(script["label"]), lambda s=script: self._run_script(s))
+            scripts_menu.addAction(script_label(script), lambda s=script: self._run_script(s))
 
         # Dodatkowe programy: jedna lista, żeby kolejny narzędziowy dodatek
         # był jednym wpisem, a nie kolejnym menu do zbudowania.
@@ -810,6 +937,37 @@ class MainWindow(QMainWindow):
             return
         run_script(self, session.terminal.client, script)
 
+    def _build_shortcuts(self):
+        """Ctrl+Tab / Ctrl+Shift+Tab i Ctrl+1..9 — przełączanie zakładek.
+
+        Skrót aplikacji łapie klawisz zanim dojdzie do terminala; bez tego
+        Ctrl+Tab poleciałby do powłoki jako zwykły tabulator.
+        """
+        for keys, step in (("Ctrl+Tab", 1), ("Ctrl+Shift+Tab", -1)):
+            QShortcut(QKeySequence(keys), self, activated=lambda s=step: self._cycle_tab(s))
+        for number in range(1, 10):
+            QShortcut(
+                QKeySequence(f"Ctrl+{number}"), self,
+                activated=lambda n=number: self._go_to_tab(n - 1),
+            )
+
+    def tab_order(self):
+        """Zakładki, po których wolno chodzić — bez „+" na końcu."""
+        return [i for i in range(self.tabs.count()) if self.tabs.widget(i) is not self._plus_tab]
+
+    def _cycle_tab(self, step):
+        order = self.tab_order()
+        if len(order) < 2:
+            return
+        current = self.tabs.currentIndex()
+        position = order.index(current) if current in order else 0
+        self.tabs.setCurrentIndex(order[(position + step) % len(order)])
+
+    def _go_to_tab(self, position):
+        order = self.tab_order()
+        if position < len(order):
+            self.tabs.setCurrentIndex(order[position])
+
     def _build_sidebar(self):
         """Pionowy pasek ikon po lewej, wzorem MobaXterm (Sessions/Tools/…)."""
         sidebar = QToolBar(t("sidebar"))
@@ -871,6 +1029,57 @@ class MainWindow(QMainWindow):
         """Skaner sieci; wybrany host wchodzi wprost do formularza połączenia."""
         scanner.ScannerDialog(self, self._connect_to_found).exec()
 
+    def _wake_on_lan(self):
+        scanner.wake_dialog(self)
+
+    def _check_certificate(self):
+        scanner.cert_dialog(self)
+
+    def _import_ssh_config(self):
+        try:
+            count = self.tree.import_ssh_config()
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, t("menu_import_ssh_config"), t("err_ssh_config", error))
+            return
+        if count is None:
+            message = t("ssh_config_missing")
+        else:
+            message = t("ssh_config_done", count) if count else t("ssh_config_none")
+        QMessageBox.information(self, t("menu_import_ssh_config"), message)
+
+    # --- widok terminala ---------------------------------------------------
+
+    def _toggle_timestamps(self, on):
+        """Znacznik czasu dotyczy wszystkich zakładek, także otwartych później."""
+        SshTerminal.timestamps = on
+
+    def _pick_font(self):
+        font, ok = QFontDialog.getFont(terminal_font(), self, t("menu_font"))
+        if not ok:
+            return
+        set_terminal_font(font)
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, SessionTab):
+                widget.terminal.setFont(font)
+
+    def _save_session_log(self):
+        """Zapis tego, co widać w terminalu aktywnej zakładki.
+
+        ponytail: zapisujemy bufor okna (5000 linii z `setMaximumBlockCount`),
+        a nie strumień od początku sesji. Log pełny wymagałby pisania do pliku
+        na bieżąco — dołożyć wtedy, gdy komuś zabraknie tych 5000 linii.
+        """
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("menu_save_log"), t("log_need_session"))
+            return
+        path = save_text(
+            self, session.terminal.toPlainText(), t("log_default_name"), t("menu_save_log")
+        )
+        if path:
+            QMessageBox.information(self, t("menu_save_log"), t("log_saved", path))
+
     def _connect_to_found(self, host, protocol, name):
         self._quick_connect({"host": host, "protocol": protocol, "name": name or host})
 
@@ -912,6 +1121,7 @@ class MainWindow(QMainWindow):
             lambda text, w=session: self._show_stats(w, text)
         )
         self._add_tab(session, conn["name"])
+        session.terminal.send_startup(conn.get("startup"))
         session.terminal.setFocus()
 
     def _add_tab(self, widget, name):
@@ -1136,7 +1346,7 @@ def selftest():
     assert chosen == [("10.0.0.7", "ssh", "serwer")], chosen
     dialog.close()
     window.toggle_tree_action.setChecked(False)
-    assert window.tree.isHidden(), "toggle w menu/pasku bocznym nie ukrywa drzewa"
+    assert window.tree_panel.isHidden(), "toggle w menu/pasku bocznym nie ukrywa drzewa"
     window.toggle_tree_action.setChecked(True)
 
     # Dolny pasek: bez zakładek i dla obcego widgetu nie może się wywalić.
@@ -1174,6 +1384,75 @@ def selftest():
     keyed.protocol.setCurrentIndex(keyed.protocol.findData("rdp"))
     assert "key_file" not in keyed.values(), "RDP nie używa klucza SSH"
 
+    # Notatki i polecenia startowe: startowe tylko dla SSH, notatki dla obu.
+    extra = ConnectionDialog(
+        data={"host": "h", "startup": "cd /var/log", "notes": "serwer klienta X"}
+    )
+    values = extra.values()
+    assert values["startup"] == "cd /var/log", values
+    assert values["notes"] == "serwer klienta X"
+    extra.protocol.setCurrentIndex(extra.protocol.findData("rdp"))
+    assert "startup" not in extra.values(), "RDP nie ma powloki do karmienia"
+    assert extra.values()["notes"] == "serwer klienta X", "notatki dotycza obu protokolow"
+
+    # Duplikat: kopia obok oryginalu, z tymi samymi danymi i inna nazwa.
+    copy = window.tree._duplicate(conn)
+    assert copy.parent() is conn.parent()
+    assert copy.data(0, CONNECTION_DATA)["host"] == data["host"]
+    assert copy.data(0, CONNECTION_DATA)["name"] != data["name"], "kopia musi sie odroznic"
+    copy.parent().removeChild(copy)
+
+    # Filtr drzewa: grupa zostaje widoczna, gdy pasuje cokolwiek w srodku.
+    window.tree.filter("srv-01")
+    assert not conn.isHidden() and not conn.parent().isHidden()
+    window.tree.filter("nie-ma-takiego")
+    assert conn.isHidden() and conn.parent().isHidden(), "nic nie pasuje = wszystko schowane"
+    window.tree.filter("10.0.0.1")
+    assert not conn.isHidden(), "filtr ma lapac takze host"
+    window.tree.filter("")
+    assert not conn.isHidden(), "puste pole odslania wszystko"
+
+    # Skróty do zakładek: "+" nie może być celem przełączania.
+    window.tabs.insertTab(window.tabs.count() - 1, QWidget(), "druga")
+    order = window.tab_order()
+    assert window.tabs.count() - 1 == len(order), "+ nie moze byc w kolejce zakladek"
+    window.tabs.setCurrentIndex(0)
+    window._cycle_tab(1)
+    assert window.tabs.currentIndex() == order[1], window.tabs.currentIndex()
+    window._cycle_tab(-1)
+    assert window.tabs.currentIndex() == order[0]
+    window._cycle_tab(-1)
+    assert window.tabs.currentIndex() == order[-1], "cofanie z pierwszej ma zawijac na ostatnia"
+    window._go_to_tab(0)
+    assert window.tabs.currentIndex() == order[0]
+    window._go_to_tab(50)  # numer poza zakresem ma być bez efektu, nie wyjątkiem
+    assert window.tabs.currentIndex() == order[0]
+
+    # Import z ~/.ssh/config: wpisy wchodza jako grupa, wzorce odpadaja.
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config"
+        config.write_text(
+            # `Host *` na koncu, tak jak w prawdziwym pliku: w ssh_config wygrywa
+            # pierwsza napotkana wartosc, wiec wzorzec ma tylko uzupelniac.
+            "Host bastion\n  HostName 10.0.0.1\n  User admin\n  Port 2222\n\n"
+            "Host www\n  HostName 10.0.0.2\n\n"
+            "Host *\n  User domyslny\n",
+            encoding="utf-8",
+        )
+        fresh = ConnectionTree()
+        assert fresh.import_ssh_config(config) == 2, "wzorzec Host * nie jest polaczeniem"
+        group = fresh.topLevelItem(0).child(fresh.topLevelItem(0).childCount() - 1)
+        entries = {
+            fresh.item_name(group.child(i)): group.child(i).data(0, CONNECTION_DATA)
+            for i in range(group.childCount())
+        }
+        assert entries["bastion"]["port"] == 2222, entries
+        assert entries["bastion"]["username"] == "admin"
+        assert entries["www"]["host"] == "10.0.0.2"
+        assert entries["www"]["username"] == "domyslny", "Host * ma dawac wartosci domyslne"
+        assert fresh.import_ssh_config(config.with_name("brak")) is None, "brak pliku = None"
+
     i18n.selftest()
 
     ssh_terminal.selftest()
@@ -1182,6 +1461,7 @@ def selftest():
     servers.selftest()
     update.selftest()
     scanner.selftest()
+    notify.selftest()
     del app
     print("main selftest OK")
 
