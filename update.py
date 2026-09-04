@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 REPO = "DawidBochno/ssh-rdp-manager"
+REMOTE = "origin"
 BRANCH = "main"
 ROOT = Path(__file__).resolve().parent
 TIMEOUT = 5  # sekundy na odpowiedź GitHuba — start okna nie może na tym wisieć
@@ -42,6 +43,12 @@ def local_head():
     return text if code == 0 else None
 
 
+def current_branch():
+    """Nazwa gałęzi albo `None` (oderwany HEAD, brak repozytorium)."""
+    code, text = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return text if code == 0 and text != "HEAD" else None
+
+
 def remote_head():
     """Identyfikator commitu na GitHubie albo `None`, gdy nie ma sieci."""
     # Nagłówek `...sha` daje sam identyfikator zamiast całego JSON-a z opisem commitu.
@@ -63,7 +70,9 @@ def is_outdated(local, remote):
 
 def pull():
     """Ściąga zmiany. Zwraca `None` gdy się udało, inaczej tekst błędu do pokazania."""
-    code, text = _git("pull", "--ff-only")
+    # Zdalne repo i gałąź podajemy wprost: własna gałąź nie musi mieć
+    # ustawionego śledzenia, a wtedy samo `git pull` odmawia.
+    code, text = _git("pull", "--ff-only", REMOTE, BRANCH)
     return None if code == 0 else text
 
 
@@ -73,6 +82,10 @@ class UpdateCheck(QThread):
     outdated = Signal(str)  # skrócony identyfikator nowego commitu
 
     def run(self):
+        # Poza gałęzią `main` porównanie nie ma sensu: własna gałąź jest inna
+        # z założenia, a `--ff-only` i tak odmówiłby nadpisania swojej pracy.
+        if current_branch() != BRANCH:
+            return
         local, remote = local_head(), remote_head()
         if is_outdated(local, remote):
             self.outdated.emit(remote[:7])
@@ -84,6 +97,7 @@ def selftest():
     assert not is_outdated(None, "bbb"), "bez kopii z gita nie ma czego porównywać"
     assert not is_outdated("aaa", None), "bez sieci nie proponujemy aktualizacji"
     assert local_head() is None or len(local_head()) == 40
+    assert current_branch() != "HEAD", "oderwany HEAD to nie nazwa gałęzi"
     print("update selftest OK")
 
 

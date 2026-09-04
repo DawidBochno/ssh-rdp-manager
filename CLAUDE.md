@@ -99,9 +99,11 @@ Pobranie to `git pull --ff-only`, zmiany wchodzą po restarcie.
   mignęłoby czarnym oknem konsoli.
 - Gdy nie ma gita, sieci albo to nie jest kopia z repozytorium — cisza.
   Brak aktualizacji nie jest błędem, którym warto zawracać głowę przy starcie.
-- Na własnej gałęzi (albo z lokalnymi zmianami) porównanie z `main` pokaże
-  „nieaktualne", a `--ff-only` odmówi — powód trafia do okienka zamiast
-  cichego nadpisania czyjejś pracy. To celowe.
+- **Poza gałęzią `main` pytania nie ma** (`current_branch()`): własna gałąź jest
+  inna z założenia, więc porównanie z `main` zawsze wołałoby „nieaktualne".
+- `git pull` dostaje **wprost `origin main`** — własna gałąź nie musi mieć
+  ustawionego śledzenia, a wtedy samo `git pull` odmawia („no tracking
+  information").
 
 #### Język interfejsu (`i18n.py`)
 
