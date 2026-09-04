@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 import i18n
+import update
 from i18n import t
 from rdp import RDP_PORT, open_rdp
 from servers import SERVERS
@@ -609,6 +610,25 @@ class MainWindow(QMainWindow):
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
         self.statusBar().showMessage(t("status_idle"))
         self._restore_layout()
+        self._update_check = None  # wątek startuje z main(), nie w testach
+
+    # --- aktualizacja ------------------------------------------------------
+
+    def check_updates(self):
+        """Pytanie o nowszą wersję leci w tle — sieć nie może opóźniać okna."""
+        self._update_check = update.UpdateCheck(self)
+        self._update_check.outdated.connect(self._offer_update)
+        self._update_check.start()
+
+    def _offer_update(self, revision):
+        answer = QMessageBox.question(self, t("update_title"), t("update_body", revision))
+        if answer != QMessageBox.Yes:
+            return
+        error = update.pull()
+        if error:
+            QMessageBox.warning(self, t("update_title"), t("update_failed", error))
+        else:
+            QMessageBox.information(self, t("update_title"), t("update_done"))
 
     # --- układ okna między uruchomieniami ---------------------------------
 
@@ -899,6 +919,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._save_layout()
+        if self._update_check:
+            self._update_check.wait()  # inaczej Qt wywala proces przy zamykaniu
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
             if hasattr(widget, "close_session"):
@@ -1124,6 +1146,7 @@ def selftest():
     i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
     rdp.selftest()
     servers.selftest()
+    update.selftest()
     del app
     print("main selftest OK")
 
@@ -1133,6 +1156,7 @@ def main():
     i18n.load()  # przed zbudowaniem okna — napisy czytane są raz
     window = MainWindow()
     window.show()
+    window.check_updates()
     sys.exit(app.exec())
 
 
