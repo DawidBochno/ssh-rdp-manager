@@ -56,6 +56,7 @@ Interfejs jest domyślnie po **angielsku**; polski wybiera się w **Widok → La
 | `main.py` | Okno, drzewo połączeń, zakładki, formularz połączenia |
 | `ssh_terminal.py` | Sesja SSH (Paramiko) jako widget zakładki |
 | `i18n.py` | Napisy interfejsu po angielsku i po polsku |
+| `rdp.py` | Sesja RDP (kontrolka ActiveX Microsoftu) jako widget zakładki |
 
 ## Licencja
 
