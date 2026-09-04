@@ -16,6 +16,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -304,11 +305,31 @@ class ScannerDialog(QDialog):
         item = self.table.itemAt(point)
         if item is None:
             return
-        host = self._host_at(item.row())
+        row = item.row()
+        host = self._host_at(row)
         menu = QMenu(self)
         menu.addAction(t("scanner_open_ssh"), lambda: self._open(host, "ssh"))
         menu.addAction(t("scanner_open_rdp"), lambda: self._open(host, "rdp"))
+
+        # Podmenu „Kopiuj” składa się z kolumn — nowa kolumna dopisuje się sama.
+        copy_menu = menu.addMenu(t("scanner_copy"))
+        copy_menu.addAction(t("scanner_copy_all"), lambda: self._copy(row))
+        copy_menu.addSeparator()
+        for column, key in enumerate(self.COLUMNS):
+            copy_menu.addAction(t(key), lambda _checked=False, c=column: self._copy(row, c))
+
         menu.exec(self.table.viewport().mapToGlobal(point))
+
+    def _copy(self, row, column=None):
+        """Jedna komórka albo cały wiersz (kolumny rozdzielone tabulatorem)."""
+        if column is None:
+            text = "	".join(
+                self.table.item(row, c).text() for c in range(len(self.COLUMNS))
+            )
+        else:
+            text = self.table.item(row, column).text()
+        QGuiApplication.clipboard().setText(text)
+        return text
 
     def closeEvent(self, event):
         if self.scan and self.scan.isRunning():

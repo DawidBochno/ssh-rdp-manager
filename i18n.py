@@ -208,6 +208,8 @@ TEXTS = {
         "scanner_col_services": "Services",
         "scanner_open_ssh": "Connect over SSH…",
         "scanner_open_rdp": "Connect over RDP…",
+        "scanner_copy": "Copy",
+        "scanner_copy_all": "All",
         "update_failed": "Could not download the update:\n\n{0}",
     },
     "pl": {
@@ -399,6 +401,8 @@ TEXTS = {
         "scanner_col_services": "Usługi",
         "scanner_open_ssh": "Połącz przez SSH…",
         "scanner_open_rdp": "Połącz przez RDP…",
+        "scanner_copy": "Kopiuj",
+        "scanner_copy_all": "Wszystkie",
         "update_failed": "Nie udało się pobrać aktualizacji:\n\n{0}",
     },
 }

@@ -1130,6 +1130,8 @@ def selftest():
     dialog._add_row({"ip": "10.0.0.9", "mac": "11:22:33:44:55:66"})  # cichy host z ARP
     assert dialog.table.rowCount() == 1, "MAC nie może zakładać nowego wiersza"
     assert dialog.table.item(0, 2).text() == "AA:BB:CC:DD:EE:FF"
+    assert dialog._copy(0, 1) == "10.0.0.7", "kopiowanie jednej kolumny"
+    assert dialog._copy(0).split("	") == ["serwer", "10.0.0.7", "AA:BB:CC:DD:EE:FF", "SSH"],         "kopiowanie calego wiersza"
     dialog._open_default(dialog.table.item(0, 1))
     assert chosen == [("10.0.0.7", "ssh", "serwer")], chosen
     dialog.close()
