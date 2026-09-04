@@ -35,6 +35,7 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
   plus odpytywanie statystyk serwera.
 - [`i18n.py`](i18n.py) — napisy interfejsu po angielsku i po polsku.
 - [`rdp.py`](rdp.py) — sesja RDP na kontrolce ActiveX Microsoftu jako widget zakładki.
+- [`update.py`](update.py) — sprawdzanie, czy kopia nadąża za gałęzią na GitHubie.
 
 ```
 MainWindow
@@ -80,6 +81,29 @@ po rozłączeniu wraca tam powód zamiast statystyk.
 Gdy kontrolka nie wstanie, `open_rdp()` zapisuje plik `.rdp` i odpala
 `mstsc.exe` w osobnym oknie. Hasła w `.rdp` **nie ma celowo** — idzie tam jako
 blob DPAPI, nie tekstem, więc `mstsc` i tak zapyta.
+
+#### Aktualizacja z GitHuba (`update.py`)
+
+Program mieszka w kopii roboczej gita, więc „wersją" jest identyfikator commitu —
+bez własnego pliku `VERSION` i porównywania numerów. `main()` po pokazaniu okna
+woła `check_updates()`: `UpdateCheck` (QThread) porównuje `git rev-parse HEAD`
+z `HEAD` gałęzi `main` na GitHubie i przy różnicy pyta, czy pobrać.
+Pobranie to `git pull --ff-only`, zmiany wchodzą po restarcie.
+
+- Zdalny commit czytamy **jednym żądaniem** do API GitHuba z nagłówkiem
+  `Accept: application/vnd.github.sha` — odpowiedź to sam identyfikator, nie JSON
+  z całym commitem. Stdlib `urllib`, żadnej nowej zależności.
+- Wątek startuje **z `main()`, nie z `MainWindow.__init__`** — inaczej
+  `--selftest` chodziłby po sieci przy każdym uruchomieniu testów.
+- `subprocess` dostaje `CREATE_NO_WINDOW`, inaczej każde wywołanie gita
+  mignęłoby czarnym oknem konsoli.
+- Gdy nie ma gita, sieci albo to nie jest kopia z repozytorium — cisza.
+  Brak aktualizacji nie jest błędem, którym warto zawracać głowę przy starcie.
+- **Poza gałęzią `main` pytania nie ma** (`current_branch()`): własna gałąź jest
+  inna z założenia, więc porównanie z `main` zawsze wołałoby „nieaktualne".
+- `git pull` dostaje **wprost `origin main`** — własna gałąź nie musi mieć
+  ustawionego śledzenia, a wtedy samo `git pull` odmawia („no tracking
+  information").
 
 #### Język interfejsu (`i18n.py`)
 
