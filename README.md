@@ -32,6 +32,9 @@ python main.py --selftest
 4. Hasło jest pytane przy każdym łączeniu. **Puste hasło = logowanie kluczem SSH**
    (agent lub `~/.ssh`).
 
+Interfejs jest domyślnie po **angielsku**; polski wybiera się w **Widok → Language**
+(zmiana działa po ponownym uruchomieniu aplikacji).
+
 ## Bezpieczeństwo
 
 - Hasła **nie są nigdzie zapisywane** — żyją tylko w pamięci na czas sesji.
@@ -52,6 +55,7 @@ python main.py --selftest
 |---|---|
 | `main.py` | Okno, drzewo połączeń, zakładki, formularz połączenia |
 | `ssh_terminal.py` | Sesja SSH (Paramiko) jako widget zakładki |
+| `i18n.py` | Napisy interfejsu po angielsku i po polsku |
 
 ## Licencja
 

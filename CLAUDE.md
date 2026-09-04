@@ -33,6 +33,7 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
 - [`main.py`](main.py) — okno, drzewo połączeń, zakładki, formularz połączenia.
 - [`ssh_terminal.py`](ssh_terminal.py) — sesja SSH na Paramiko jako widget zakładki
   plus odpytywanie statystyk serwera.
+- [`i18n.py`](i18n.py) — napisy interfejsu po angielsku i po polsku.
 
 ```
 MainWindow
@@ -48,6 +49,30 @@ statusBar()                           ← statystyki serwera z aktywnej zakładk
   Dwuklik otwiera zakładkę tylko dla elementów tego typu.
 - Dane połączenia (`name`/`host`/`port`/`username`) siedzą w `item.setData(0, CONNECTION_DATA, ...)`.
 - Zakładki nie duplikują się — ponowne otwarcie przełącza na istniejącą.
+
+#### Język interfejsu (`i18n.py`)
+
+Cały interfejs jest po **angielsku** (domyślnie) albo po **polsku**; wybór siedzi
+w Widok → „Language". Zwykły słownik `TEXTS[kod][klucz]` i funkcja `t(klucz, *args)`
+zamiast `gettext`/`QTranslator` — te wymagają kompilowania `.mo`/`.qm` przy każdej
+zmianie napisu, co przy dwóch językach jest kosztem bez zysku.
+
+- Wybór zapisuje się w `QSettings("Bochnovic", "SSH-RDP-Manager")`, czyli w rejestrze
+  Windows — bez kolejnego pliku do pilnowania. `i18n.load()` woła się w `main()`
+  **przed** zbudowaniem okna.
+- Zmiana działa **po restarcie**: napisy czyta się raz, przy budowaniu widgetów,
+  a przebudowa całego okna zabiłaby otwarte sesje SSH.
+- `t()` wywołuj **w miejscu użycia**, nie na poziomie modułu — inaczej napis
+  zamarznie w języku z chwili importu. Dlatego etykiety w `SCRIPTS` (ssh_terminal)
+  i `SERVERS` (servers) trzymają **klucze** tłumaczeń, a menu tłumaczy je przy
+  budowaniu.
+- `selftest()` sprawdza, że oba słowniki mają **ten sam zbiór kluczy** — inaczej
+  jeden język po cichu gubiłby napisy. Testy w `main.py`/`ssh_terminal.py` wołają
+  `i18n.use("en")` na starcie, żeby asercje na napisach nie zależały od ustawienia
+  użytkownika.
+- Polskie słowa w `HIGHLIGHT_RULES` („błąd", „ostrzeżenie") **zostają** — to reguły
+  na wyjście *zdalnego serwera*, nie na nasz interfejs.
+- Separator dziesiętny (`human_bytes`) idzie z języka: „1.5 kB" / „1,5 kB".
 
 #### Zakładka „Home” i „+” (pulpit startowy, wzorem MobaXterm)
 
@@ -235,7 +260,8 @@ i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 **zmiana nazwy grupy i edycja połączenia**, **ikony (emoji) na elementach**,
 **zapis haseł szyfrowanych DPAPI**, **statystyki serwera na dolnym pasku**
 (CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych; Linux i Windows),
-**pasek menu u góry i pasek boczny po lewej** (wzorem MobaXterm), **11 gotowych
+**pasek menu u góry i pasek boczny po lewej** (wzorem MobaXterm), **wybór języka
+(angielski/polski)**, **11 gotowych
 skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), **zakładka
 „Home” i „+” (tymczasowe połączenia, wzorem MobaXterm)**, **graficzny SFTP po
 lewej w każdej sesji** (`SftpPanel`), self-testy.
@@ -291,6 +317,8 @@ w pętli aż do `\r`, a nie robić jednego `recv()`.
 
 ## Konwencje
 
-- Interfejs i komentarze po polsku.
+- Komentarze, docstringi i komunikaty commitów po polsku.
+- **Interfejs przez `i18n.t()`** — żadnych napisów wprost w widgetach. Nowy napis =
+  wpis w obu słownikach `TEXTS` (angielski jest domyślny).
 - Nietrywialna logika zostawia po sobie asercję w `selftest()` — bez frameworków testowych.
 - Preferowane najprostsze rozwiązanie, które działa; bez abstrakcji "na zapas".

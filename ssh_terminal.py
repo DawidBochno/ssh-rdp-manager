@@ -19,6 +19,8 @@ from binascii import hexlify
 from pathlib import Path
 
 import paramiko
+
+from i18n import t
 from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
@@ -242,15 +244,15 @@ class FindBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
         self.query = QLineEdit()
-        self.query.setPlaceholderText("Szukaj…")
+        self.query.setPlaceholderText(t("find_placeholder"))
         self.query.setClearButtonEnabled(True)
         self.query.returnPressed.connect(self.find_next)
         self.query.textChanged.connect(self._reset_color)
         layout.addWidget(self.query)
         for text, tooltip, handler in (
-            ("◀", "Poprzednie (Shift+Enter)", self.find_previous),
-            ("▶", "Następne (Enter)", self.find_next),
-            ("✕", "Zamknij (Esc)", self.hide),
+            ("◀", t("find_prev"), self.find_previous),
+            ("▶", t("find_next"), self.find_next),
+            ("✕", t("find_close"), self.hide),
         ):
             button = QToolButton()
             button.setText(text)
@@ -318,7 +320,7 @@ class FindBar(QWidget):
 
 
 def install_find(editor):
-    """Dokłada polu tekstowemu szukanie: Ctrl+F i „Znajdź…" pod prawym klawiszem."""
+    """Dokłada polu tekstowemu szukanie: Ctrl+F i pozycję w menu kontekstowym."""
     bar = FindBar(editor)
     shortcut = QShortcut(QKeySequence.Find, editor, bar.show_bar)
     shortcut.setContext(Qt.WidgetWithChildrenShortcut)
@@ -328,7 +330,7 @@ def install_find(editor):
         # Standardowe menu (kopiuj/wklej/zaznacz wszystko) plus nasza pozycja.
         context = editor.createStandardContextMenu()
         context.addSeparator()
-        context.addAction("Znajdź…\tCtrl+F", bar.show_bar)
+        context.addAction(t("find_menu"), bar.show_bar)
         context.exec(editor.viewport().mapToGlobal(pos))
 
     editor.customContextMenuRequested.connect(menu)
@@ -347,7 +349,7 @@ def key_to_bytes(key, modifiers, text):
 
 def format_wait(seconds, timeout=CONNECT_TIMEOUT):
     """Tekst komunikatu o czasie oczekiwania."""
-    return f"Czas oczekiwania: {int(seconds)} s (limit {timeout} s)"
+    return t("wait_text", int(seconds), timeout)
 
 
 def apply_output(cursor, text):
@@ -377,7 +379,7 @@ class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
         answer = {}
         self.connector.ask_host_key.emit(hostname, key.get_name(), fingerprint, answer)
         if not answer.get("accepted"):
-            raise paramiko.SSHException(f"Odrzucono klucz serwera {hostname}")
+            raise paramiko.SSHException(t("hostkey_rejected", hostname))
         client.get_host_keys().add(hostname, key.get_name(), key)
 
 
@@ -392,11 +394,8 @@ class HostKeyAsker(QObject):
     def ask(self, hostname, key_type, fingerprint, answer):
         reply = QMessageBox.question(
             self.widget,
-            "Nieznany klucz serwera",
-            f"Serwer {hostname} przedstawił nieznany klucz {key_type}:\n\n"
-            f"{fingerprint}\n\n"
-            "Zaakceptuj tylko jeśli ten odcisk się zgadza — inaczej połączenie\n"
-            "może być przechwytywane. Kontynuować?",
+            t("hostkey_title"),
+            t("hostkey_body", hostname, key_type, fingerprint),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -472,8 +471,8 @@ def connect_with_progress(parent, host, port, username, password):
     None oznacza anulowanie lub błąd (błąd jest pokazywany użytkownikowi).
     """
     target = f"{username}@{host}:{port}" if username else f"{host}:{port}"
-    dialog = QProgressDialog(f"Łączenie z {target}…", "Anuluj", 0, 0, parent)
-    dialog.setWindowTitle("Łączenie SSH")
+    dialog = QProgressDialog(t("connecting", target), t("cancel"), 0, 0, parent)
+    dialog.setWindowTitle(t("connecting_title"))
     dialog.setWindowModality(Qt.WindowModal)
     dialog.setMinimumDuration(0)
     dialog.setAutoClose(False)
@@ -496,7 +495,7 @@ def connect_with_progress(parent, host, port, username, password):
     timer = QTimer(dialog)
     timer.timeout.connect(
         lambda: dialog.setLabelText(
-            f"Łączenie z {target}…\n{format_wait(time.monotonic() - started)}"
+            t("connecting", target) + "\n" + format_wait(time.monotonic() - started)
         )
     )
     timer.start(500)
@@ -515,7 +514,7 @@ def connect_with_progress(parent, host, port, username, password):
         return None
     if "error" in result:
         QMessageBox.critical(
-            parent, "Błąd połączenia", f"Nie udało się połączyć:\n\n{result['error']}"
+            parent, t("err_connect_title"), t("err_connect_body", result["error"])
         )
         return None
     if "client" not in result:
@@ -541,11 +540,11 @@ STATS_CMD = (
 
 
 def human_bytes(value):
-    """Rozmiar po ludzku: 1536 -> „1,5 kB". Przecinek, bo interfejs jest po polsku."""
+    """Rozmiar po ludzku: 1536 -> „1.5 kB". Separator zależy od języka interfejsu."""
     for unit in ("B", "kB", "MB", "GB", "TB"):
         if abs(value) < 1024 or unit == "TB":
             text = f"{value:.0f}" if unit == "B" or abs(value) >= 100 else f"{value:.1f}"
-            return f"{text.replace('.', ',')} {unit}"
+            return f"{text.replace('.', t('decimal_sep'))} {unit}"
         value /= 1024
 
 
@@ -687,7 +686,8 @@ def format_stats(current, previous=None):
         f"RAM {human_bytes(used)} / {human_bytes(current['mem_total'])} ({share:.0f}%)"
     )
     parts.append(
-        f"dysk {current['disk_pct']:.0f}% (wolne {human_bytes(current['disk_free'])})"
+        f"{t('stats_disk')} {current['disk_pct']:.0f}%"
+        f" ({t('stats_free')} {human_bytes(current['disk_free'])})"
     )
 
     if previous and seconds > 0 and "rx" in current and "rx" in previous:
@@ -697,8 +697,8 @@ def format_stats(current, previous=None):
     else:
         parts.append("↓ —  ↑ —")
 
-    parts.append(f"uptime {human_uptime(current['uptime'])}")
-    parts.append(f"zalogowani: {current['users']}")
+    parts.append(f"{t('stats_uptime')} {human_uptime(current['uptime'])}")
+    parts.append(f"{t('stats_users')}: {current['users']}")
     return "   |   ".join(parts)
 
 
@@ -741,7 +741,7 @@ class _StatsPoller(QThread):
             if current is None:
                 # Serwer bez /proc albo zamknięta sesja — nie ma sensu pytać dalej.
                 if not self._stop.is_set():
-                    self.updated.emit("Statystyki niedostępne dla tego serwera")
+                    self.updated.emit(t("stats_unavailable"))
                 return
             self.updated.emit(format_stats(current, previous))
             previous = current
@@ -812,7 +812,7 @@ class SshTerminal(QPlainTextEdit):
         self.ensureCursorVisible()
 
     def _on_closed(self):
-        self._append("\n[sesja zakończona]\n")
+        self._append("\n" + t("session_closed") + "\n")
         self.setReadOnly(True)
 
     def keyPressEvent(self, event):
@@ -865,12 +865,12 @@ class SftpPanel(QWidget):
 
         toolbar = QHBoxLayout()
         for text, tooltip, handler in (
-            ("◀", "Wstecz", self._go_back),
-            ("▶", "Do przodu", self._go_forward),
-            ("⬆", "Do folderu nadrzędnego", self._go_up),
-            ("🔄", "Odśwież", self.refresh),
-            ("📁+", "Nowy folder", self._new_folder),
-            ("📤", "Wyślij plik", self._upload),
+            ("◀", t("sftp_back"), self._go_back),
+            ("▶", t("sftp_forward"), self._go_forward),
+            ("⬆", t("sftp_up"), self._go_up),
+            ("🔄", t("sftp_refresh"), self.refresh),
+            ("📁+", t("sftp_new_folder"), self._new_folder),
+            ("📤", t("sftp_upload"), self._upload),
         ):
             button = QToolButton()
             button.setText(text)
@@ -891,7 +891,7 @@ class SftpPanel(QWidget):
 
         if self.sftp is None:
             self.path_edit.setEnabled(False)
-            self.list.addItem("SFTP niedostępne dla tego serwera")
+            self.list.addItem(t("sftp_unavailable"))
             self.list.setEnabled(False)
         else:
             self.refresh()
@@ -905,7 +905,7 @@ class SftpPanel(QWidget):
         try:
             entries = self.sftp.listdir_attr(self.path)
         except Exception as error:
-            self.list.addItem(f"Błąd: {error}")
+            self.list.addItem(t("err_prefix", error))
             return
         entries.sort(key=lambda e: (not stat.S_ISDIR(e.st_mode), e.filename.lower()))
         for entry in entries:
@@ -954,36 +954,36 @@ class SftpPanel(QWidget):
     # --- akcje na plikach -------------------------------------------------
 
     def _download(self, remote_path, name):
-        local_path, _ = QFileDialog.getSaveFileName(self, "Pobierz plik", name)
+        local_path, _ = QFileDialog.getSaveFileName(self, t("sftp_download_title"), name)
         if not local_path:
             return
         try:
             self.sftp.get(remote_path, local_path)
         except Exception as error:
-            QMessageBox.warning(self, "Błąd pobierania", str(error))
+            QMessageBox.warning(self, t("err_download"), str(error))
 
     def _upload(self):
         if not self.sftp:
             return
-        local_path, _ = QFileDialog.getOpenFileName(self, "Wyślij plik")
+        local_path, _ = QFileDialog.getOpenFileName(self, t("sftp_upload"))
         if not local_path:
             return
         try:
             self.sftp.put(local_path, self._child_path(Path(local_path).name))
         except Exception as error:
-            QMessageBox.warning(self, "Błąd wysyłania", str(error))
+            QMessageBox.warning(self, t("err_upload"), str(error))
         self.refresh()
 
     def _new_folder(self):
         if not self.sftp:
             return
-        name, ok = QInputDialog.getText(self, "Nowy folder", "Nazwa:")
+        name, ok = QInputDialog.getText(self, t("sftp_new_folder"), t("lbl_name"))
         if not ok or not name:
             return
         try:
             self.sftp.mkdir(self._child_path(name))
         except Exception as error:
-            QMessageBox.warning(self, "Błąd", str(error))
+            QMessageBox.warning(self, t("err_generic"), str(error))
         self.refresh()
 
     def _context_menu(self, pos):
@@ -993,19 +993,23 @@ class SftpPanel(QWidget):
         name, is_dir = item.data(Qt.UserRole)
         menu = QMenu(self)
         if not is_dir:
-            menu.addAction("Pobierz", lambda: self._download(self._child_path(name), name))
-        menu.addAction("Usuń", lambda: self._delete(name, is_dir))
+            menu.addAction(t("sftp_download"), lambda: self._download(self._child_path(name), name))
+        menu.addAction(t("menu_delete"), lambda: self._delete(name, is_dir))
         menu.exec(self.list.viewport().mapToGlobal(pos))
 
     def _delete(self, name, is_dir):
         if QMessageBox.question(
-            self, "Usunąć?", f"Usunąć „{name}”?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            self,
+            t("confirm_delete_title"),
+            t("confirm_delete_body", name),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
         ) != QMessageBox.Yes:
             return
         try:
             (self.sftp.rmdir if is_dir else self.sftp.remove)(self._child_path(name))
         except Exception as error:
-            QMessageBox.warning(self, "Błąd usuwania", str(error))
+            QMessageBox.warning(self, t("err_delete"), str(error))
         self.refresh()
 
     def closeEvent(self, event):
@@ -1053,72 +1057,72 @@ class SessionTab(QWidget):
 # str.format wywaliłby się na tych nawiasach.
 SCRIPTS = [
     {
-        "label": "Top procesów (CPU/RAM)",
+        "label": "script_top",
         "unix": "ps aux --sort=-%cpu | head -n 15",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 Name,CPU,WorkingSet"
         " | Format-Table -AutoSize | Out-String -Width 200\"",
     },
     {
-        "label": "Miejsce na dyskach",
+        "label": "script_disk",
         "unix": "df -hP",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,Size,FreeSpace"
         " | Format-Table -AutoSize | Out-String -Width 200\"",
     },
     {
-        "label": "Ostatnie błędy w logach",
+        "label": "script_errors",
         "unix": "journalctl -p err -n 50 --no-pager 2>/dev/null || dmesg | tail -n 50",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-EventLog -LogName System -EntryType Error -Newest 20"
         " | Format-Table TimeGenerated,Source,Message -AutoSize -Wrap | Out-String -Width 200\"",
     },
     {
-        "label": "Nasłuchujące porty",
+        "label": "script_ports",
         "unix": "ss -tulpn 2>/dev/null || netstat -tulpn",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess"
         " | Format-Table -AutoSize | Out-String -Width 200\"",
     },
     {
-        "label": "Restart usługi…",
-        "prompt": "Nazwa usługi:",
+        "label": "script_restart",
+        "prompt": "script_restart_prompt",
         "unix": "sudo systemctl restart {0} && systemctl status {0} --no-pager",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Restart-Service -Name '{0}' -Force; Get-Service -Name '{0}'\"",
     },
     {
-        "label": "Dostępne / ostatnie aktualizacje",
+        "label": "script_updates",
         "unix": "apt list --upgradable 2>/dev/null || yum check-update || dnf check-update",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 10"
         " | Format-Table -AutoSize | Out-String -Width 200\"",
     },
     {
-        "label": "Czyszczenie starych logów (7 dni)",
+        "label": "script_vacuum",
         "unix": "sudo journalctl --vacuum-time=7d",
         "windows": None,
     },
     {
-        "label": "Nieudane logowania SSH",
+        "label": "script_failed_logins",
         "unix": "sudo lastb -n 20 2>/dev/null || journalctl -u sshd -p err -n 20 --no-pager",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625} -MaxEvents 20"
         " | Select-Object TimeCreated,Message | Format-Table -AutoSize -Wrap | Out-String -Width 200\"",
     },
     {
-        "label": "Kto jest zalogowany",
+        "label": "script_who",
         "unix": "who -u",
         "windows": "quser",
     },
     {
-        "label": "Ping hosta…",
-        "prompt": "Host do sprawdzenia:",
+        "label": "script_ping",
+        "prompt": "script_ping_prompt",
         "unix": "ping -c 4 {0}",
         "windows": "ping -n 4 {0}",
     },
     {
-        "label": "Aktywne połączenia sieciowe",
+        "label": "script_connections",
         "unix": "ss -tn state established 2>/dev/null || netstat -tn",
         "windows": "powershell -NoProfile -NonInteractive -Command \""
         "Get-NetTCPConnection -State Established"
@@ -1139,7 +1143,7 @@ def _try_command(client, command):
         return None
     if status != 0 and not out.strip():
         return None
-    return out.strip() or err.strip() or "(brak wyniku)"
+    return out.strip() or err.strip() or t("script_no_output")
 
 
 def _run_commands(client, unix_cmd, windows_cmd):
@@ -1147,7 +1151,7 @@ def _run_commands(client, unix_cmd, windows_cmd):
     text = _try_command(client, unix_cmd)
     if text is None and windows_cmd:
         text = _try_command(client, windows_cmd)
-    return text if text is not None else "Nie udało się uruchomić skryptu na tym serwerze."
+    return text if text is not None else t("script_failed")
 
 
 def _show_script_output(parent, title, text):
@@ -1171,7 +1175,9 @@ def run_script(parent, client, script):
     """Pyta o parametr (jeśli skrypt go wymaga), uruchamia i pokazuje wynik."""
     param = None
     if script.get("prompt"):
-        param, ok = QInputDialog.getText(parent, script["label"], script["prompt"])
+        param, ok = QInputDialog.getText(
+            parent, t(script["label"]), t(script["prompt"])
+        )
         if not ok or not param.strip():
             return
         param = param.strip()
@@ -1182,12 +1188,14 @@ def run_script(parent, client, script):
         windows_cmd = windows_cmd.format(param)
 
     text = _run_commands(client, unix_cmd, windows_cmd)
-    _show_script_output(parent, script["label"], text)
+    _show_script_output(parent, t(script["label"]), text)
 
 
 def selftest():
     """Sprawdza czyste funkcje — bez sieci."""
+    import i18n
     app = QApplication.instance() or QApplication([])
+    i18n.use("en")  # testy sprawdzaja napisy domyslnego jezyka
     assert strip_ansi("\x1b[31mczerwony\x1b[0m") == "czerwony"
     assert strip_ansi("\x1b]0;tytul\x07tekst") == "tekst"
     assert strip_ansi("linia\r\ndruga") == "linia\ndruga"
@@ -1229,8 +1237,11 @@ def selftest():
     assert key_to_bytes(Qt.Key_A, Qt.NoModifier, "a") == "a"
     assert key_to_bytes(Qt.Key_Shift, Qt.NoModifier, "") is None
 
-    assert format_wait(0) == "Czas oczekiwania: 0 s (limit 15 s)"
-    assert format_wait(3.7) == "Czas oczekiwania: 3 s (limit 15 s)"
+    assert format_wait(0) == "Waiting: 0 s (limit 15 s)"
+    assert format_wait(3.7) == "Waiting: 3 s (limit 15 s)"
+    i18n.use("pl")
+    assert format_wait(0) == "Czas oczekiwania: 0 s (limit 15 s)", "napis nie idzie z i18n"
+    i18n.use("en")
 
     # Statystyki: dwie próbki, bo CPU i tempo sieci liczy się z różnicy.
     first = parse_stats(_STATS_SAMPLE.format(up=1000.0, busy=1000, idle=900, rx=1_000_000, tx=500_000))
@@ -1246,12 +1257,15 @@ def selftest():
     assert "CPU 50%" in text, text  # 10 taktów łącznie, 5 bezczynnych
     assert "↓ 977 kB/s" in text, text  # 10 MB przez 10 s
     assert "↑ 0 B/s" in text, text
-    assert "uptime 16 min" in text and "zalogowani: 2" in text, text
+    assert "uptime 16 min" in text and "users: 2" in text, text
     assert "CPU —" in format_stats(first), "pierwsza próbka nie ma z czym się porównać"
 
     assert human_bytes(0) == "0 B"
-    assert human_bytes(1536) == "1,5 kB"
-    assert human_bytes(5 * 1024**3) == "5,0 GB"
+    assert human_bytes(1536) == "1.5 kB"
+    assert human_bytes(5 * 1024**3) == "5.0 GB"
+    i18n.use("pl")
+    assert human_bytes(1536) == "1,5 kB", "polski uzywa przecinka"
+    i18n.use("en")
     assert human_uptime(59) == "0 min"
     assert human_uptime(3 * 3600 + 120) == "3 h 2 min"
     assert human_uptime(50 * 3600) == "2 d 2 h"
@@ -1268,7 +1282,7 @@ def selftest():
     win_text = format_stats(win_second, win_first)
     assert "CPU 37%" in win_text, win_text  # gotowy procent, bez dwóch próbek
     assert "↑ 977 kB/s" in win_text, win_text
-    assert "uptime 1 d 3 h" in win_text and "zalogowani: 3" in win_text, win_text
+    assert "uptime 1 d 3 h" in win_text and "users: 3" in win_text, win_text
     assert "CPU 37%" in format_stats(win_first), "Windows nie potrzebuje próbki wstecz"
 
     # Bez liczników sieci (stary Windows) pasek pokazuje kreski, nie zera.
@@ -1280,6 +1294,10 @@ def selftest():
     # parametryzowane mają {0} w obu wariantach, gdzie występują.
     for script in SCRIPTS:
         assert script.get("label") and script.get("unix"), script
+        # Etykieta to klucz tlumaczenia, a nie gotowy napis.
+        assert t(script["label"]) != script["label"], script["label"]
+        if script.get("prompt"):
+            assert t(script["prompt"]) != script["prompt"], script["prompt"]
         if script.get("prompt"):
             assert "{0}" in script["unix"]
             if script.get("windows"):
@@ -1312,7 +1330,7 @@ def selftest():
     # Linux nie odpowiada (obcy shell) -> pada próba Windows.
     fallback_client = _FakeClient({"win": ("wynik win", 0)})
     assert _run_commands(fallback_client, "linux", "win") == "wynik win"
-    assert "Nie udało się" in _run_commands(_FakeClient({}), "linux", None)
+    assert "Could not run" in _run_commands(_FakeClient({}), "linux", None)
 
     # Panel SFTP: gdy transport nie daje kanału SFTP (obcy serwer, brak
     # uprawnień), panel ma się wyłączyć, a nie wywalić.
