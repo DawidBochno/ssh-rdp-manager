@@ -5,5 +5,5 @@ venv/
 env/
 .idea/
 .vscode/
-# Przyszła persystencja połączeń — nie trafia do repo.
+# Zapisane połączenia (z hasłami w DPAPI) — nie trafiają do repo.
 connections.json
