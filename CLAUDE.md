@@ -34,6 +34,7 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
 - [`ssh_terminal.py`](ssh_terminal.py) — sesja SSH na Paramiko jako widget zakładki
   plus odpytywanie statystyk serwera.
 - [`i18n.py`](i18n.py) — napisy interfejsu po angielsku i po polsku.
+- [`rdp.py`](rdp.py) — sesja RDP na kontrolce ActiveX Microsoftu jako widget zakładki.
 
 ```
 MainWindow
@@ -49,6 +50,36 @@ statusBar()                           ← statystyki serwera z aktywnej zakładk
   Dwuklik otwiera zakładkę tylko dla elementów tego typu.
 - Dane połączenia (`name`/`host`/`port`/`username`) siedzą w `item.setData(0, CONNECTION_DATA, ...)`.
 - Zakładki nie duplikują się — ponowne otwarcie przełącza na istniejącą.
+
+#### RDP w zakładce (`rdp.py`)
+
+Kontrolka ActiveX `MsTscAx` — ta sama, na której stoi `mstsc.exe` — osadzona
+w `QAxWidget`. **Bez nowej zależności**: `QtAxContainer` jest w PySide6.
+FreeRDP (wcześniejszy pomysł) odpada — wymagałby dowożenia natywnych binariów.
+
+Cztery pułapki, każda kosztowała próbę:
+
+- **`setProperty()` na kontrolce głównej NIE dochodzi do COM.** Metaobiekt Qt nie
+  dostaje właściwości ActiveX (`methodCount` pokazuje same składowe `QWidget`),
+  więc `setProperty` ląduje w dynamicznej właściwości Qt i **cicho nic nie robi**.
+  Do kontrolki głównej idzie `dynamicCall("SetX(...)")`.
+- **Argument musi iść w liście.** `dynamicCall("SetServer(QString)", "host")` ustawia
+  `"h"` — sam pierwszy znak. Poprawnie: `dynamicCall("SetServer(QString)", ["host"])`.
+- **Na podobiektach (`AdvancedSettings9`) `setProperty()` działa normalnie** i czyta
+  prawdziwe wartości COM. Dlatego port i hasło ustawiamy właśnie tam.
+- **ProgID `.13` nie wstaje** mimo wpisu w rejestrze, `.11` wstaje — stąd lista
+  `RDP_PROGIDS` i próbowanie po kolei (ten sam wzorzec „spróbuj obu", co przy
+  statystykach i skryptach).
+
+Kontrolka **nie wystawia zdarzeń** w metaobiekcie, więc rozłączenie wykrywamy
+odpytywaniem `Connected` (0/1/2) `QTimer`-em raz na sekundę — patrz komentarz
+`ponytail:` przy `POLL_MS`. `RdpTab.last_stats` udaje interfejs `SessionTab`,
+dzięki czemu `MainWindow` nie musi wiedzieć, który protokół siedzi w zakładce;
+po rozłączeniu wraca tam powód zamiast statystyk.
+
+Gdy kontrolka nie wstanie, `open_rdp()` zapisuje plik `.rdp` i odpala
+`mstsc.exe` w osobnym oknie. Hasła w `.rdp` **nie ma celowo** — idzie tam jako
+blob DPAPI, nie tekstem, więc `mstsc` i tak zapyta.
 
 #### Język interfejsu (`i18n.py`)
 
@@ -111,9 +142,13 @@ na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
 - `SessionTab.last_stats` to `@property` przekazujące do `self.terminal.last_stats`
   — dzięki temu `MainWindow._show_current_stats()` nie musi wiedzieć, że pod
   zakładką siedzi teraz splitter, a nie sam terminal.
-- ponytail: `listdir`/`get`/`put` wołane wprost na wątku GUI — dla admina po
-  LAN/VPN to milisekundy. Przy wolnych/dużych transferach przenieść na `QThread`
-  jak `_StatsPoller`.
+- `listdir` leci wprost na wątku GUI (dla admina po LAN/VPN to milisekundy),
+  ale **`get`/`put` idą przez `_Transfer` (QThread)** z paskiem postępu —
+  duży plik nie zamraża okna. `run_transfer()` blokuje `QEventLoop` na czas
+  transferu, więc jednocześnie leci tylko jeden (Paramiko i tak nie lubi
+  współbieżności na jednym `SFTPClient`). Bez przycisku anulowania: przerwanie
+  w pół pliku zostawiłoby obcięty plik po drugiej stronie — patrz komentarz
+  `ponytail:` przy `run_transfer()`.
 
 ### Terminal SSH
 
@@ -144,6 +179,19 @@ na tym samym połączeniu, więc nie koliduje z powłoką ani z `_StatsPoller`.
 `.
 - **Brak emulacji VT100** — `strip_ansi()` wycina kolory i adresowanie kursora, więc
   `vim`/`htop`/`mc` będą wyglądać źle. Gdy będą potrzebne: `pyte` albo QTermWidget.
+- **Rozmiar PTY idzie za oknem**: `resizeEvent` przelicza piksele na kolumny
+  i wiersze (`terminal_size()`, czysta funkcja — stąd asercje) i woła
+  `channel.resize_pty()`. Bez tego powłoka trzymała się zaszytego w
+  `invoke_shell()` `100 x 30` i łamała linie w złym miejscu. Porównanie
+  z poprzednim rozmiarem jest po to, żeby każdy piksel przeciągnięcia
+  nie szedł po sieci. `_sync_pty_size()` czyta kanał przez `getattr` —
+  Qt potrafi wysłać `resizeEvent` **przed** przypisaniem `self.channel`.
+- **Wklejanie**: `keyPressEvent` łapie `QKeySequence.Paste` i Ctrl+Shift+V.
+  Wcześniej Ctrl+V szedł do powłoki jako `^V`, bo `key_to_bytes()` zamienia
+  Ctrl+litera na znak sterujący. `paste_bytes()` zamienia `\n` na `\r` —
+  inaczej wieloliniowy wklej wykonywał się tylko do pierwszego Entera.
+- **Klucz prywatny per połączenie** (`key_file`) leci do `client.connect()`
+  jako `key_filename`. Bez niego zostaje jak dotąd agent i `~/.ssh`.
 - **Hasło opcjonalnie zapisywane** w `connections.json`, zaszyfrowane **DPAPI**
   (`CryptProtectData` przez `ctypes`, bez nowej zależności). Klucz jest związany
   z kontem Windows — plik skopiowany gdzie indziej jest bezużyteczny.
@@ -261,7 +309,9 @@ i anulowaniem**, **przeciąganie elementów w drzewie** (`InternalMove`;
 **zapis haseł szyfrowanych DPAPI**, **statystyki serwera na dolnym pasku**
 (CPU, RAM, dysk, ruch sieciowy, uptime, liczba zalogowanych; Linux i Windows),
 **pasek menu u góry i pasek boczny po lewej** (wzorem MobaXterm), **wybór języka
-(angielski/polski)**, **11 gotowych
+(angielski/polski)**, **RDP w zakładce (kontrolka ActiveX, bez nowych
+zależności)**, **rozmiar PTY za oknem, wklejanie, klucz prywatny per
+połączenie, transfery SFTP w tle i zapamiętywanie układu okna**, **11 gotowych
 skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), **zakładka
 „Home” i „+” (tymczasowe połączenia, wzorem MobaXterm)**, **graficzny SFTP po
 lewej w każdej sesji** (`SftpPanel`), self-testy.
@@ -280,13 +330,14 @@ Ikona nie jest osobną kolumną: siedzi w roli `ICON_DATA`, a `set_label()` skle
 z nazwą w tekście elementu. Nazwę do zapisu wyciąga `item_name()` — nie czytaj
 `item.text(0)` wprost, bo złapiesz emoji.
 
-Świadomie pominięte — dodać gdy będzie potrzebne:
-- **RDP** — niepodpięte (kierunek: FreeRDP osadzony w oknie). To osobna, większa
-  funkcja niż SSH/SFTP: inny protokół, inna zależność (FreeRDP), nie da się
-  dołożyć do `paramiko.Transport` jak SFTP.
-- Emulacja VT100, zmiana rozmiaru PTY przy zmianie rozmiaru okna, ikony.
-- Transfer plików w tle (SFTP na wątku GUI) i przeciąganie plików myszką
-  (na razie tylko przyciski/menu) — patrz ponytail-komentarz przy `SftpPanel`.
+Backlog pomysłów siedzi w [`TODO.md`](TODO.md) — **nie** tutaj, bo `CLAUDE.md`
+wchodzi do kontekstu przy każdej sesji. Największe znane dziury:
+
+- **Emulacja VT100** — `vim`/`htop`/`mc` nadal rozjechane, bo `strip_ansi()`
+  wycina adresowanie kursora. Największa pozostała dziura; kierunek: `pyte`.
+- **Przeciąganie plików myszką** w panelu SFTP (na razie tylko przyciski i menu).
+- **RDP**: przekierowanie schowka i dysków, wiele monitorów, brama RDP,
+  zmiana rozdzielczości w locie (`UpdateSessionDisplaySettings`).
 
 ## Praca z gitem
 
@@ -304,7 +355,12 @@ po polsku (bez polskich znaków — konsola Windows je zjada), tryb rozkazujący
 
 ## Testy
 
-`py main.py --selftest` pokrywa logikę drzewa/zakładek i czyste funkcje terminala.
+`py main.py --selftest` pokrywa logikę drzewa/zakładek i czyste funkcje terminala,
+a przez `rdp.selftest()` **realnie sprawdza plumbing COM** — asercja na
+`dynamicCall("Server")` wywala się, gdyby ktoś wrócił do `setProperty()` albo
+zgubił listę wokół argumentu. Bez serwera RDP nie da się przetestować samego
+połączenia; `RdpTab(..., autoconnect=False)` istnieje właśnie po to, żeby test
+skonfigurował kontrolkę i nie dzwonił nigdzie po sieci.
 
 Test **end-to-end** (klient gada z prawdziwym serwerem SSH postawionym na Paramiko)
 powstał w scratchpadzie sesji, nie w repo. Warto go odtworzyć przy zmianach w

@@ -10,12 +10,13 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -44,6 +45,7 @@ from PySide6.QtWidgets import (
 
 import i18n
 from i18n import t
+from rdp import RDP_PORT, open_rdp
 from servers import SERVERS
 from ssh_terminal import (
     SCRIPTS,
@@ -104,20 +106,39 @@ def decrypt_password(stored):
     return blob.decode("utf-8")
 
 
+SSH_PORT = 22
+
+
 class ConnectionDialog(QDialog):
-    """Formularz danych połączenia SSH."""
+    """Formularz danych połączenia — SSH albo RDP."""
 
     def __init__(self, parent=None, data=None):
         super().__init__(parent)
-        self.setWindowTitle(t("dlg_ssh_connection"))
         data = data or {}
+
+        self.protocol = QComboBox()
+        self.protocol.addItem("SSH", "ssh")
+        self.protocol.addItem("RDP", "rdp")
+        self.protocol.setCurrentIndex(
+            max(0, self.protocol.findData(data.get("protocol", "ssh")))
+        )
 
         self.name = QLineEdit(data.get("name", ""))
         self.host = QLineEdit(data.get("host", ""))
         self.port = QSpinBox()
         self.port.setRange(1, 65535)
-        self.port.setValue(data.get("port", 22))
+        self.port.setValue(data.get("port", self._default_port()))
         self.username = QLineEdit(data.get("username", ""))
+
+        # Klucz prywatny dotyczy tylko SSH — przy RDP wiersz się chowa.
+        self.key_file = QLineEdit(data.get("key_file", ""))
+        browse = QPushButton(t("btn_browse"))
+        browse.clicked.connect(self._pick_key_file)
+        key_box = QWidget()
+        key_layout = QHBoxLayout(key_box)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.addWidget(self.key_file)
+        key_layout.addWidget(browse)
 
         stored = decrypt_password(data["password"]) if data.get("password") else ""
         self.password = QLineEdit(stored or "")
@@ -129,17 +150,47 @@ class ConnectionDialog(QDialog):
             self.save_password.setToolTip(t("tip_save_password_windows_only"))
 
         form = QFormLayout(self)
+        form.addRow(t("fld_protocol"), self.protocol)
         form.addRow(t("fld_name"), self.name)
         form.addRow(t("fld_host"), self.host)
         form.addRow(t("fld_port"), self.port)
         form.addRow(t("fld_user"), self.username)
         form.addRow(t("fld_password"), self.password)
+        self._key_row = form.rowCount()
+        form.addRow(t("fld_key_file"), key_box)
         form.addRow("", self.save_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+        self._form = form
+        self.protocol.currentIndexChanged.connect(self._protocol_changed)
+        self._protocol_changed()
+
+    # --- protokół -----------------------------------------------------------
+
+    def _default_port(self):
+        return RDP_PORT if self.protocol.currentData() == "rdp" else SSH_PORT
+
+    def _protocol_changed(self):
+        """Tytuł, domyślny port i widoczność pola klucza idą za protokołem."""
+        is_rdp = self.protocol.currentData() == "rdp"
+        self.setWindowTitle(t("dlg_rdp_connection") if is_rdp else t("dlg_ssh_connection"))
+        # Port zmieniamy tylko wtedy, gdy stoi na domyślnym dla drugiego
+        # protokołu — ręcznie wpisanego numeru nie wolno nadpisać.
+        other_default = SSH_PORT if is_rdp else RDP_PORT
+        if self.port.value() == other_default:
+            self.port.setValue(self._default_port())
+        self._form.setRowVisible(self._key_row, not is_rdp)
+
+    def _pick_key_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, t("dlg_key_file"), "", t("filter_all_files")
+        )
+        if path:
+            self.key_file.setText(path)
 
     def accept(self):
         if not self.host.text().strip():
@@ -149,12 +200,16 @@ class ConnectionDialog(QDialog):
 
     def values(self):
         host = self.host.text().strip()
+        protocol = self.protocol.currentData()
         data = {
             "name": self.name.text().strip() or host,
             "host": host,
             "port": self.port.value(),
             "username": self.username.text().strip(),
+            "protocol": protocol,
         }
+        if protocol == "ssh" and self.key_file.text().strip():
+            data["key_file"] = self.key_file.text().strip()
         if self.save_password.isChecked() and self.password.text():
             data["password"] = encrypt_password(self.password.text())
         return data
@@ -547,11 +602,31 @@ class MainWindow(QMainWindow):
         splitter.setSizes([250, 750])
 
         self.setCentralWidget(splitter)
+        self.splitter = splitter
         self._servers = {}  # uruchomione serwery wbudowane: etykieta -> obiekt
         self._build_menu()
         self._build_sidebar()
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
         self.statusBar().showMessage(t("status_idle"))
+        self._restore_layout()
+
+    # --- układ okna między uruchomieniami ---------------------------------
+
+    def _restore_layout(self):
+        """Rozmiar okna i podział splittera z poprzedniej sesji."""
+        stored = i18n.settings()
+        geometry = stored.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        sizes = stored.value("splitter")
+        if sizes:
+            # QSettings oddaje listę tekstów, nie liczb.
+            self.splitter.setSizes([int(value) for value in sizes])
+
+    def _save_layout(self):
+        stored = i18n.settings()
+        stored.setValue("geometry", self.saveGeometry())
+        stored.setValue("splitter", self.splitter.sizes())
 
     def _build_menu(self):
         """Pasek menu u góry (wzorem MobaXterm), z akcjami znanymi już z menu drzewa."""
@@ -740,9 +815,15 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 return
 
+        password = decrypt_password(conn["password"]) if conn.get("password") else None
+
+        # RDP nie pyta nas o hasło: bez zapisanego kontrolka poprosi sama.
+        if conn.get("protocol", "ssh") == "rdp":
+            self._open_rdp_tab(conn, password)
+            return
+
         # Zapisane hasło odszyfrowujemy, w przeciwnym razie pytamy.
         # Puste = logowanie kluczem z agenta lub ~/.ssh.
-        password = decrypt_password(conn["password"]) if conn.get("password") else None
         if password is None:
             password, ok = QInputDialog.getText(
                 self,
@@ -762,19 +843,27 @@ class MainWindow(QMainWindow):
         dialog.save_password.setVisible(False)
         if dialog.exec() != QDialog.Accepted:
             return
-        host = dialog.host.text().strip()
-        conn = {
-            "name": dialog.name.text().strip() or host,
-            "host": host,
-            "port": dialog.port.value(),
-            "username": dialog.username.text().strip(),
-        }
-        self._connect_and_add_tab(conn, dialog.password.text() or None)
+        conn = dialog.values()
+        conn.pop("password", None)  # tymczasowe połączenie nic nie zapisuje
+        password = dialog.password.text() or None
+        if conn["protocol"] == "rdp":
+            self._open_rdp_tab(conn, password)
+            return
+        self._connect_and_add_tab(conn, password)
+
+    def _open_rdp_tab(self, conn, password):
+        """None = sesja poszła do osobnego mstsc albo się nie udała."""
+        tab = open_rdp(self, conn, password)
+        if tab is None:
+            return
+        tab.session_ended.connect(lambda text, w=tab: self._show_stats(w, text))
+        self._add_tab(tab, conn["name"])
 
     def _connect_and_add_tab(self, conn, password):
         # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
         terminal = connect_with_progress(
-            self, conn["host"], conn["port"], conn["username"], password
+            self, conn["host"], conn["port"], conn["username"], password,
+            conn.get("key_file"),
         )
         if terminal is None:
             return
@@ -783,10 +872,14 @@ class MainWindow(QMainWindow):
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
         )
-        # Nowa karta wchodzi PRZED "+", żeby "+" zawsze zostawało ostatnie.
-        index = self.tabs.insertTab(self.tabs.count() - 1, session, conn["name"])
-        self.tabs.setCurrentIndex(index)
+        self._add_tab(session, conn["name"])
         session.terminal.setFocus()
+
+    def _add_tab(self, widget, name):
+        """Nowa karta wchodzi PRZED "+", żeby "+" zawsze zostawało ostatnie."""
+        index = self.tabs.insertTab(self.tabs.count() - 1, widget, name)
+        self.tabs.setCurrentIndex(index)
+        return index
 
     def _on_tab_bar_clicked(self, index):
         """"+" nie jest zwykłą zakładką — klik otwiera dialog, a nie ją aktywuje."""
@@ -800,14 +893,15 @@ class MainWindow(QMainWindow):
         if index == 0 or widget is self._plus_tab:
             return  # "Home" i "+" nie mają przycisku zamknięcia, ale na wszelki wypadek
         self.tabs.removeTab(index)
-        if isinstance(widget, SessionTab):
+        if hasattr(widget, "close_session"):  # SessionTab albo RdpTab
             widget.close_session()
         widget.deleteLater()
 
     def closeEvent(self, event):
+        self._save_layout()
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
-            if isinstance(widget, SessionTab):
+            if hasattr(widget, "close_session"):
                 widget.close_session()
         self._stop_servers()
         wait_for_pending()  # anulowane łączenia; inaczej Qt wywala proces
@@ -816,6 +910,7 @@ class MainWindow(QMainWindow):
 
 def selftest():
     """Sprawdza logikę drzewa, zakładek i zapisu — bez sieci i bez okna."""
+    import rdp
     import servers
     import ssh_terminal
     import tempfile
@@ -1002,10 +1097,32 @@ def selftest():
     i18n.use("en")
     assert ConnectionDialog().windowTitle() == "SSH connection"
 
+    # Formularz: protokół steruje portem, tytułem i polem klucza.
+    dialog = ConnectionDialog()
+    assert dialog.values()["protocol"] == "ssh", "SSH ma zostać domyślne"
+    assert dialog.port.value() == SSH_PORT
+    dialog.protocol.setCurrentIndex(dialog.protocol.findData("rdp"))
+    assert dialog.port.value() == RDP_PORT, "RDP ma swój port domyślny"
+    assert dialog.values()["protocol"] == "rdp"
+    assert dialog.windowTitle() == "RDP connection", dialog.windowTitle()
+
+    # Ręcznie wpisanego portu przełącznik protokołu nie może nadpisać.
+    custom = ConnectionDialog()
+    custom.port.setValue(2222)
+    custom.protocol.setCurrentIndex(custom.protocol.findData("rdp"))
+    assert custom.port.value() == 2222, "własny port musi przeżyć zmianę protokołu"
+
+    # Klucz prywatny zapisuje się tylko dla SSH.
+    keyed = ConnectionDialog(data={"host": "h", "key_file": "C:/klucze/id_rsa"})
+    assert keyed.values()["key_file"] == "C:/klucze/id_rsa"
+    keyed.protocol.setCurrentIndex(keyed.protocol.findData("rdp"))
+    assert "key_file" not in keyed.values(), "RDP nie używa klucza SSH"
+
     i18n.selftest()
 
     ssh_terminal.selftest()
     i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
+    rdp.selftest()
     servers.selftest()
     del app
     print("main selftest OK")

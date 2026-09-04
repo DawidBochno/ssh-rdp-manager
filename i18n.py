@@ -29,6 +29,12 @@ TEXTS = {
         "fld_user": "Username:",
         "fld_password": "Password:",
         "chk_save_password": "Save password (encrypted with your Windows account)",
+        "fld_protocol": "Protocol:",
+        "fld_key_file": "Private key:",
+        "btn_browse": "Browse…",
+        "dlg_key_file": "Select a private key",
+        "filter_all_files": "All files (*)",
+        "dlg_rdp_connection": "RDP connection",
         "tip_save_password_windows_only": "Saving passwords works on Windows only.",
         "err_missing_data_title": "Missing data",
         "err_missing_host": "Enter the host address.",
@@ -155,6 +161,16 @@ TEXTS = {
         "stats_unavailable": "Statistics unavailable for this server",
         "session_closed": "[session closed]",
         "decimal_sep": ".",
+        # --- RDP ---
+        "rdp_connecting": "Connecting to {0}…",
+        "rdp_disconnected": "RDP session ended (code {0}).",
+        "rdp_needs_windows": "RDP works on Windows only.",
+        "rdp_no_control": "The built-in RDP control could not be started, so the session"
+                          " will open in a separate mstsc.exe window.",
+        "rdp_mstsc_failed": "Could not start mstsc.exe:\n\n{0}",
+        # --- transfer plików ---
+        "transfer_download": "Downloading {0}…",
+        "transfer_upload": "Sending {0}…",
         # --- panel SFTP ---
         "sftp_back": "Back",
         "sftp_forward": "Forward",
@@ -184,6 +200,12 @@ TEXTS = {
         "fld_user": "Użytkownik:",
         "fld_password": "Hasło:",
         "chk_save_password": "Zapisz hasło (szyfrowane kontem Windows)",
+        "fld_protocol": "Protokół:",
+        "fld_key_file": "Klucz prywatny:",
+        "btn_browse": "Wybierz…",
+        "dlg_key_file": "Wskaż klucz prywatny",
+        "filter_all_files": "Wszystkie pliki (*)",
+        "dlg_rdp_connection": "Połączenie RDP",
         "tip_save_password_windows_only": "Zapis hasła działa tylko na Windows.",
         "err_missing_data_title": "Brak danych",
         "err_missing_host": "Podaj adres hosta.",
@@ -310,6 +332,16 @@ TEXTS = {
         "stats_unavailable": "Statystyki niedostępne dla tego serwera",
         "session_closed": "[sesja zakończona]",
         "decimal_sep": ",",
+        # --- RDP ---
+        "rdp_connecting": "Łączenie z {0}…",
+        "rdp_disconnected": "Sesja RDP zakończona (kod {0}).",
+        "rdp_needs_windows": "RDP działa tylko na Windows.",
+        "rdp_no_control": "Nie udało się uruchomić wbudowanej kontrolki RDP, więc sesja"
+                          " otworzy się w osobnym oknie mstsc.exe.",
+        "rdp_mstsc_failed": "Nie udało się uruchomić mstsc.exe:\n\n{0}",
+        # --- transfer plików ---
+        "transfer_download": "Pobieranie {0}…",
+        "transfer_upload": "Wysyłanie {0}…",
         # --- panel SFTP ---
         "sftp_back": "Wstecz",
         "sftp_forward": "Do przodu",
@@ -344,14 +376,19 @@ def use(code):
     _current = code if code in TEXTS else DEFAULT
 
 
+def settings():
+    """Wspólny `QSettings` aplikacji — jedno miejsce, w którym siedzi nazwa klucza."""
+    return QSettings(*_SETTINGS)
+
+
 def load():
     """Wczytuje zapisany wybór; brak wpisu = angielski."""
-    use(QSettings(*_SETTINGS).value("language", DEFAULT))
+    use(settings().value("language", DEFAULT))
 
 
 def save(code):
     use(code)
-    QSettings(*_SETTINGS).setValue("language", _current)
+    settings().setValue("language", _current)
 
 
 def t(key, *args):

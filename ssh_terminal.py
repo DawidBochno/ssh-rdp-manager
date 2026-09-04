@@ -19,8 +19,6 @@ from binascii import hexlify
 from pathlib import Path
 
 import paramiko
-
-from i18n import t
 from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
@@ -51,6 +49,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from i18n import t
 
 CONNECT_TIMEOUT = 15  # sekundy
 
@@ -347,6 +347,22 @@ def key_to_bytes(key, modifiers, text):
     return text or None
 
 
+def terminal_size(width_px, height_px, char_width, line_height):
+    """Ile kolumn i wierszy mieści się w polu tekstowym (minimum 20 x 5).
+
+    Zdalna powłoka łamie linie po swojemu; bez przekazania jej realnego rozmiaru
+    robi to w złym miejscu, bo `invoke_shell()` startuje z zaszytym 100 x 30.
+    """
+    cols = max(20, width_px // max(1, char_width))
+    rows = max(5, height_px // max(1, line_height))
+    return cols, rows
+
+
+def paste_bytes(text):
+    r"""Tekst ze schowka w postaci oczekiwanej przez powłokę — Enter to `\r`."""
+    return text.replace("\r\n", "\r").replace("\n", "\r")
+
+
 def format_wait(seconds, timeout=CONNECT_TIMEOUT):
     """Tekst komunikatu o czasie oczekiwania."""
     return t("wait_text", int(seconds), timeout)
@@ -409,12 +425,13 @@ class SshConnector(QThread):
     connected = Signal(object, object)  # client, channel
     failed = Signal(str)
 
-    def __init__(self, host, port, username, password):
+    def __init__(self, host, port, username, password, key_file=None):
         super().__init__()
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        self.key_file = key_file
         self._cancelled = False
         self._sock = None
 
@@ -447,6 +464,8 @@ class SshConnector(QThread):
                 port=self.port,
                 username=self.username,
                 password=self.password or None,
+                # Wskazany klucz idzie wprost; bez niego zostaje agent i ~/.ssh.
+                key_filename=self.key_file or None,
                 look_for_keys=not self.password,
                 allow_agent=not self.password,
                 timeout=CONNECT_TIMEOUT,
@@ -465,7 +484,7 @@ class SshConnector(QThread):
         self.connected.emit(client, channel)
 
 
-def connect_with_progress(parent, host, port, username, password):
+def connect_with_progress(parent, host, port, username, password, key_file=None):
     """Łączy się pokazując okno postępu. Zwraca SshTerminal albo None.
 
     None oznacza anulowanie lub błąd (błąd jest pokazywany użytkownikowi).
@@ -478,7 +497,7 @@ def connect_with_progress(parent, host, port, username, password):
     dialog.setAutoClose(False)
     dialog.setAutoReset(False)
 
-    connector = SshConnector(host, port, username, password)
+    connector = SshConnector(host, port, username, password, key_file)
     asker = HostKeyAsker(parent)
     # Blocking: wątek roboczy czeka, aż użytkownik odpowie w oknie GUI.
     connector.ask_host_key.connect(asker.ask, Qt.BlockingQueuedConnection)
@@ -789,6 +808,7 @@ class SshTerminal(QPlainTextEdit):
 
         self.client = client
         self.channel = channel
+        self._pty_size = (0, 0)
         self.reader = _Reader(channel)
         self.reader.received.connect(self._append)
         self.reader.finished_session.connect(self._on_closed)
@@ -815,12 +835,56 @@ class SshTerminal(QPlainTextEdit):
         self._append("\n" + t("session_closed") + "\n")
         self.setReadOnly(True)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_pty_size()
+
+    def _sync_pty_size(self):
+        """Mówi zdalnej powłoce, ile naprawdę ma miejsca.
+
+        `getattr`, bo Qt potrafi wysłać `resizeEvent` zanim `__init__` dojdzie
+        do przypisania kanału — wtedy zwykłe `self.channel` sypie AttributeError.
+        """
+        channel = getattr(self, "channel", None)
+        if channel is None or channel.closed:
+            return
+        metrics = self.fontMetrics()
+        size = terminal_size(
+            self.viewport().width(),
+            self.viewport().height(),
+            metrics.horizontalAdvance("M"),
+            metrics.lineSpacing(),
+        )
+        if size == self._pty_size:
+            return  # bez tego każdy piksel zmiany szedłby po sieci
+        self._pty_size = size
+        try:
+            channel.resize_pty(width=size[0], height=size[1])
+        except Exception:
+            pass  # zerwana sesja — czytelnik i tak zaraz to zgłosi
+
+    def _paste(self):
+        if not self.channel or self.channel.closed:
+            return
+        text = QApplication.clipboard().text()
+        if text:
+            self.channel.send(paste_bytes(text))
+
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Find):
             self.find_bar.show_bar()  # Ctrl+F zostaje u nas, nie leci do powłoki
             return
         if event.matches(QKeySequence.Copy):
             super().keyPressEvent(event)
+            return
+        # Bez tego Ctrl+V szedł do powłoki jako ^V zamiast wkleić schowek.
+        # Ctrl+Shift+V łapiemy osobno: to zwyczaj terminali.
+        if event.matches(QKeySequence.Paste) or (
+            event.key() == Qt.Key_V
+            and event.modifiers() & Qt.ControlModifier
+            and event.modifiers() & Qt.ShiftModifier
+        ):
+            self._paste()
             return
         if not self.channel or self.channel.closed:
             return
@@ -840,6 +904,66 @@ class SshTerminal(QPlainTextEdit):
 
 
 # --- graficzna przeglądarka plików (SFTP) -----------------------------------
+
+
+class _Transfer(QThread):
+    """Jeden `get`/`put` na wątku roboczym — duży plik nie zamraża okna."""
+
+    progress = Signal(int, int)  # bajtów zrobione, bajtów łącznie
+    done = Signal(str)  # pusty tekst = sukces
+
+    def __init__(self, sftp, mode, remote_path, local_path):
+        super().__init__()
+        self.sftp = sftp
+        self.mode = mode
+        self.remote_path = remote_path
+        self.local_path = local_path
+
+    def run(self):
+        try:
+            callback = self.progress.emit
+            if self.mode == "get":
+                self.sftp.get(self.remote_path, self.local_path, callback=callback)
+            else:
+                self.sftp.put(self.local_path, self.remote_path, callback=callback)
+        except Exception as error:
+            self.done.emit(str(error))
+            return
+        self.done.emit("")
+
+
+def transfer_percent(done, total):
+    """Procent do paska postępu; nieznany rozmiar (0) daje 0."""
+    return int(100 * done / total) if total else 0
+
+
+def run_transfer(parent, sftp, mode, remote_path, local_path, title):
+    """Przenosi plik pokazując postęp. Zwraca tekst błędu albo pusty tekst.
+
+    ponytail: bez przycisku anulowania — przerwanie w pół pliku zostawiłoby
+    obcięty plik po drugiej stronie, a sprzątanie po tym to więcej kodu niż
+    sam transfer. Dołożyć razem z wznawianiem, jeśli kiedyś będzie potrzebne.
+    """
+    dialog = QProgressDialog(title, "", 0, 100, parent)
+    dialog.setWindowModality(Qt.WindowModal)
+    dialog.setCancelButton(None)
+    dialog.setMinimumDuration(0)
+    dialog.setAutoClose(False)
+    dialog.setAutoReset(False)
+
+    worker = _Transfer(sftp, mode, remote_path, local_path)
+    result = {}
+    worker.progress.connect(lambda d, total: dialog.setValue(transfer_percent(d, total)))
+    worker.done.connect(lambda error: result.update(error=error))
+
+    loop = QEventLoop()
+    worker.finished.connect(loop.quit)
+    worker.start()
+    dialog.show()
+    loop.exec()
+    dialog.close()
+    worker.wait(1000)
+    return result.get("error", "")
 
 # ponytail: listdir/get/put wołane wprost na wątku GUI — dla admina po LAN/VPN
 # to milisekundy, więc osobny wątek na razie nie jest wart złożoności.
@@ -957,10 +1081,11 @@ class SftpPanel(QWidget):
         local_path, _ = QFileDialog.getSaveFileName(self, t("sftp_download_title"), name)
         if not local_path:
             return
-        try:
-            self.sftp.get(remote_path, local_path)
-        except Exception as error:
-            QMessageBox.warning(self, t("err_download"), str(error))
+        error = run_transfer(
+            self, self.sftp, "get", remote_path, local_path, t("transfer_download", name)
+        )
+        if error:
+            QMessageBox.warning(self, t("err_download"), error)
 
     def _upload(self):
         if not self.sftp:
@@ -968,10 +1093,13 @@ class SftpPanel(QWidget):
         local_path, _ = QFileDialog.getOpenFileName(self, t("sftp_upload"))
         if not local_path:
             return
-        try:
-            self.sftp.put(local_path, self._child_path(Path(local_path).name))
-        except Exception as error:
-            QMessageBox.warning(self, t("err_upload"), str(error))
+        name = Path(local_path).name
+        error = run_transfer(
+            self, self.sftp, "put", self._child_path(name), local_path,
+            t("transfer_upload", name),
+        )
+        if error:
+            QMessageBox.warning(self, t("err_upload"), error)
         self.refresh()
 
     def _new_folder(self):
@@ -1237,6 +1365,17 @@ def selftest():
     assert key_to_bytes(Qt.Key_A, Qt.NoModifier, "a") == "a"
     assert key_to_bytes(Qt.Key_Shift, Qt.NoModifier, "") is None
 
+    # Rozmiar PTY: powłoka dostaje realną liczbę kolumn, nie zaszyte 100x30.
+    assert terminal_size(800, 600, 8, 15) == (100, 40)
+    assert terminal_size(10, 10, 8, 15) == (20, 5), "minimum trzyma sensowny rozmiar"
+    assert terminal_size(800, 600, 0, 0)[0] == 800, "zerowa czcionka nie może dzielić przez 0"
+
+    # Wklejanie: powłoka oczekuje \r, a nie \n — inaczej wieloliniowy wklej
+    # wykonuje się tylko do pierwszego Entera.
+    assert paste_bytes("echo a\r\necho b") == "echo a\recho b"
+    assert paste_bytes("jedna linia") == "jedna linia"
+    assert paste_bytes("a\nb\nc") == "a\rb\rc"
+
     assert format_wait(0) == "Waiting: 0 s (limit 15 s)"
     assert format_wait(3.7) == "Waiting: 3 s (limit 15 s)"
     i18n.use("pl")
@@ -1331,6 +1470,22 @@ def selftest():
     fallback_client = _FakeClient({"win": ("wynik win", 0)})
     assert _run_commands(fallback_client, "linux", "win") == "wynik win"
     assert "Could not run" in _run_commands(_FakeClient({}), "linux", None)
+
+    # Transfer plików: sukces, błąd i procent postępu.
+    assert transfer_percent(0, 0) == 0, "nieznany rozmiar nie może dzielić przez 0"
+    assert transfer_percent(50, 200) == 25
+
+    class _FakeSftp:
+        def get(self, remote, local, callback=None):
+            callback(64, 128)
+            callback(128, 128)
+
+        def put(self, local, remote, callback=None):
+            raise OSError("brak miejsca na dysku")
+
+    fake = _FakeSftp()
+    assert run_transfer(None, fake, "get", "/zdalny", "lokalny", "test") == ""
+    assert "brak miejsca" in run_transfer(None, fake, "put", "/zdalny", "lokalny", "test")
 
     # Panel SFTP: gdy transport nie daje kanału SFTP (obcy serwer, brak
     # uprawnień), panel ma się wyłączyć, a nie wywalić.
