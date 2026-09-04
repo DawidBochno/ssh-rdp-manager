@@ -189,6 +189,11 @@ TEXTS = {
         "lbl_name": "Name:",
         "confirm_delete_title": "Delete?",
         "confirm_delete_body": "Delete „{0}”?",
+        # --- aktualizacja ---
+        "update_title": "Update available",
+        "update_body": "A newer version is available on GitHub ({0}). Download it now?",
+        "update_done": "Update downloaded. Restart the application to use it.",
+        "update_failed": "Could not download the update:\n\n{0}",
     },
     "pl": {
         # --- okno i formularz połączenia ---
@@ -360,6 +365,11 @@ TEXTS = {
         "lbl_name": "Nazwa:",
         "confirm_delete_title": "Usunąć?",
         "confirm_delete_body": "Usunąć „{0}”?",
+        # --- aktualizacja ---
+        "update_title": "Dostępna aktualizacja",
+        "update_body": "Na GitHubie jest nowsza wersja ({0}). Pobrać ją teraz?",
+        "update_done": "Aktualizacja pobrana. Uruchom program ponownie, żeby z niej korzystać.",
+        "update_failed": "Nie udało się pobrać aktualizacji:\n\n{0}",
     },
 }
 
