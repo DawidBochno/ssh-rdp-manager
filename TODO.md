@@ -26,9 +26,14 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
 
 1. ⭐ **Emulacja VT100 przez `pyte`** (L) — największa pozostała dziura.
 2. ⭐ **Tunele SSH** (M) — Paramiko to umie, admin tego chce.
-3. ⭐ **Import z `~/.ssh/config`** (S) — tanie wejście dla kogoś z gotowymi wpisami.
-4. ⭐ **Przeciąganie plików myszką w SFTP** (M).
-5. ⭐ **Własne skrypty użytkownika** (S) — dziś `SCRIPTS` jest zaszyte w kodzie.
+3. ⭐ **Przeciąganie plików myszką w SFTP** (M).
+4. ⭐ **Jump host / ProxyJump** (M) — łączenie przez bastion.
+5. ⭐ **Podgląd logu na żywo** (M) — `tail -f` w osobnej zakładce, z filtrem.
+
+Zrobione w międzyczasie: import z `~/.ssh/config`, filtr drzewa, własne skrypty
+z `scripts.json`, duplikowanie wpisu, notatki, polecenia startowe, skróty zakładek,
+czcionka terminala, znaczniki czasu, zapis sesji i wyniku skryptu, Wake-on-LAN,
+odczyt certyfikatu TLS, powiadomienia systemowe, pasek postępu w skanerze.
 
 ## RDP
 
@@ -48,13 +53,13 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
 - [ ] **Emulacja VT100 przez `pyte`** (L) — `vim`, `htop`, `mc` są dziś rozjechane,
       bo `strip_ansi()` wycina adresowanie kursora. Największa dziura funkcjonalna,
       ale i największa: to wymiana całego renderowania, nie łatka.
-- [ ] **Krój i rozmiar czcionki w menu** (S) — dziś zaszyte `QFont("Consolas", 10)`
+- [x] **Krój i rozmiar czcionki w menu** (S) — dziś zaszyte `QFont("Consolas", 10)`
       w dwóch miejscach.
 - [ ] **Długość historii przewijania** (S) — dziś `setMaximumBlockCount(5000)`.
-- [ ] **Zapis sesji do pliku** (S) — log wszystkiego, co przyszło z serwera.
+- [x] **Zapis sesji do pliku** (S) — log wszystkiego, co przyszło z serwera.
 - [ ] **Wysyłanie tego samego polecenia do wszystkich zakładek** (M) — MobaXterm to ma,
       przy kilkunastu serwerach naraz oszczędza godziny.
-- [ ] **Ctrl+Tab i Ctrl+1..9 do przełączania zakładek** (S).
+- [x] **Ctrl+Tab i Ctrl+1..9 do przełączania zakładek** (S).
 
 ## Połączenia i drzewo
 
@@ -63,18 +68,18 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
       dostaje to samo pole w obu rolach.
 - [ ] **Tunele SSH (przekierowanie portów)** (M) — Paramiko to umie, admin tego chce.
 - [ ] **Jump host / ProxyJump** (M) — łączenie przez bastion.
-- [ ] **Import z `~/.ssh/config`** (S) — stdlib nie ma parsera, ale Paramiko ma
+- [x] **Import z `~/.ssh/config`** (S) — stdlib nie ma parsera, ale Paramiko ma
       `SSHConfig`. Tanie wejście dla kogoś, kto ma już swoje wpisy.
 - [ ] **Import z PuTTY** (M) — wpisy siedzą w rejestrze Windows.
-- [ ] **Duplikowanie połączenia** (S) — dziś trzeba przeklikać formularz od zera.
-- [ ] **Polecenia startowe po zalogowaniu** (S) — np. `sudo -i`, `cd /var/log`.
+- [x] **Duplikowanie połączenia** (S) — dziś trzeba przeklikać formularz od zera.
+- [x] **Polecenia startowe po zalogowaniu** (S) — np. `sudo -i`, `cd /var/log`.
 - [ ] **Automatyczne ponowne łączenie po zerwaniu** (M) — z limitem prób,
       inaczej zrobi się pętla dobijająca się do wyłączonego serwera.
-- [ ] **Notatki do połączenia** (S).
+- [x] **Notatki do połączenia** (S).
 - [ ] **Kropka statusu przy wpisach w drzewie** (M) — sprawdzanie samych zapisanych
       połączeń; odstęp konfigurowalny, domyślnie rzadko. Sprawdzanie portu jest już
       w `scanner.py`, więc zostaje wątek i odświeżanie drzewa.
-- [ ] **Wake-on-LAN** (S) — magic packet to kilkanaście linii na `socket`.
+- [x] **Wake-on-LAN** (S) — magic packet to kilkanaście linii na `socket`.
 
 ## SFTP
 
@@ -99,10 +104,10 @@ RDP** — testy pokrywają konfigurację kontrolki, nie samo połączenie.
 
 ## Skrypty i serwery wbudowane
 
-- [ ] **Własne skrypty użytkownika** (S) — dziś `SCRIPTS` jest zaszyte w kodzie;
+- [x] **Własne skrypty użytkownika** (S) — dziś `SCRIPTS` jest zaszyte w kodzie;
       wczytywanie dodatkowych z pliku JSON obok `connections.json`.
 - [ ] **Uruchomienie skryptu na wielu serwerach naraz** (M) — z wynikiem per serwer.
-- [ ] **Zapis wyniku skryptu do pliku** (S) — dziś tylko okno i Ctrl+F.
+- [x] **Zapis wyniku skryptu do pliku** (S) — dziś tylko okno i Ctrl+F.
 - [ ] **Kopiowanie gotowej komendy `wget`/`curl` do schowka** (S) — po uruchomieniu
       serwera HTTP i tak ręcznie przepisujemy adres do sesji SSH.
 - [ ] **Podgląd żądań do serwera HTTP** (S) — widać, czy zdalny host faktycznie pobrał.
@@ -137,7 +142,7 @@ zależy od zakresu; ⭐ = najtańsze z realnym zyskiem.
 - [ ] **Zmienne w połączeniach** (`%h`, `%u`) (S) — w poleceniach startowych i skryptach.
 - [ ] **Historia połączeń / „ostatnio używane"** (S) — lista pod Home, z czasem
       ostatniego logowania.
-- [ ] ⭐ **Filtrowanie drzewa i ulubione** (S) — pole szukania nad drzewem, filtr po
+- [x] **Filtrowanie drzewa** (S) — pole szukania nad drzewem, filtr po
       nazwie i hoście.
 - [ ] **Tagi na połączeniach** (S) — `prod`, `db`, `klient-X`, plus filtr po tagu.
 - [ ] **Telnet i połączenie szeregowe (COM)** (M) — `pyserial`, przydatne przy
@@ -153,7 +158,7 @@ zależy od zakresu; ⭐ = najtańsze z realnym zyskiem.
 - [ ] **Makra — własne przyciski wysyłające tekst** (S) do bieżącej sesji.
 - [ ] **Wyzwalacze na tekst** (S) — regex w wyjściu → powiadomienie systemowe
       (`FAILED`, `Kernel panic`). `HIGHLIGHT_RULES` już mają połowę roboty.
-- [ ] ⭐ **Timestampy na linii** (S) — przełącznik: każda linia poprzedzona godziną.
+- [x] **Timestampy na linii** (S) — przełącznik: każda linia poprzedzona godziną.
 - [ ] **Kopiowanie zaznaczenia automatycznie** (S) — zwyczaj X11, plus Ctrl+Shift+C.
 - [ ] **Eksport wyjścia sesji do HTML** (S) — z kolorami z podświetlania.
 
@@ -177,9 +182,9 @@ zależy od zakresu; ⭐ = najtańsze z realnym zyskiem.
 
 ### Reszta
 
-- [ ] ⭐ **Powiadomienia systemowe** (S) — koniec długiego polecenia albo transferu.
+- [x] **Powiadomienia systemowe** (S) — koniec długiego polecenia albo transferu.
 - [ ] **Tryb tylko do odczytu dla zakładki** (S) — blokada wysyłania klawiszy,
       do demonstracji i prezentacji.
 - [ ] **Dziennik audytu** (S) — kto, kiedy, co uruchomił; plik lokalny.
-- [ ] **Sprawdzanie certyfikatów TLS hosta** (S) — data wygaśnięcia, stdlib `ssl`.
+- [x] **Sprawdzanie certyfikatów TLS hosta** (S) — data wygaśnięcia, stdlib `ssl`.
 - [ ] ⭐ **Generator kluczy SSH** (M) — plus wgranie do `authorized_keys` jednym kliknięciem.

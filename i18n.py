@@ -211,6 +211,58 @@ TEXTS = {
         "scanner_copy": "Copy",
         "scanner_copy_all": "All",
         "update_failed": "Could not download the update:\n\n{0}",
+        # --- import z ~/.ssh/config ---
+        "menu_import_ssh_config": "Import from ~/.ssh/config",
+        "ssh_config_missing": "No ~/.ssh/config file found.",
+        "ssh_config_none": "No usable entries found in ~/.ssh/config.",
+        "ssh_config_done": "Imported hosts: {0}",
+        "err_ssh_config": "Could not read ~/.ssh/config:\n\n{0}",
+        "ssh_config_group": "ssh_config",
+        # --- filtr drzewa ---
+        "tree_filter_placeholder": "Filter connections…",
+        # --- notatki, polecenia startowe, duplikat ---
+        "fld_notes": "Notes:",
+        "fld_startup": "Startup commands:",
+        "tip_startup": "Sent to the shell after login, one command per line.",
+        "menu_duplicate": "Duplicate",
+        "copy_suffix": "{0} (copy)",
+        # --- widok: czcionka, znaczniki czasu, zapis sesji ---
+        "menu_font": "Terminal font…",
+        "menu_timestamps": "Timestamps on each line",
+        "menu_save_log": "Save session log…",
+        "log_saved": "Session saved to:\n\n{0}",
+        "err_log": "Could not save the session:\n\n{0}",
+        "log_need_session": "Open an SSH session first.",
+        "log_default_name": "session.txt",
+        "text_filter": "Text files (*.txt);;All files (*)",
+        # --- wynik skryptu ---
+        "script_save": "Save…",
+        "script_default_name": "script-output.txt",
+        # --- Wake-on-LAN i certyfikat TLS ---
+        "menu_wol": "Wake-on-LAN…",
+        "wol_prompt": "MAC address (e.g. AA:BB:CC:DD:EE:FF):",
+        "wol_sent": "Magic packet sent to {0}.",
+        "wol_bad_mac": "That is not a MAC address: {0}",
+        "wol_failed": "Could not send the packet:\n\n{0}",
+        "scanner_wake": "Wake-on-LAN",
+        "menu_tls": "TLS certificate…",
+        "tls_prompt": "Host (host or host:port, default 443):",
+        "tls_title": "TLS certificate",
+        "tls_result": "{0}\n\nSubject: {1}\nIssuer: {2}\nValid until: {3}\nDays left: {4}",
+        "tls_error": "Could not read the certificate:\n\n{0}",
+        # --- powiadomienia systemowe ---
+        "notify_title": "SSH/RDP Manager",
+        "notify_transfer_done": "Transfer finished: {0}",
+        "notify_script_done": "Script finished: {0}",
+        "notify_scan_done": "Scan finished, hosts found: {0}",
+        # --- pasek postępu skanera ---
+        "scanner_progress": "%v / %m hosts (%p%)",
+        "scanner_phase_ping": "Pinging hosts…",
+        "scanner_phase_arp": "Checking the ARP table…",
+        "scanner_phase_idle": "Ready.",
+        "scanner_status": "{0}  ·  found: {1}",
+        # --- skrypty użytkownika ---
+        "err_user_scripts": "Could not read scripts.json:\n\n{0}",
     },
     "pl": {
         # --- okno i formularz połączenia ---
@@ -404,6 +456,58 @@ TEXTS = {
         "scanner_copy": "Kopiuj",
         "scanner_copy_all": "Wszystkie",
         "update_failed": "Nie udało się pobrać aktualizacji:\n\n{0}",
+        # --- import z ~/.ssh/config ---
+        "menu_import_ssh_config": "Importuj z ~/.ssh/config",
+        "ssh_config_missing": "Nie znaleziono pliku ~/.ssh/config.",
+        "ssh_config_none": "W ~/.ssh/config nie ma wpisów nadających się do importu.",
+        "ssh_config_done": "Zaimportowano hostów: {0}",
+        "err_ssh_config": "Nie udało się odczytać ~/.ssh/config:\n\n{0}",
+        "ssh_config_group": "ssh_config",
+        # --- filtr drzewa ---
+        "tree_filter_placeholder": "Filtruj połączenia…",
+        # --- notatki, polecenia startowe, duplikat ---
+        "fld_notes": "Notatki:",
+        "fld_startup": "Polecenia startowe:",
+        "tip_startup": "Wysyłane do powłoki po zalogowaniu, jedno polecenie na linię.",
+        "menu_duplicate": "Duplikuj",
+        "copy_suffix": "{0} (kopia)",
+        # --- widok: czcionka, znaczniki czasu, zapis sesji ---
+        "menu_font": "Czcionka terminala…",
+        "menu_timestamps": "Znacznik czasu przy każdej linii",
+        "menu_save_log": "Zapisz zapis sesji…",
+        "log_saved": "Sesja zapisana do:\n\n{0}",
+        "err_log": "Nie udało się zapisać sesji:\n\n{0}",
+        "log_need_session": "Najpierw otwórz sesję SSH.",
+        "log_default_name": "sesja.txt",
+        "text_filter": "Pliki tekstowe (*.txt);;Wszystkie pliki (*)",
+        # --- wynik skryptu ---
+        "script_save": "Zapisz…",
+        "script_default_name": "wynik-skryptu.txt",
+        # --- Wake-on-LAN i certyfikat TLS ---
+        "menu_wol": "Wake-on-LAN…",
+        "wol_prompt": "Adres MAC (np. AA:BB:CC:DD:EE:FF):",
+        "wol_sent": "Magiczny pakiet wysłany do {0}.",
+        "wol_bad_mac": "To nie jest adres MAC: {0}",
+        "wol_failed": "Nie udało się wysłać pakietu:\n\n{0}",
+        "scanner_wake": "Wake-on-LAN",
+        "menu_tls": "Certyfikat TLS…",
+        "tls_prompt": "Host (host albo host:port, domyślnie 443):",
+        "tls_title": "Certyfikat TLS",
+        "tls_result": "{0}\n\nPodmiot: {1}\nWystawca: {2}\nWażny do: {3}\nPozostało dni: {4}",
+        "tls_error": "Nie udało się odczytać certyfikatu:\n\n{0}",
+        # --- powiadomienia systemowe ---
+        "notify_title": "Menedżer SSH/RDP",
+        "notify_transfer_done": "Transfer zakończony: {0}",
+        "notify_script_done": "Skrypt zakończony: {0}",
+        "notify_scan_done": "Skanowanie zakończone, znaleziono hostów: {0}",
+        # --- pasek postępu skanera ---
+        "scanner_progress": "%v / %m hostów (%p%)",
+        "scanner_phase_ping": "Odpytywanie hostów…",
+        "scanner_phase_arp": "Sprawdzanie tablicy ARP…",
+        "scanner_phase_idle": "Gotowe.",
+        "scanner_status": "{0}  ·  znaleziono: {1}",
+        # --- skrypty użytkownika ---
+        "err_user_scripts": "Nie udało się odczytać scripts.json:\n\n{0}",
     },
 }
 

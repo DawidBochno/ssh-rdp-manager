@@ -36,18 +36,24 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
 - [`i18n.py`](i18n.py) — napisy interfejsu po angielsku i po polsku.
 - [`rdp.py`](rdp.py) — sesja RDP na kontrolce ActiveX Microsoftu jako widget zakładki.
 - [`update.py`](update.py) — sprawdzanie, czy kopia nadąża za gałęzią na GitHubie.
-- [`scanner.py`](scanner.py) — skaner sieci (menu „Programy”) i okno z wynikami.
+- [`scanner.py`](scanner.py) — skaner sieci (menu „Programy”), Wake-on-LAN
+  i odczyt certyfikatu TLS.
+- [`notify.py`](notify.py) — dymek w zasobniku po długim transferze, skrypcie
+  i skanowaniu.
 
 ```
 MainWindow
 └── QSplitter (poziomy)
-    ├── ConnectionTree (QTreeWidget)  ← grupy i połączenia, menu pod prawym klikiem
+    ├── tree_panel (QWidget)          ← pole filtru + ConnectionTree
+    │   └── ConnectionTree (QTreeWidget)  ← grupy i połączenia, menu pod prawym klikiem
     └── QTabWidget                    ← "🏠 Home" | SessionTab... | "+" (zawsze pierwsza/ostatnia)
         └── SessionTab (na każde otwarte połączenie)
             └── QSplitter (poziomy): SftpPanel | SshTerminal
 statusBar()                           ← statystyki serwera z aktywnej zakładki
 ```
 
+- Chowanie listy z menu/paska bocznego dotyczy **`tree_panel`**, nie samego drzewa —
+  inaczej pole filtru zostawałoby wiszące nad pustym miejscem.
 - `CONNECTION_TYPE = QTreeWidgetItem.UserType + 1` odróżnia **połączenie** od **grupy**.
   Dwuklik otwiera zakładkę tylko dla elementów tego typu.
 - Dane połączenia (`name`/`host`/`port`/`username`) siedzą w `item.setData(0, CONNECTION_DATA, ...)`.
@@ -83,6 +89,30 @@ Gdy kontrolka nie wstanie, `open_rdp()` zapisuje plik `.rdp` i odpala
 `mstsc.exe` w osobnym oknie. Hasła w `.rdp` **nie ma celowo** — idzie tam jako
 blob DPAPI, nie tekstem, więc `mstsc` i tak zapyta.
 
+#### Import z `~/.ssh/config`, filtr drzewa, duplikat, notatki
+
+- **Parser konfiguracji jest w Paramiko** (`SSHConfig.from_path`) — własny nie
+  ogarnąłby `Include` ani `Match`, a te w cudzym pliku bywają. Wpisy z `*` i `?`
+  w nazwie pomijamy: to wzorce, nie hosty. Wynik ląduje w osobnej grupie.
+  Uwaga na kolejność w pliku: w ssh_config **wygrywa pierwsza** napotkana wartość,
+  więc `Host *` na początku nadpisuje wszystkim użytkownika (tak samo działa `ssh`).
+- `ConnectionTree.filter()` chowa element, **gdy nie pasuje ani on, ani nic pod nim**
+  — pętla po dzieciach nie może iść przez `or` z krótkim spięciem, bo wtedy
+  dzieci za pierwszym trafieniem nie dostałyby `setHidden(False)`.
+- `startup` (polecenia startowe) leci przez `SshTerminal.send_startup()` dopiero po
+  dodaniu zakładki; `notes` istnieje tylko po to, żeby wisieć w dymku wpisu.
+
+#### Znaczniki czasu, czcionka i skróty zakładek
+
+- `stamp_lines()` jest czysta i **przenosi stan między wywołaniami** (`_at_line_start`):
+  serwer przysyła linię w kawałkach, więc bez tego znacznik lądowałby w środku zdania.
+- Czcionka terminala siedzi w `QSettings` i wczytuje się **leniwie** (`terminal_font()`)
+  — `QFont` zbudowany przed `QApplication` potrafi ostrzegać. Menu zmienia ją także
+  w otwartych zakładkach, nowe biorą ją same.
+- Ctrl+Tab i Ctrl+1..9 to `QShortcut` **na oknie**: skrót aplikacji łapie klawisz,
+  zanim dojdzie do terminala. Bez tego Ctrl+Tab poleciałby do powłoki jako `	`
+  (`key_to_bytes` mapuje Tab przez `SPECIAL_KEYS`). `tab_order()` pomija „+”.
+
 #### Skaner sieci (`scanner.py`, menu „Programy”)
 
 Odpowiednik Advanced IP Scanner: zakres adresów -> lista żywych hostów z nazwą,
@@ -105,6 +135,15 @@ systemowy `ping`, `arp -a`, `socket` i odwrotny DNS.
   (wszystko / nazwa / IP / MAC / usługi) — nowa kolumna dopisuje się do niego sama.
 - **Menu „Programy” to lista `TOOLS`** w `main.py` (klucz napisu -> metoda okna).
   Kolejny dodatek narzędziowy to jeden wiersz, nie nowe menu.
+- Pasek postępu ma **etykietę etapu** (`NetworkScan.phase`), bo runda ARP nie
+  posuwa licznika — bez niej okno wygląda na zawieszone.
+- **Wake-on-LAN** to `magic_packet()` (6 × 0xFF + MAC ×16) na UDP broadcast:
+  kilkanaście linii na `socket`, żadnej biblioteki.
+- **Certyfikat TLS** czytamy kontekstem **bez weryfikacji** — celem jest odczyt
+  także certyfikatu samopodpisanego i wygasłego, a weryfikujący kontekst zerwałby
+  połączenie dokładnie w tych przypadkach. Pola rozbiera `ssl._ssl._test_decode_cert`
+  (prywatne API CPythona, patrz komentarz `ponytail:`) — alternatywą byłaby
+  zależność `cryptography`.
 
 #### Aktualizacja z GitHuba (`update.py`)
 
@@ -318,6 +357,11 @@ kto zalogowany, ping, aktywne połączenia). `run_script()` odpala je na klienti
 **aktywnej zakładki** osobnym kanałem (`exec_command`, jak `_StatsPoller`) i
 pokazuje wynik w oknie dialogowym z `QPlainTextEdit`.
 
+- **Własne skrypty użytkownika**: `load_user_scripts()` dopisuje wpisy z
+  `scripts.json` (obok `connections.json`) do `SCRIPTS` **przed** zbudowaniem menu.
+  Ich `label` to gotowy napis, nie klucz tłumaczenia — stąd `script_label()`,
+  które tłumaczy tylko wpisy wbudowane. Wpis bez etykiety albo bez `unix` odpada
+  po cichu, uszkodzony plik daje jeden komunikat i nie kasuje listy wbudowanej.
 - Skrypty z `{0}` (restart usługi, ping) najpierw pytają o parametr
   (`QInputDialog`) — **`.format()` woła się tylko wtedy**, bo część poleceń
   PowerShell ma dosłowne `{` (np. `@{LogName=...}`), które `.format()` inaczej
@@ -363,7 +407,11 @@ połączenie, transfery SFTP w tle i zapamiętywanie układu okna**, **11 gotowy
 skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), **zakładka
 „Home” i „+” (tymczasowe połączenia, wzorem MobaXterm)**, **graficzny SFTP po
 lewej w każdej sesji** (`SftpPanel`), **sprawdzanie aktualizacji z GitHuba**,
-**skaner sieci w menu „Programy”**, self-testy.
+**skaner sieci w menu „Programy”**, **import z `~/.ssh/config`**, **filtr nad
+drzewem**, **duplikowanie wpisu, notatki i polecenia startowe**, **własne skrypty
+z `scripts.json`**, **Ctrl+Tab / Ctrl+1..9, wybór czcionki terminala, znaczniki
+czasu, zapis sesji i wyniku skryptu do pliku**, **Wake-on-LAN**, **odczyt
+certyfikatu TLS**, **powiadomienia systemowe**, self-testy.
 
 Grupy dostają domyślną ikonę `GROUP_ICON` („📁") przy tworzeniu i przy wczytywaniu
 starych wpisów bez ikony. Kolor (menu „Kolor…") siedzi w roli `COLOR_DATA`, zapisuje
