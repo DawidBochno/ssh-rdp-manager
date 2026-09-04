@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 import i18n
+import scanner
 import update
 from i18n import t
 from rdp import RDP_PORT, open_rdp
@@ -56,6 +57,10 @@ from ssh_terminal import (
     run_script,
     wait_for_pending,
 )
+
+# Menu „Programy”: klucz napisu -> metoda `MainWindow`. Kolejny dodatek
+# narzędziowy to jeden wiersz tutaj, bez dotykania budowania menu.
+TOOLS = (("menu_network_scanner", "_open_scanner"),)
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
@@ -693,6 +698,12 @@ class MainWindow(QMainWindow):
         for script in SCRIPTS:
             scripts_menu.addAction(t(script["label"]), lambda s=script: self._run_script(s))
 
+        # Dodatkowe programy: jedna lista, żeby kolejny narzędziowy dodatek
+        # był jednym wpisem, a nie kolejnym menu do zbudowania.
+        tools_menu = menu.addMenu(t("menu_tools"))
+        for label, handler in TOOLS:
+            tools_menu.addAction(t(label), getattr(self, handler))
+
         help_menu = menu.addMenu(t("menu_help"))
         help_menu.addAction(t("menu_about"), self._show_about)
 
@@ -856,9 +867,17 @@ class MainWindow(QMainWindow):
 
         self._connect_and_add_tab(conn, password)
 
-    def _quick_connect(self):
+    def _open_scanner(self):
+        """Skaner sieci; wybrany host wchodzi wprost do formularza połączenia."""
+        scanner.ScannerDialog(self, self._connect_to_found).exec()
+
+    def _connect_to_found(self, host, protocol, name):
+        self._quick_connect({"host": host, "protocol": protocol, "name": name or host})
+
+    def _quick_connect(self, data=None):
         """Połączenie „na szybko” z przycisku + — nie trafia do drzewa/pliku."""
-        dialog = ConnectionDialog(self)
+        # `clicked` z przycisku podaje `False` jako pierwszy argument — stąd `or None`.
+        dialog = ConnectionDialog(self, data or None)
         dialog.setWindowTitle(t("dlg_quick_title"))
         dialog.save_password.setVisible(False)
         if dialog.exec() != QDialog.Accepted:
@@ -1101,6 +1120,19 @@ def selftest():
 
     # Menu i pasek boczny: akcja "Lista połączeń" musi realnie chować drzewo.
     assert window.menuBar().actions(), "brak paska menu"
+    assert any(a.text() == t("menu_tools") for a in window.menuBar().actions()), "brak menu Programy"
+
+    # Skaner: wiersz z pingu i MAC z ARP muszą trafić do jednego wiersza tabeli.
+    chosen = []
+    dialog = scanner.ScannerDialog(window, lambda *args: chosen.append(args))
+    dialog._add_row({"ip": "10.0.0.7", "name": "serwer", "ports": [22], "services": "SSH"})
+    dialog._add_row({"ip": "10.0.0.7", "mac": "AA:BB:CC:DD:EE:FF"})
+    dialog._add_row({"ip": "10.0.0.9", "mac": "11:22:33:44:55:66"})  # cichy host z ARP
+    assert dialog.table.rowCount() == 1, "MAC nie może zakładać nowego wiersza"
+    assert dialog.table.item(0, 2).text() == "AA:BB:CC:DD:EE:FF"
+    dialog._open_default(dialog.table.item(0, 1))
+    assert chosen == [("10.0.0.7", "ssh", "serwer")], chosen
+    dialog.close()
     window.toggle_tree_action.setChecked(False)
     assert window.tree.isHidden(), "toggle w menu/pasku bocznym nie ukrywa drzewa"
     window.toggle_tree_action.setChecked(True)
@@ -1147,6 +1179,7 @@ def selftest():
     rdp.selftest()
     servers.selftest()
     update.selftest()
+    scanner.selftest()
     del app
     print("main selftest OK")
 
