@@ -101,6 +101,8 @@ systemowy `ping`, `arp -a`, `socket` i odwrotny DNS.
 - `parse_range()` (czysta funkcja, stąd asercje) rozumie `192.168.0.1-100`,
   `192.168.0.1-192.168.0.2`, `/24` i listy po przecinku; `MAX_HOSTS` odbija
   literówkę w rodzaju `10.0.0.0/8`, zanim ta zamieni program w skaner internetu.
+- Menu pod prawym klawiszem ma podmenu **„Kopiuj”** zbudowane z `COLUMNS`
+  (wszystko / nazwa / IP / MAC / usługi) — nowa kolumna dopisuje się do niego sama.
 - **Menu „Programy” to lista `TOOLS`** w `main.py` (klucz napisu -> metoda okna).
   Kolejny dodatek narzędziowy to jeden wiersz, nie nowe menu.
 
