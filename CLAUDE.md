@@ -36,6 +36,7 @@ Skrypt wywalił się na starcie (zwykle `ModuleNotFoundError`), a dwuklik zabier
 - [`i18n.py`](i18n.py) — napisy interfejsu po angielsku i po polsku.
 - [`rdp.py`](rdp.py) — sesja RDP na kontrolce ActiveX Microsoftu jako widget zakładki.
 - [`update.py`](update.py) — sprawdzanie, czy kopia nadąża za gałęzią na GitHubie.
+- [`scanner.py`](scanner.py) — skaner sieci (menu „Programy”) i okno z wynikami.
 
 ```
 MainWindow
@@ -81,6 +82,27 @@ po rozłączeniu wraca tam powód zamiast statystyk.
 Gdy kontrolka nie wstanie, `open_rdp()` zapisuje plik `.rdp` i odpala
 `mstsc.exe` w osobnym oknie. Hasła w `.rdp` **nie ma celowo** — idzie tam jako
 blob DPAPI, nie tekstem, więc `mstsc` i tak zapyta.
+
+#### Skaner sieci (`scanner.py`, menu „Programy”)
+
+Odpowiednik Advanced IP Scanner: zakres adresów -> lista żywych hostów z nazwą,
+MAC-iem i wykrytymi usługami, a z wiersza otwiera się sesja SSH albo RDP
+(dwuklik: SSH gdy port 22 otwarty, inaczej RDP). Bez nowych zależności —
+systemowy `ping`, `arp -a`, `socket` i odwrotny DNS.
+
+- **Dwie rundy, nie jedna.** Ping łapie większość, ale Windows z włączoną zaporą
+  na ICMP nie odpowiada. Po skanowaniu czytamy tablicę ARP (pingi zdążyły ją
+  wypełnić) i hosty, które są w ARP a nie odpowiedziały, dostają drugą rundę
+  z samym sprawdzeniem portów. Bez tego znikałaby połowa serwerów Windows.
+- **Windowsowy `ping` zwraca 0 także przy „host nieosiągalny”** — dlatego
+  `alive()` sprawdza dodatkowo `TTL=` w wyjściu, nie sam kod wyjścia.
+- Równoległość to `ThreadPoolExecutor(WORKERS)` w środku `QThread`: całość jest
+  czekaniem na sieć, więc wątki ze stdliba wystarczają (254 adresy ~9 s).
+- `parse_range()` (czysta funkcja, stąd asercje) rozumie `192.168.0.1-100`,
+  `192.168.0.1-192.168.0.2`, `/24` i listy po przecinku; `MAX_HOSTS` odbija
+  literówkę w rodzaju `10.0.0.0/8`, zanim ta zamieni program w skaner internetu.
+- **Menu „Programy” to lista `TOOLS`** w `main.py` (klucz napisu -> metoda okna).
+  Kolejny dodatek narzędziowy to jeden wiersz, nie nowe menu.
 
 #### Aktualizacja z GitHuba (`update.py`)
 
@@ -338,7 +360,8 @@ zależności)**, **rozmiar PTY za oknem, wklejanie, klucz prywatny per
 połączenie, transfery SFTP w tle i zapamiętywanie układu okna**, **11 gotowych
 skryptów administracyjnych** (menu „Skrypty”, Linux i Windows), **zakładka
 „Home” i „+” (tymczasowe połączenia, wzorem MobaXterm)**, **graficzny SFTP po
-lewej w każdej sesji** (`SftpPanel`), self-testy.
+lewej w każdej sesji** (`SftpPanel`), **sprawdzanie aktualizacji z GitHuba**,
+**skaner sieci w menu „Programy”**, self-testy.
 
 Grupy dostają domyślną ikonę `GROUP_ICON` („📁") przy tworzeniu i przy wczytywaniu
 starych wpisów bez ikony. Kolor (menu „Kolor…") siedzi w roli `COLOR_DATA`, zapisuje
