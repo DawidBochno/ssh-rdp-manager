@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 import i18n
 import notify
 import scanner
+import tunnels
 import update
 from i18n import t
 from rdp import RDP_PORT, open_rdp
@@ -63,8 +64,12 @@ from ssh_terminal import (
     run_script,
     save_text,
     script_label,
+    scrollback,
+    set_scrollback,
     set_terminal_font,
+    set_triggers,
     terminal_font,
+    triggers_text,
     wait_for_pending,
 )
 
@@ -74,6 +79,7 @@ TOOLS = (
     ("menu_network_scanner", "_open_scanner"),
     ("menu_wol", "_wake_on_lan"),
     ("menu_tls", "_check_certificate"),
+    ("menu_tunnels", "_manage_tunnels"),
 )
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
@@ -163,8 +169,18 @@ class ConnectionDialog(QDialog):
         stored = decrypt_password(data["password"]) if data.get("password") else ""
         self.password = QLineEdit(stored or "")
         self.password.setEchoMode(QLineEdit.Password)
+
+        # Hasło klucza to osobna rzecz niż hasło konta — Paramiko ma na to
+        # osobny argument, a wpisanie jednego w rolę drugiego kończy się
+        # komunikatem o „niepoprawnym pliku klucza".
+        stored_passphrase = (
+            decrypt_password(data["passphrase"]) if data.get("passphrase") else ""
+        )
+        self.passphrase = QLineEdit(stored_passphrase or "")
+        self.passphrase.setEchoMode(QLineEdit.Password)
+        self.passphrase.setToolTip(t("tip_passphrase"))
         self.save_password = QCheckBox(t("chk_save_password"))
-        self.save_password.setChecked(bool(stored))
+        self.save_password.setChecked(bool(stored or stored_passphrase))
         self.save_password.setEnabled(CAN_STORE_PASSWORDS)
         if not CAN_STORE_PASSWORDS:
             self.save_password.setToolTip(t("tip_save_password_windows_only"))
@@ -185,6 +201,8 @@ class ConnectionDialog(QDialog):
         form.addRow(t("fld_password"), self.password)
         self._key_row = form.rowCount()
         form.addRow(t("fld_key_file"), key_box)
+        self._passphrase_row = form.rowCount()
+        form.addRow(t("fld_passphrase"), self.passphrase)
         self._startup_row = form.rowCount()
         form.addRow(t("fld_startup"), self.startup)
         form.addRow(t("fld_notes"), self.notes)
@@ -214,6 +232,7 @@ class ConnectionDialog(QDialog):
         if self.port.value() == other_default:
             self.port.setValue(self._default_port())
         self._form.setRowVisible(self._key_row, not is_rdp)
+        self._form.setRowVisible(self._passphrase_row, not is_rdp)
         self._form.setRowVisible(self._startup_row, not is_rdp)
 
     def _pick_key_file(self):
@@ -247,6 +266,8 @@ class ConnectionDialog(QDialog):
             data["notes"] = self.notes.toPlainText().strip()
         if self.save_password.isChecked() and self.password.text():
             data["password"] = encrypt_password(self.password.text())
+        if protocol == "ssh" and self.save_password.isChecked() and self.passphrase.text():
+            data["passphrase"] = encrypt_password(self.passphrase.text())
         return data
 
 
@@ -796,6 +817,8 @@ class MainWindow(QMainWindow):
         timestamps_action.toggled.connect(self._toggle_timestamps)
         view_menu.addAction(timestamps_action)
         view_menu.addAction(t("menu_font"), self._pick_font)
+        view_menu.addAction(t("menu_scrollback"), self._pick_scrollback)
+        view_menu.addAction(t("menu_triggers"), self._edit_triggers)
         view_menu.addAction(t("menu_save_log"), self._save_session_log)
 
         # Wybór języka: zapis idzie do QSettings, okno czyta go przy starcie.
@@ -1005,6 +1028,9 @@ class MainWindow(QMainWindow):
                 return
 
         password = decrypt_password(conn["password"]) if conn.get("password") else None
+        passphrase = (
+            decrypt_password(conn["passphrase"]) if conn.get("passphrase") else None
+        )
 
         # RDP nie pyta nas o hasło: bez zapisanego kontrolka poprosi sama.
         if conn.get("protocol", "ssh") == "rdp":
@@ -1023,7 +1049,7 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
 
-        self._connect_and_add_tab(conn, password)
+        self._connect_and_add_tab(conn, password, passphrase)
 
     def _open_scanner(self):
         """Skaner sieci; wybrany host wchodzi wprost do formularza połączenia."""
@@ -1063,6 +1089,27 @@ class MainWindow(QMainWindow):
             if isinstance(widget, SessionTab):
                 widget.terminal.setFont(font)
 
+    def _pick_scrollback(self):
+        """Ile linii trzyma terminal — więcej pamięci, ale dłuższa historia."""
+        lines, ok = QInputDialog.getInt(
+            self, t("menu_scrollback"), t("scrollback_prompt"), scrollback(), 100, 200000, 500
+        )
+        if not ok:
+            return
+        set_scrollback(lines)
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, SessionTab):
+                widget.terminal.document().setMaximumBlockCount(lines)
+
+    def _edit_triggers(self):
+        """Regexy, na które ma reagować powiadomienie — jeden na linię."""
+        text, ok = QInputDialog.getMultiLineText(
+            self, t("triggers_title"), t("triggers_hint"), triggers_text()
+        )
+        if ok:
+            set_triggers(text)
+
     def _save_session_log(self):
         """Zapis tego, co widać w terminalu aktywnej zakładki.
 
@@ -1093,11 +1140,12 @@ class MainWindow(QMainWindow):
             return
         conn = dialog.values()
         conn.pop("password", None)  # tymczasowe połączenie nic nie zapisuje
+        conn.pop("passphrase", None)
         password = dialog.password.text() or None
         if conn["protocol"] == "rdp":
             self._open_rdp_tab(conn, password)
             return
-        self._connect_and_add_tab(conn, password)
+        self._connect_and_add_tab(conn, password, dialog.passphrase.text() or None)
 
     def _open_rdp_tab(self, conn, password):
         """None = sesja poszła do osobnego mstsc albo się nie udała."""
@@ -1107,22 +1155,57 @@ class MainWindow(QMainWindow):
         tab.session_ended.connect(lambda text, w=tab: self._show_stats(w, text))
         self._add_tab(tab, conn["name"])
 
-    def _connect_and_add_tab(self, conn, password):
+    def _connect_and_add_tab(self, conn, password, passphrase=None):
         # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
         terminal = connect_with_progress(
             self, conn["host"], conn["port"], conn["username"], password,
-            conn.get("key_file"),
+            conn.get("key_file"), passphrase,
         )
         if terminal is None:
             return
 
-        session = SessionTab(terminal)
+        # Zakładki katalogów SFTP siedzą wprost w danych połączenia — panel
+        # dopisuje do tej samej listy, a `tree.save()` zrzuca ją do pliku.
+        session = SessionTab(
+            terminal, bookmarks=conn.setdefault("bookmarks", []), on_change=self.tree.save
+        )
+        session.conn = conn
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
         )
         self._add_tab(session, conn["name"])
+        self._restore_tunnels(session, conn)
         session.terminal.send_startup(conn.get("startup"))
         session.terminal.setFocus()
+
+    # --- tunele SSH --------------------------------------------------------
+
+    def _restore_tunnels(self, session, conn):
+        """Zapisane tunele wstają razem z sesją; nieudane zbieramy w jeden komunikat."""
+        failed = []
+        for text in conn.get("tunnels", []):
+            spec = tunnels.parse_tunnel(text)
+            error = session.open_tunnel(spec) if spec else t("tunnel_bad")
+            if error:
+                failed.append(f"{text} — {error}")
+        if failed:
+            QMessageBox.warning(
+                self, t("tunnel_title"), t("tunnel_restore_failed", "\n".join(failed))
+            )
+
+    def _manage_tunnels(self):
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("tunnel_title"), t("tunnels_need_session"))
+            return
+        tunnels.TunnelDialog(self, session, lambda: self._save_tunnels(session)).exec()
+
+    def _save_tunnels(self, session):
+        conn = getattr(session, "conn", None)
+        if conn is None:
+            return  # połączenie tymczasowe — nie ma czego zapisywać
+        conn["tunnels"] = [tunnels.format_tunnel(spec) for spec in session.tunnels]
+        self.tree.save()
 
     def _add_tab(self, widget, name):
         """Nowa karta wchodzi PRZED "+", żeby "+" zawsze zostawało ostatnie."""
@@ -1164,6 +1247,7 @@ def selftest():
     import rdp
     import servers
     import ssh_terminal
+    import tunnels as tunnels_module
     import tempfile
 
     i18n.use("en")  # testy sprawdzaja napisy domyslnego jezyka
@@ -1384,6 +1468,30 @@ def selftest():
     keyed.protocol.setCurrentIndex(keyed.protocol.findData("rdp"))
     assert "key_file" not in keyed.values(), "RDP nie używa klucza SSH"
 
+    # Haslo klucza to osobne pole niz haslo konta i zapisuje sie osobno.
+    if CAN_STORE_PASSWORDS:
+        keyed.protocol.setCurrentIndex(keyed.protocol.findData("ssh"))
+        keyed.password.setText("haslo konta")
+        keyed.passphrase.setText("haslo klucza")
+        keyed.save_password.setChecked(True)
+        values = keyed.values()
+        assert decrypt_password(values["password"]) == "haslo konta", values
+        assert decrypt_password(values["passphrase"]) == "haslo klucza", values
+        # Wczytanie z powrotem musi rozdzielic je tak samo.
+        again = ConnectionDialog(data=values)
+        assert again.password.text() == "haslo konta"
+        assert again.passphrase.text() == "haslo klucza", "passphrase wpadl w pole hasla"
+        keyed.protocol.setCurrentIndex(keyed.protocol.findData("rdp"))
+        assert "passphrase" not in keyed.values(), "RDP nie ma klucza SSH"
+
+    # Tunele: menu Programy musi je wystawiac, a bez sesji nie moze sie wywalic.
+    assert any(label == "menu_tunnels" for label, _ in TOOLS), TOOLS
+    window.tabs.setCurrentIndex(0)  # Home to nie sesja SSH
+    shown = []
+    QMessageBox.information = staticmethod(lambda *a, **k: shown.append(a[-1]))
+    window._manage_tunnels()
+    assert shown == [t("tunnels_need_session")], shown
+
     # Notatki i polecenia startowe: startowe tylko dla SSH, notatki dla obu.
     extra = ConnectionDialog(
         data={"host": "h", "startup": "cd /var/log", "notes": "serwer klienta X"}
@@ -1462,6 +1570,7 @@ def selftest():
     update.selftest()
     scanner.selftest()
     notify.selftest()
+    tunnels_module.selftest()
     del app
     print("main selftest OK")
 
