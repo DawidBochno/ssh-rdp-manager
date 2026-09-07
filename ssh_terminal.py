@@ -11,16 +11,28 @@ programy pełnoekranowe (vim, htop, mc) będą wyglądać źle. Gdy będą potrz
 podmień renderowanie na `pyte` (emulator ekranu w czystym Pythonie) albo QTermWidget.
 """
 import json
+import os
 import re
 import socket
 import stat
+import tempfile
 import threading
 import time
 from binascii import hexlify
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    QEvent,
+    QEventLoop,
+    QFileSystemWatcher,
+    QObject,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -81,6 +93,42 @@ def set_terminal_font(font):
     global _font
     _font = font
     i18n.settings().setValue("terminal_font", font.toString())
+
+
+# Schematy kolorów terminala (tło, tekst). „Default” zdejmuje arkusz stylów,
+# więc terminal wraca do kolorów motywu Qt (jasnego albo ciemnego).
+TERMINAL_THEMES = {
+    "Default": None,
+    "Dark": ("#1e1e1e", "#d4d4d4"),
+    "Solarized Dark": ("#002b36", "#839496"),
+    "Dracula": ("#282a36", "#f8f8f2"),
+}
+DEFAULT_THEME = "Default"
+_theme = None
+
+
+def terminal_theme():
+    global _theme
+    if _theme is None:
+        stored = i18n.settings().value("terminal_theme", DEFAULT_THEME)
+        _theme = stored if stored in TERMINAL_THEMES else DEFAULT_THEME
+    return _theme
+
+
+def set_terminal_theme(name):
+    global _theme
+    _theme = name if name in TERMINAL_THEMES else DEFAULT_THEME
+    i18n.settings().setValue("terminal_theme", _theme)
+
+
+def apply_terminal_theme(editor, name=None):
+    """Nakłada schemat kolorów na pole terminala (albo zdejmuje go dla „Default")."""
+    colors = TERMINAL_THEMES.get(name or terminal_theme())
+    if colors is None:
+        editor.setStyleSheet("")
+    else:
+        bg, fg = colors
+        editor.setStyleSheet(f"background-color: {bg}; color: {fg};")
 
 
 # Ile linii trzyma terminal. Więcej = więcej pamięci na zakładkę, ale i dłuższa
@@ -553,7 +601,8 @@ class SshConnector(QThread):
     connected = Signal(object, object)  # client, channel
     failed = Signal(str)
 
-    def __init__(self, host, port, username, password, key_file=None, passphrase=None):
+    def __init__(self, host, port, username, password, key_file=None, passphrase=None,
+                 jump_host=None):
         super().__init__()
         self.host = host
         self.port = port
@@ -564,8 +613,13 @@ class SshConnector(QThread):
         # osobny argument, a wpisanie jednego w rolę drugiego kończy się
         # „not a valid RSA private key file".
         self.passphrase = passphrase
+        # Bastion (ProxyJump): to samo konto/klucz co na celu, tak jak w
+        # najczęstszym przypadku (jeden klucz na cały skok). "host" albo
+        # "host:port" — bez portu zakładamy 22.
+        self.jump_host = jump_host
         self._cancelled = False
         self._sock = None
+        self._jump_client = None
 
     def cancel(self):
         """Użytkownik zrezygnował — przerywa czekanie i sprząta po sobie.
@@ -573,6 +627,10 @@ class SshConnector(QThread):
         Zamknięcie gniazda wybija Paramiko z blokującego odczytu, więc wątek
         kończy się od razu zamiast mielić do końca limitu czasu. Bez tego
         wiszący wątek potrafił wywalić aplikację przy zamykaniu.
+
+        ponytail: przy połączeniu przez bastion samo połączenie z bastionem
+        idzie przez `paramiko.connect()` bez własnego gniazda, więc anulowanie
+        w tej fazie czeka do limitu czasu zamiast przerwać natychmiast.
         """
         self._cancelled = True
         if self._sock is not None:
@@ -580,30 +638,47 @@ class SshConnector(QThread):
                 self._sock.close()
             except OSError:
                 pass
+        if self._jump_client is not None:
+            try:
+                self._jump_client.close()
+            except Exception:
+                pass
+
+    def _connect_kwargs(self):
+        return dict(
+            username=self.username,
+            password=self.password or None,
+            key_filename=self.key_file or None,
+            passphrase=self.passphrase or None,
+            look_for_keys=not self.password,
+            allow_agent=not self.password,
+            timeout=CONNECT_TIMEOUT,
+        )
 
     def run(self):
         client = paramiko.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(_ThreadHostKeyPolicy(self))
         try:
-            # Gniazdo tworzymy sami, żeby anulowanie mogło je zamknąć.
-            self._sock = socket.create_connection(
-                (self.host, self.port), CONNECT_TIMEOUT
-            )
+            if self.jump_host:
+                jump_host, _, jump_port = self.jump_host.partition(":")
+                jump_client = paramiko.SSHClient()
+                jump_client.load_system_host_keys()
+                jump_client.set_missing_host_key_policy(_ThreadHostKeyPolicy(self))
+                jump_client.connect(
+                    hostname=jump_host, port=int(jump_port or 22), **self._connect_kwargs()
+                )
+                self._jump_client = jump_client
+                sock = jump_client.get_transport().open_channel(
+                    "direct-tcpip", (self.host, self.port), ("127.0.0.1", 0)
+                )
+                client._jump_client = jump_client  # przeżywa razem z sesją, patrz close_session
+            else:
+                # Gniazdo tworzymy sami, żeby anulowanie mogło je zamknąć.
+                self._sock = socket.create_connection((self.host, self.port), CONNECT_TIMEOUT)
+                sock = self._sock
             # Puste hasło = próba logowania kluczem (agent lub ~/.ssh).
-            client.connect(
-                hostname=self.host,
-                port=self.port,
-                username=self.username,
-                password=self.password or None,
-                # Wskazany klucz idzie wprost; bez niego zostaje agent i ~/.ssh.
-                key_filename=self.key_file or None,
-                passphrase=self.passphrase or None,
-                look_for_keys=not self.password,
-                allow_agent=not self.password,
-                timeout=CONNECT_TIMEOUT,
-                sock=self._sock,
-            )
+            client.connect(hostname=self.host, port=self.port, sock=sock, **self._connect_kwargs())
             channel = client.invoke_shell(term="xterm", width=100, height=30)
         except Exception as error:
             client.close()
@@ -618,7 +693,7 @@ class SshConnector(QThread):
 
 
 def connect_with_progress(parent, host, port, username, password, key_file=None,
-                          passphrase=None):
+                          passphrase=None, jump_host=None):
     """Łączy się pokazując okno postępu. Zwraca SshTerminal albo None.
 
     None oznacza anulowanie lub błąd (błąd jest pokazywany użytkownikowi).
@@ -631,7 +706,7 @@ def connect_with_progress(parent, host, port, username, password, key_file=None,
     dialog.setAutoClose(False)
     dialog.setAutoReset(False)
 
-    connector = SshConnector(host, port, username, password, key_file, passphrase)
+    connector = SshConnector(host, port, username, password, key_file, passphrase, jump_host)
     asker = HostKeyAsker(parent)
     # Blocking: wątek roboczy czeka, aż użytkownik odpowie w oknie GUI.
     connector.ask_host_key.connect(asker.ask, Qt.BlockingQueuedConnection)
@@ -939,6 +1014,7 @@ class SshTerminal(QPlainTextEdit):
     def __init__(self, client, channel, parent=None):
         super().__init__(parent)
         self.setFont(terminal_font())
+        apply_terminal_theme(self)
         self._at_line_start = True
         self.setUndoRedoEnabled(False)
         self.document().setMaximumBlockCount(scrollback())  # ogranicz zużycie pamięci
@@ -1070,6 +1146,9 @@ class SshTerminal(QPlainTextEdit):
         self.stats.stop()
         # Zamknięcie klienta wybija odpytywanie statystyk z blokującego odczytu.
         self.client.close()
+        jump_client = getattr(self.client, "_jump_client", None)
+        if jump_client is not None:
+            jump_client.close()  # bastion nie zamyka się razem z celem
         self.stats.wait(3000)
 
 
@@ -1148,8 +1227,12 @@ class SftpPanel(QWidget):
 
     def __init__(self, client, parent=None, bookmarks=None, on_change=None):
         super().__init__(parent)
+        self.setAcceptDrops(True)
         self.sftp = None
         self.path = "/"
+        # Obserwatorzy plików otwartych do edycji — referencja musi przeżyć,
+        # inaczej Python sprzątnie `QFileSystemWatcher` i sygnał nigdy nie przyjdzie.
+        self._editors = []
         # Lista zakładek jest tą samą listą, co w danych połączenia — dopisanie
         # tutaj wystarczy, żeby `on_change` zrzuciło ją do connections.json.
         self.bookmarks = bookmarks if bookmarks is not None else []
@@ -1289,6 +1372,72 @@ class SftpPanel(QWidget):
         else:
             self._download(self._child_path(name), name)
 
+    # --- przeciąganie plików z Eksploratora (upload) -----------------------
+
+    def dragEnterEvent(self, event):
+        if self.sftp and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if self.sftp and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        if not self.sftp:
+            return
+        errors = []
+        for url in event.mimeData().urls():
+            local_path = url.toLocalFile()
+            if not local_path or not Path(local_path).is_file():
+                continue  # foldery przeciągnięte całością pomijamy — bez rekurencji
+            name = Path(local_path).name
+            error = run_transfer(
+                self, self.sftp, "put", self._child_path(name), local_path,
+                t("transfer_upload", name),
+            )
+            if error:
+                errors.append(f"{name}: {error}")
+        self.refresh()
+        if errors:
+            QMessageBox.warning(self, t("err_upload"), "\n".join(errors))
+        event.acceptProposedAction()
+
+    # --- edycja pliku w lokalnym edytorze -----------------------------------
+
+    def _edit(self, remote_path, name):
+        """Pobiera plik do temp, otwiera domyślnym programem i odsyła po zapisie."""
+        if not self.sftp:
+            return
+        local_path = Path(tempfile.mkdtemp(prefix="sshrdp_edit_")) / name
+        error = run_transfer(
+            self, self.sftp, "get", remote_path, str(local_path), t("transfer_download", name)
+        )
+        if error:
+            QMessageBox.warning(self, t("err_download"), error)
+            return
+        try:
+            os.startfile(str(local_path))  # ponytail: Windows-only, jak reszta aplikacji
+        except OSError as error:
+            QMessageBox.warning(self, t("err_generic"), str(error))
+            return
+        watcher = QFileSystemWatcher([str(local_path)], self)
+        watcher.fileChanged.connect(
+            lambda path, r=remote_path, l=local_path, w=watcher: self._upload_edited(r, l, w)
+        )
+        self._editors.append(watcher)
+
+    def _upload_edited(self, remote_path, local_path, watcher):
+        error = run_transfer(
+            self, self.sftp, "put", remote_path, str(local_path),
+            t("transfer_upload", local_path.name),
+        )
+        if error:
+            QMessageBox.warning(self, t("err_upload"), error)
+        # Niektóre edytory zapisują przez podmianę pliku — ścieżka wypada
+        # z obserwacji, trzeba ją dodać ponownie.
+        if str(local_path) not in watcher.files():
+            watcher.addPath(str(local_path))
+
     # --- akcje na plikach -------------------------------------------------
 
     def _download(self, remote_path, name):
@@ -1336,6 +1485,7 @@ class SftpPanel(QWidget):
         menu = QMenu(self)
         if not is_dir:
             menu.addAction(t("sftp_download"), lambda: self._download(self._child_path(name), name))
+            menu.addAction(t("sftp_edit"), lambda: self._edit(self._child_path(name), name))
         menu.addAction(t("menu_delete"), lambda: self._delete(name, is_dir))
         menu.exec(self.list.viewport().mapToGlobal(pos))
 
@@ -1891,6 +2041,23 @@ def selftest():
         script_file.write_text("{to nie lista}", encoding="utf-8")
         assert load_user_scripts(script_file), "uszkodzony plik musi zwrocic tekst bledu"
         assert len(SCRIPTS) == before, "uszkodzony plik nie moze nic dopisac"
+
+    # Motywy terminala: "Default" zdejmuje arkusz stylów, reszta ustawia kolory.
+    stored_theme = i18n.settings().value("terminal_theme")
+    set_terminal_theme("Dark")
+    assert terminal_theme() == "Dark"
+    editor = QPlainTextEdit()
+    apply_terminal_theme(editor)
+    assert "1e1e1e" in editor.styleSheet(), editor.styleSheet()
+    set_terminal_theme("nieznany")
+    assert terminal_theme() == DEFAULT_THEME, "nieznany motyw ma spasc na domyslny"
+    apply_terminal_theme(editor)
+    assert editor.styleSheet() == "", "Default ma zdjac arkusz stylow"
+    editor.deleteLater()
+    if stored_theme is None:
+        i18n.settings().remove("terminal_theme")
+    else:
+        i18n.settings().setValue("terminal_theme", stored_theme)
 
     print("ssh_terminal selftest OK")
 

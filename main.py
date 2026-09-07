@@ -11,8 +11,8 @@ from ctypes import wintypes
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -58,7 +58,9 @@ from ssh_terminal import (
     SCRIPTS,
     SessionTab,
     SshTerminal,
+    TERMINAL_THEMES,
     TerminalHighlighter,
+    apply_terminal_theme,
     connect_with_progress,
     load_user_scripts,
     run_script,
@@ -67,8 +69,10 @@ from ssh_terminal import (
     scrollback,
     set_scrollback,
     set_terminal_font,
+    set_terminal_theme,
     set_triggers,
     terminal_font,
+    terminal_theme,
     triggers_text,
     wait_for_pending,
 )
@@ -80,7 +84,35 @@ TOOLS = (
     ("menu_wol", "_wake_on_lan"),
     ("menu_tls", "_check_certificate"),
     ("menu_tunnels", "_manage_tunnels"),
+    ("menu_dashboard", "_open_dashboard"),
 )
+
+
+def dark_palette():
+    """Ciemna paleta w stylu Fusion — bez arkusza QSS, sam `QPalette`."""
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(45, 45, 45))
+    palette.setColor(QPalette.WindowText, Qt.white)
+    palette.setColor(QPalette.Base, QColor(30, 30, 30))
+    palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+    palette.setColor(QPalette.ToolTipBase, Qt.white)
+    palette.setColor(QPalette.ToolTipText, Qt.white)
+    palette.setColor(QPalette.Text, Qt.white)
+    palette.setColor(QPalette.Button, QColor(45, 45, 45))
+    palette.setColor(QPalette.ButtonText, Qt.white)
+    palette.setColor(QPalette.BrightText, Qt.red)
+    palette.setColor(QPalette.Link, QColor(42, 130, 218))
+    palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+    palette.setColor(QPalette.HighlightedText, Qt.black)
+    return palette
+
+
+def apply_dark_mode(on):
+    """Przełącza motyw całego okna; zapamiętane w `QSettings`, stosowane od startu."""
+    app = QApplication.instance()
+    if app is not None:
+        app.setPalette(dark_palette() if on else app.style().standardPalette())
+    i18n.settings().setValue("dark_mode", on)
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
@@ -179,6 +211,13 @@ class ConnectionDialog(QDialog):
         self.passphrase = QLineEdit(stored_passphrase or "")
         self.passphrase.setEchoMode(QLineEdit.Password)
         self.passphrase.setToolTip(t("tip_passphrase"))
+
+        # Bastion (ProxyJump): to samo konto/klucz co na cel, jak w typowym
+        # skoku jednym kluczem. Puste = łączenie bezpośrednie, jak dotąd.
+        self.jump_host = QLineEdit(data.get("jump_host", ""))
+        self.jump_host.setPlaceholderText(t("ph_jump_host"))
+        self.jump_host.setToolTip(t("tip_jump_host"))
+
         self.save_password = QCheckBox(t("chk_save_password"))
         self.save_password.setChecked(bool(stored or stored_passphrase))
         self.save_password.setEnabled(CAN_STORE_PASSWORDS)
@@ -203,6 +242,8 @@ class ConnectionDialog(QDialog):
         form.addRow(t("fld_key_file"), key_box)
         self._passphrase_row = form.rowCount()
         form.addRow(t("fld_passphrase"), self.passphrase)
+        self._jump_host_row = form.rowCount()
+        form.addRow(t("fld_jump_host"), self.jump_host)
         self._startup_row = form.rowCount()
         form.addRow(t("fld_startup"), self.startup)
         form.addRow(t("fld_notes"), self.notes)
@@ -233,6 +274,7 @@ class ConnectionDialog(QDialog):
             self.port.setValue(self._default_port())
         self._form.setRowVisible(self._key_row, not is_rdp)
         self._form.setRowVisible(self._passphrase_row, not is_rdp)
+        self._form.setRowVisible(self._jump_host_row, not is_rdp)
         self._form.setRowVisible(self._startup_row, not is_rdp)
 
     def _pick_key_file(self):
@@ -260,6 +302,8 @@ class ConnectionDialog(QDialog):
         }
         if protocol == "ssh" and self.key_file.text().strip():
             data["key_file"] = self.key_file.text().strip()
+        if protocol == "ssh" and self.jump_host.text().strip():
+            data["jump_host"] = self.jump_host.text().strip()
         if protocol == "ssh" and self.startup.toPlainText().strip():
             data["startup"] = self.startup.toPlainText().strip()
         if self.notes.toPlainText().strip():
@@ -695,6 +739,51 @@ class HomeTab(QWidget):
             self._open_item(self.results.item(0))
 
 
+class StatsDashboard(QDialog):
+    """Kafelki statystyk wszystkich otwartych sesji naraz, nie tylko aktywnej.
+
+    `_StatsPoller` już liczy to per zakładka (`SessionTab.last_stats`) — okno
+    tylko odczytuje gotowy tekst co 2 s, bez własnego odpytywania serwerów.
+    """
+
+    def __init__(self, parent, main_window):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.setWindowTitle(t("dashboard_title"))
+        self.resize(700, 300)
+
+        layout = QVBoxLayout(self)
+        self.list = QListWidget()
+        layout.addWidget(self.list)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(2000)
+        self.refresh()
+
+    def refresh(self):
+        self.list.clear()
+        tabs = self.main_window.tabs
+        found = False
+        for i in range(tabs.count()):
+            widget = tabs.widget(i)
+            stats = getattr(widget, "last_stats", "")
+            if not stats:
+                continue
+            found = True
+            self.list.addItem(f"{tabs.tabText(i)}\n{stats}\n")
+        if not found:
+            self.list.addItem(t("dashboard_no_sessions"))
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        super().closeEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -820,6 +909,21 @@ class MainWindow(QMainWindow):
         view_menu.addAction(t("menu_scrollback"), self._pick_scrollback)
         view_menu.addAction(t("menu_triggers"), self._edit_triggers)
         view_menu.addAction(t("menu_save_log"), self._save_session_log)
+
+        theme_menu = view_menu.addMenu(t("menu_theme"))
+        theme_group = QActionGroup(self)
+        for name in TERMINAL_THEMES:
+            action = QAction(name, self, checkable=True, checked=name == terminal_theme())
+            action.triggered.connect(lambda _checked, n=name: self._set_terminal_theme(n))
+            theme_group.addAction(action)
+            theme_menu.addAction(action)
+
+        dark_mode_action = QAction(
+            t("menu_dark_mode"), self, checkable=True,
+            checked=bool(i18n.settings().value("dark_mode", False, type=bool)),
+        )
+        dark_mode_action.toggled.connect(apply_dark_mode)
+        view_menu.addAction(dark_mode_action)
 
         # Wybór języka: zapis idzie do QSettings, okno czyta go przy starcie.
         language_menu = view_menu.addMenu(t("menu_language"))
@@ -1102,6 +1206,17 @@ class MainWindow(QMainWindow):
             if isinstance(widget, SessionTab):
                 widget.terminal.document().setMaximumBlockCount(lines)
 
+    def _set_terminal_theme(self, name):
+        """Schemat kolorów terminala — wspólny dla wszystkich zakładek."""
+        set_terminal_theme(name)
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, SessionTab):
+                apply_terminal_theme(widget.terminal)
+
+    def _open_dashboard(self):
+        StatsDashboard(self, self).exec()
+
     def _edit_triggers(self):
         """Regexy, na które ma reagować powiadomienie — jeden na linię."""
         text, ok = QInputDialog.getMultiLineText(
@@ -1159,7 +1274,7 @@ class MainWindow(QMainWindow):
         # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
         terminal = connect_with_progress(
             self, conn["host"], conn["port"], conn["username"], password,
-            conn.get("key_file"), passphrase,
+            conn.get("key_file"), passphrase, conn.get("jump_host"),
         )
         if terminal is None:
             return
@@ -1578,6 +1693,8 @@ def selftest():
 def main():
     app = QApplication(sys.argv)
     i18n.load()  # przed zbudowaniem okna — napisy czytane są raz
+    if i18n.settings().value("dark_mode", False, type=bool):
+        app.setPalette(dark_palette())
     window = MainWindow()
     window.show()
     window.check_updates()
