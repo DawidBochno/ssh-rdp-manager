@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 
 import i18n
 import notify
+import tunnels
 from i18n import t
 
 CONNECT_TIMEOUT = 15  # sekundy
@@ -80,6 +81,23 @@ def set_terminal_font(font):
     global _font
     _font = font
     i18n.settings().setValue("terminal_font", font.toString())
+
+
+# Ile linii trzyma terminal. Więcej = więcej pamięci na zakładkę, ale i dłuższa
+# historia do przewinięcia i do zapisania (`Widok → Zapisz zapis sesji`).
+DEFAULT_SCROLLBACK = 5000
+
+
+def scrollback():
+    """Zapisana długość historii przewijania; brak wpisu = `DEFAULT_SCROLLBACK`."""
+    try:
+        return max(100, int(i18n.settings().value("scrollback", DEFAULT_SCROLLBACK)))
+    except (TypeError, ValueError):
+        return DEFAULT_SCROLLBACK
+
+
+def set_scrollback(lines):
+    i18n.settings().setValue("scrollback", int(lines))
 
 # Wyjście `WINDOWS_STATS_CMD` do testów — Windows Server 2019.
 _WINDOWS_SAMPLE = """@UP
@@ -234,6 +252,68 @@ def highlight_spans(text):
             taken[start:end] = [True] * (end - start)
             spans.append((start, end - start, color, bold))
     return spans
+
+
+# --- wyzwalacze: regex w wyjściu serwera -> powiadomienie systemowe ----------
+#
+# Podświetlanie mówi „popatrz tutaj", gdy akurat patrzysz. Wyzwalacz jest dla
+# sytuacji odwrotnej: okno zminimalizowane, a w logu leci „Kernel panic".
+# Wzorce siedzą w QSettings, po jednym na linię — ten sam plik ustawień co
+# czcionka i język, bez kolejnego pliku do pilnowania.
+
+TRIGGER_INTERVAL = 30  # sekundy — tyle ciszy po dymku, żeby log nie zasypał zasobnika
+
+_triggers = None
+
+
+def compile_triggers(text):
+    """Regexy z pola tekstowego (jeden na linię); wadliwy wzorzec po cichu odpada."""
+    compiled = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            compiled.append(re.compile(line, re.IGNORECASE))
+        except re.error:
+            pass  # użytkownik poprawi w oknie; jeden zły wzorzec nie kasuje reszty
+    return compiled
+
+
+def triggers_text():
+    return i18n.settings().value("triggers", "") or ""
+
+
+def triggers():
+    """Skompilowane wzorce; wczytywane leniwie, jak czcionka terminala."""
+    global _triggers
+    if _triggers is None:
+        _triggers = compile_triggers(triggers_text())
+    return _triggers
+
+
+def set_triggers(text):
+    global _triggers
+    i18n.settings().setValue("triggers", text)
+    _triggers = compile_triggers(text)
+
+
+def pending_lines(tail, text):
+    """Dzieli wyjście na linie kompletne i ogon czekający na resztę.
+
+    Serwer przysyła linię w kawałkach; bez odłożenia ogona wzorzec rozjechałby
+    się na granicy pakietu. Czysta funkcja — stąd asercje w `selftest()`.
+    """
+    lines = (tail + text).split("\n")
+    return "\n".join(lines[:-1]), lines[-1][-1000:]
+
+
+def trigger_hits(text, patterns):
+    """Linie pasujące do któregokolwiek wzorca. Czysta funkcja — stąd asercje."""
+    return [
+        line for line in text.splitlines()
+        if line.strip() and any(pattern.search(line) for pattern in patterns)
+    ]
 
 
 class TerminalHighlighter(QSyntaxHighlighter):
@@ -473,13 +553,17 @@ class SshConnector(QThread):
     connected = Signal(object, object)  # client, channel
     failed = Signal(str)
 
-    def __init__(self, host, port, username, password, key_file=None):
+    def __init__(self, host, port, username, password, key_file=None, passphrase=None):
         super().__init__()
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.key_file = key_file
+        # Hasło do zaszyfrowanego klucza to NIE hasło konta — Paramiko ma na to
+        # osobny argument, a wpisanie jednego w rolę drugiego kończy się
+        # „not a valid RSA private key file".
+        self.passphrase = passphrase
         self._cancelled = False
         self._sock = None
 
@@ -514,6 +598,7 @@ class SshConnector(QThread):
                 password=self.password or None,
                 # Wskazany klucz idzie wprost; bez niego zostaje agent i ~/.ssh.
                 key_filename=self.key_file or None,
+                passphrase=self.passphrase or None,
                 look_for_keys=not self.password,
                 allow_agent=not self.password,
                 timeout=CONNECT_TIMEOUT,
@@ -532,7 +617,8 @@ class SshConnector(QThread):
         self.connected.emit(client, channel)
 
 
-def connect_with_progress(parent, host, port, username, password, key_file=None):
+def connect_with_progress(parent, host, port, username, password, key_file=None,
+                          passphrase=None):
     """Łączy się pokazując okno postępu. Zwraca SshTerminal albo None.
 
     None oznacza anulowanie lub błąd (błąd jest pokazywany użytkownikowi).
@@ -545,7 +631,7 @@ def connect_with_progress(parent, host, port, username, password, key_file=None)
     dialog.setAutoClose(False)
     dialog.setAutoReset(False)
 
-    connector = SshConnector(host, port, username, password, key_file)
+    connector = SshConnector(host, port, username, password, key_file, passphrase)
     asker = HostKeyAsker(parent)
     # Blocking: wątek roboczy czeka, aż użytkownik odpowie w oknie GUI.
     connector.ask_host_key.connect(asker.ask, Qt.BlockingQueuedConnection)
@@ -855,7 +941,11 @@ class SshTerminal(QPlainTextEdit):
         self.setFont(terminal_font())
         self._at_line_start = True
         self.setUndoRedoEnabled(False)
-        self.document().setMaximumBlockCount(5000)  # ogranicz zużycie pamięci
+        self.document().setMaximumBlockCount(scrollback())  # ogranicz zużycie pamięci
+        # Wyzwalacze: niedokończona linia czeka na resztę, żeby wzorzec nie
+        # rozjechał się na granicy kawałków przysłanych przez serwer.
+        self._trigger_tail = ""
+        self._trigger_at = 0.0
         self.highlighter = TerminalHighlighter(self.document())
         install_find(self)
 
@@ -877,8 +967,22 @@ class SshTerminal(QPlainTextEdit):
         self.last_stats = text
         self.stats_changed.emit(text)
 
+    def _check_triggers(self, text):
+        """Dymek w zasobniku, gdy w wyjściu padnie coś z listy wzorców."""
+        patterns = triggers()
+        if not patterns:
+            self._trigger_tail = ""
+            return
+        complete, self._trigger_tail = pending_lines(self._trigger_tail, text)
+        hits = trigger_hits(complete, patterns)
+        now = time.monotonic()
+        if hits and now - self._trigger_at > TRIGGER_INTERVAL:
+            self._trigger_at = now
+            notify.notify(t("notify_title"), t("notify_trigger", hits[0].strip()[:120]))
+
     def _append(self, text):
         text = strip_ansi(text)
+        self._check_triggers(text)
         if self.timestamps:
             text, self._at_line_start = stamp_lines(
                 text, time.strftime("[%H:%M:%S] "), self._at_line_start
@@ -1042,10 +1146,14 @@ def run_transfer(parent, sftp, mode, remote_path, local_path, title):
 class SftpPanel(QWidget):
     """Panel plików po lewej stronie zakładki sesji — wzorem MobaXterm."""
 
-    def __init__(self, client, parent=None):
+    def __init__(self, client, parent=None, bookmarks=None, on_change=None):
         super().__init__(parent)
         self.sftp = None
         self.path = "/"
+        # Lista zakładek jest tą samą listą, co w danych połączenia — dopisanie
+        # tutaj wystarczy, żeby `on_change` zrzuciło ją do connections.json.
+        self.bookmarks = bookmarks if bookmarks is not None else []
+        self.on_change = on_change
         try:
             self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
             self.path = self.sftp.normalize(".")
@@ -1072,6 +1180,13 @@ class SftpPanel(QWidget):
             button.setToolTip(tooltip)
             button.clicked.connect(handler)
             toolbar.addWidget(button)
+
+        # Zakładki katalogów: /var/log, /etc/nginx — per połączenie.
+        self.bookmark_button = QToolButton()
+        self.bookmark_button.setText("⭐")
+        self.bookmark_button.setToolTip(t("sftp_bookmarks"))
+        self.bookmark_button.clicked.connect(self._bookmark_menu)
+        toolbar.addWidget(self.bookmark_button)
         layout.addLayout(toolbar)
 
         self.path_edit = QLineEdit(self.path)
@@ -1138,6 +1253,34 @@ class SftpPanel(QWidget):
 
     def _go_to_typed_path(self):
         self._navigate(self.path_edit.text().strip())
+
+    # --- zakładki katalogów ------------------------------------------------
+
+    def _bookmark_menu(self):
+        menu = QMenu(self)
+        for path in self.bookmarks:
+            menu.addAction(path, lambda p=path: self._navigate(p))
+        if not self.bookmarks:
+            menu.addAction(t("sftp_no_bookmarks")).setEnabled(False)
+        menu.addSeparator()
+        if self.path in self.bookmarks:
+            menu.addAction(t("sftp_del_bookmark"), self._remove_bookmark)
+        else:
+            menu.addAction(t("sftp_add_bookmark"), self._add_bookmark)
+        button = self.bookmark_button
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _add_bookmark(self):
+        if self.path not in self.bookmarks:
+            self.bookmarks.append(self.path)
+            if self.on_change:
+                self.on_change()
+
+    def _remove_bookmark(self):
+        if self.path in self.bookmarks:
+            self.bookmarks.remove(self.path)
+            if self.on_change:
+                self.on_change()
 
     def _open_item(self, item):
         name, is_dir = item.data(Qt.UserRole)
@@ -1220,10 +1363,13 @@ class SftpPanel(QWidget):
 class SessionTab(QWidget):
     """Zawartość zakładki sesji: SFTP po lewej, terminal po prawej — wzorem MobaXterm."""
 
-    def __init__(self, terminal, parent=None):
+    def __init__(self, terminal, parent=None, bookmarks=None, on_change=None):
         super().__init__(parent)
         self.terminal = terminal
-        self.sftp_panel = SftpPanel(terminal.client, self)
+        self.sftp_panel = SftpPanel(terminal.client, self, bookmarks, on_change)
+        # Tunele stoją na tym samym transporcie co powłoka — znikają z sesją.
+        self.tunnels = []          # krotki z `tunnels.parse_tunnel`, w kolejności
+        self._tunnel_objects = {}  # krotka -> działający tunel
 
         splitter = QSplitter(Qt.Horizontal, self)
         splitter.addWidget(self.sftp_panel)
@@ -1240,7 +1386,31 @@ class SessionTab(QWidget):
     def last_stats(self):
         return self.terminal.last_stats
 
+    # --- tunele -----------------------------------------------------------
+
+    def open_tunnel(self, spec):
+        """Uruchamia tunel. Zwraca tekst błędu albo pusty (zajęty port itp.)."""
+        if spec in self.tunnels:
+            return ""
+        try:
+            self._tunnel_objects[spec] = tunnels.start_tunnel(
+                self.terminal.client.get_transport(), spec
+            )
+        except Exception as error:
+            return str(error)
+        self.tunnels.append(spec)
+        return ""
+
+    def close_tunnel(self, spec):
+        running = self._tunnel_objects.pop(spec, None)
+        if running:
+            running.stop()
+        if spec in self.tunnels:
+            self.tunnels.remove(spec)
+
     def close_session(self):
+        for spec in list(self.tunnels):
+            self.close_tunnel(spec)
         self.sftp_panel.close()
         self.terminal.close_session()
 
@@ -1617,6 +1787,21 @@ def selftest():
     assert panel.sftp is None, "atrapa bez transportu nie mogła dać działającego SFTP"
     assert not panel.list.isEnabled(), "panel bez SFTP musi być wyłączony"
 
+    # Zakładki katalogów: dopisują się do listy z danych połączenia i wołają
+    # zapis, żeby przeżyły restart.
+    saved = []
+    marks = ["/var/log"]
+    marked = SftpPanel(_NoSftpClient(), None, marks, lambda: saved.append(True))
+    marked.path = "/etc/nginx"
+    marked._add_bookmark()
+    assert marks == ["/var/log", "/etc/nginx"], marks
+    assert saved == [True], "dodanie zakladki ma wolac zapis"
+    marked._add_bookmark()
+    assert marks.count("/etc/nginx") == 1, "ta sama sciezka nie moze wejsc dwa razy"
+    marked._remove_bookmark()
+    assert marks == ["/var/log"], marks
+    marked.deleteLater()
+
     # Historia katalogów: wstecz/do przodu jak w przeglądarce.
     panel.path = "/"
     panel._navigate("/etc")
@@ -1658,6 +1843,35 @@ def selftest():
     text, _ = stamp_lines("dalej\n", "[T] ", False)
     assert text == "dalej\n", "dokonczenie linii nie dostaje znacznika"
     assert stamp_lines("", "[T] ", True) == ("", True), "pusty kawalek nic nie zmienia"
+
+    # Wyzwalacze: wzorzec ma trafiac w linie, a niedokonczona linia ma czekac
+    # na reszte zamiast rozjechac sie na granicy pakietu.
+    patterns = compile_triggers("kernel panic\n[niepoprawny(\nFAILED")
+    assert len(patterns) == 2, "wadliwy regex ma odpasc, reszta zostaje"
+    assert trigger_hits("wszystko ok\nKernel panic - not syncing", patterns) == [
+        "Kernel panic - not syncing"
+    ]
+    assert not trigger_hits("nic ciekawego", patterns)
+    assert not compile_triggers(""), "brak wzorcow to pusta lista"
+
+    complete, tail = pending_lines("", "FAI")
+    assert complete == "" and tail == "FAI", "polowa linii jeszcze nie liczy sie jako trafienie"
+    complete, tail = pending_lines(tail, "LED login\nnastepna")
+    assert trigger_hits(complete, patterns) == ["FAILED login"], complete
+    assert tail == "nastepna"
+
+    # Dlugosc historii przewijania: wpis spoza zakresu nie moze wywalic terminala.
+    stored = i18n.settings().value("scrollback")
+    i18n.settings().setValue("scrollback", "nie liczba")
+    assert scrollback() == DEFAULT_SCROLLBACK, "smieci w ustawieniach = wartosc domyslna"
+    set_scrollback(20)
+    assert scrollback() == 100, "minimum trzyma sensowna historie"
+    set_scrollback(12000)
+    assert scrollback() == 12000
+    if stored is None:
+        i18n.settings().remove("scrollback")
+    else:
+        i18n.settings().setValue("scrollback", stored)
 
     # Skrypty użytkownika: wpis bez polecenia odpada, reszta dochodzi do listy.
     import tempfile

@@ -34,7 +34,8 @@ py main.py --selftest
 - Hasła **opcjonalnie** zapisywane, zaszyfrowane przez DPAPI (klucz związany z twoim
   kontem Windows). Bez zapisanego hasła program pyta jak dotąd.
 - Wskazanie pliku klucza prywatnego per połączenie; puste hasło = logowanie kluczem
-  (agent albo `~/.ssh`).
+  (agent albo `~/.ssh`). **Hasło klucza (passphrase)** ma osobne pole — to nie to
+  samo co hasło konta i zapisuje się osobno.
 - Zakładka **Home** z wyszukiwarką zapisanych połączeń i przycisk **+** na pasku
   zakładek — połączenie „na szybko”, które nie trafia do drzewa ani na dysk.
 - **Filtr nad drzewem**: wpisany tekst chowa wpisy niepasujące nazwą, hostem ani
@@ -56,7 +57,16 @@ py main.py --selftest
   poprzedza każdą linię godziną, **Widok → Zapisz zapis sesji** odkłada bufor
   terminala do pliku.
 - Panel **SFTP** po lewej stronie zakładki: nawigacja, pobieranie, wysyłanie
-  (w tle, z paskiem postępu), nowy folder, usuwanie.
+  (w tle, z paskiem postępu), nowy folder, usuwanie. Przycisk **⭐** trzyma
+  **zakładki katalogów** (`/var/log`, `/etc/nginx`) — osobne dla każdego
+  połączenia, zapisywane w `connections.json`.
+- **Tunele SSH** (Programy → Tunele SSH): `L 8080:10.0.0.5:80` przekierowuje port
+  lokalny na maszynę widzianą przez serwer, `R 9000:127.0.0.1:22` odwrotnie.
+  Tunele zapisane przy połączeniu wstają razem z sesją i znikają razem z nią.
+- **Wyzwalacze na tekst** (Widok → Wyzwalacze): regex na wyjście serwera, jeden
+  na linię; trafienie daje dymek w zasobniku, także gdy okno jest zminimalizowane.
+- **Widok → Długość historii przewijania** ustawia, ile linii trzyma terminal
+  (domyślnie 5000) — tyle też trafia do zapisu sesji.
 - Dolny pasek ze statystykami serwera: CPU, RAM, dysk, ruch sieciowy, uptime,
   liczba zalogowanych — osobno dla Linuksa i Windows Servera.
 - Menu **Skrypty**: 11 gotowych poleceń administracyjnych (procesy, miejsce na dysku,
@@ -100,7 +110,7 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 - **Brak emulacji VT100.** Sekwencje ANSI są wycinane, więc zwykła powłoka wygląda
   dobrze, ale programy pełnoekranowe (`vim`, `htop`, `mc`) będą rozjechane.
   To największa pozostała dziura — kierunek: `pyte`.
-- Brak tuneli SSH i łączenia przez bastion (`ProxyJump`).
+- Brak łączenia przez bastion (`ProxyJump`).
 - Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej stronie).
 - RDP: bez przekierowania schowka i dysków, bez wielu monitorów i bramy RDP.
 
@@ -118,6 +128,7 @@ Backlog pomysłów siedzi w [TODO.md](TODO.md).
 | `update.py` | Sprawdzanie aktualizacji względem gałęzi na GitHubie |
 | `i18n.py` | Napisy interfejsu po angielsku i po polsku |
 | `notify.py` | Powiadomienia systemowe (dymek z zasobnika) |
+| `tunnels.py` | Tunele SSH (przekierowanie portów) i okno do ich zarządzania |
 
 ## Licencja
 
