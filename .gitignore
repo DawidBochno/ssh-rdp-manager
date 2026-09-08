@@ -10,3 +10,7 @@ connections.json
 
 # Wlasne skrypty uzytkownika — plik lokalny, nie repo.
 scripts.json
+
+# Notatki robocze dla Claude/deweloperów — nie dla uzytkownikow na GitHubie.
+CLAUDE.md
+TODO.md

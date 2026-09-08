@@ -45,6 +45,8 @@ py main.py --selftest
   więc rozumie `Include` i `Match`.
 - **Duplikowanie** wpisu z menu pod prawym klawiszem, **notatki** widoczne w dymku
   i **polecenia startowe** wysyłane do powłoki tuż po zalogowaniu.
+- **Jump host / ProxyJump**: pole w formularzu połączenia łączy najpierw z bastionem,
+  a dopiero z niego z celem — tym samym kontem/kluczem, co najczęstszy przypadek.
 
 **Sesja SSH**
 
@@ -60,6 +62,10 @@ py main.py --selftest
   (w tle, z paskiem postępu), nowy folder, usuwanie. Przycisk **⭐** trzyma
   **zakładki katalogów** (`/var/log`, `/etc/nginx`) — osobne dla każdego
   połączenia, zapisywane w `connections.json`.
+- **Przeciągnij i upuść** pliki z Eksploratora prosto do panelu SFTP — wysyła je
+  na serwer bez przechodzenia przez przycisk.
+- **Edycja pliku zdalnego** (menu pod prawym klawiszem → Edytuj): plik otwiera się
+  w domyślnym lokalnym edytorze, a zapis odsyła go z powrotem na serwer automatycznie.
 - **Tunele SSH** (Programy → Tunele SSH): `L 8080:10.0.0.5:80` przekierowuje port
   lokalny na maszynę widzianą przez serwer, `R 9000:127.0.0.1:22` odwrotnie.
   Tunele zapisane przy połączeniu wstają razem z sesją i znikają razem z nią.
@@ -69,6 +75,10 @@ py main.py --selftest
   (domyślnie 5000) — tyle też trafia do zapisu sesji.
 - Dolny pasek ze statystykami serwera: CPU, RAM, dysk, ruch sieciowy, uptime,
   liczba zalogowanych — osobno dla Linuksa i Windows Servera.
+- **Zbiorczy dashboard** (Programy → Panel statystyk…): statystyki wszystkich
+  otwartych zakładek SSH i RDP na jednym ekranie, odświeżane co 2 sekundy.
+- **Motywy kolorów terminala** (Widok → Motyw terminala): Dark, Solarized Dark,
+  Dracula, Default.
 - Menu **Skrypty**: 11 gotowych poleceń administracyjnych (procesy, miejsce na dysku,
   błędy w logach, porty, restart usługi, aktualizacje, nieudane logowania, ping…),
   każde w wariancie linuksowym i windowsowym. Wynik można zapisać do pliku.
@@ -95,6 +105,7 @@ py main.py --selftest
 Domyślnie po **angielsku**; polski wybiera się w **Widok → Language** (zmiana działa
 po ponownym uruchomieniu). Rozmiar okna i podział paneli wracają między sesjami.
 Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobniku.
+**Widok → Ciemny motyw okna** przełącza całą aplikację na ciemną paletę.
 
 ## Bezpieczeństwo
 
@@ -110,11 +121,10 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 - **Brak emulacji VT100.** Sekwencje ANSI są wycinane, więc zwykła powłoka wygląda
   dobrze, ale programy pełnoekranowe (`vim`, `htop`, `mc`) będą rozjechane.
   To największa pozostała dziura — kierunek: `pyte`.
-- Brak łączenia przez bastion (`ProxyJump`).
+- Brak drag-out w SFTP (pobieranie przez wyciągnięcie pliku z panelu) — upload
+  przez przeciągnięcie już jest, w drugą stronę jeszcze nie.
 - Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej stronie).
 - RDP: bez przekierowania schowka i dysków, bez wielu monitorów i bramy RDP.
-
-Backlog pomysłów siedzi w [TODO.md](TODO.md).
 
 ## Struktura
 
