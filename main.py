@@ -218,6 +218,11 @@ class ConnectionDialog(QDialog):
         self.jump_host.setPlaceholderText(t("ph_jump_host"))
         self.jump_host.setToolTip(t("tip_jump_host"))
 
+        # Przekierowanie dysków dotyczy tylko RDP — opt-in, bo wystawia
+        # lokalne pliki zdalnemu serwerowi. Schowek idzie zawsze (jak w mstsc).
+        self.redirect_drives = QCheckBox(t("chk_redirect_drives"))
+        self.redirect_drives.setChecked(bool(data.get("redirect_drives")))
+
         self.save_password = QCheckBox(t("chk_save_password"))
         self.save_password.setChecked(bool(stored or stored_passphrase))
         self.save_password.setEnabled(CAN_STORE_PASSWORDS)
@@ -247,6 +252,8 @@ class ConnectionDialog(QDialog):
         self._startup_row = form.rowCount()
         form.addRow(t("fld_startup"), self.startup)
         form.addRow(t("fld_notes"), self.notes)
+        self._redirect_drives_row = form.rowCount()
+        form.addRow("", self.redirect_drives)
         form.addRow("", self.save_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -276,6 +283,7 @@ class ConnectionDialog(QDialog):
         self._form.setRowVisible(self._passphrase_row, not is_rdp)
         self._form.setRowVisible(self._jump_host_row, not is_rdp)
         self._form.setRowVisible(self._startup_row, not is_rdp)
+        self._form.setRowVisible(self._redirect_drives_row, is_rdp)
 
     def _pick_key_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -308,6 +316,8 @@ class ConnectionDialog(QDialog):
             data["startup"] = self.startup.toPlainText().strip()
         if self.notes.toPlainText().strip():
             data["notes"] = self.notes.toPlainText().strip()
+        if protocol == "rdp" and self.redirect_drives.isChecked():
+            data["redirect_drives"] = True
         if self.save_password.isChecked() and self.password.text():
             data["password"] = encrypt_password(self.password.text())
         if protocol == "ssh" and self.save_password.isChecked() and self.passphrase.text():

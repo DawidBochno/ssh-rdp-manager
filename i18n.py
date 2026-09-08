@@ -38,6 +38,7 @@ TEXTS = {
         "tip_save_password_windows_only": "Saving passwords works on Windows only.",
         "err_missing_data_title": "Missing data",
         "err_missing_host": "Enter the host address.",
+        "chk_redirect_drives": "Redirect local drives (visible to the remote server)",
         # --- drzewo połączeń ---
         "tree_header": "Connections",
         "tree_root": "All connections",
@@ -314,6 +315,7 @@ TEXTS = {
         "tip_save_password_windows_only": "Zapis hasła działa tylko na Windows.",
         "err_missing_data_title": "Brak danych",
         "err_missing_host": "Podaj adres hosta.",
+        "chk_redirect_drives": "Przekieruj dyski lokalne (widoczne dla zdalnego serwera)",
         # --- drzewo połączeń ---
         "tree_header": "Połączenia",
         "tree_root": "Wszystkie połączenia",

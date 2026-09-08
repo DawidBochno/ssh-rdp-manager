@@ -128,6 +128,11 @@ class RdpTab(QWidget):
             advanced.setProperty("EnableCredSspSupport", True)
             if password:
                 advanced.setProperty("ClearTextPassword", password)
+            # Schowak: tak samo jak w mstsc.exe, włączony domyślnie.
+            advanced.setProperty("RedirectClipboard", True)
+            # Dyski lokalne: opt-in per połączenie — to widoczność plików
+            # z tego komputera dla zdalnego serwera, nie każdy tego chce.
+            advanced.setProperty("RedirectDrives", bool(conn.get("redirect_drives")))
 
     def connect_now(self):
         size = self.size()
@@ -212,9 +217,18 @@ def selftest():
     assert tab.control.dynamicCall("UserName") == "admin"
     advanced = tab.control.querySubObject("AdvancedSettings9")
     assert advanced.property("RDPPort") == 3390, "port nie doszedł do kontrolki"
+    assert advanced.property("RedirectClipboard") is True, "schowek ma być domyślnie wlaczony"
+    assert advanced.property("RedirectDrives") is False, "dyski maja byc wylaczone bez opt-in"
     assert tab.last_stats == "", "przed rozłączeniem nie ma czego pokazywać"
     tab.close_session()
     tab.deleteLater()
+
+    drives_conn = dict(conn, redirect_drives=True)
+    drives_tab = RdpTab(drives_conn, "tajne", autoconnect=False)
+    advanced = drives_tab.control.querySubObject("AdvancedSettings9")
+    assert advanced.property("RedirectDrives") is True, "opt-in nie dotarl do kontrolki"
+    drives_tab.close_session()
+    drives_tab.deleteLater()
 
     print("rdp selftest OK")
 
