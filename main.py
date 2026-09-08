@@ -47,8 +47,10 @@ from PySide6.QtWidgets import (
 )
 
 import i18n
+import logtail
 import notify
 import scanner
+import services
 import tunnels
 import update
 from i18n import t
@@ -85,6 +87,8 @@ TOOLS = (
     ("menu_tls", "_check_certificate"),
     ("menu_tunnels", "_manage_tunnels"),
     ("menu_dashboard", "_open_dashboard"),
+    ("menu_logtail", "_open_log_tail"),
+    ("menu_services", "_manage_services"),
 )
 
 
@@ -1227,6 +1231,25 @@ class MainWindow(QMainWindow):
     def _open_dashboard(self):
         StatsDashboard(self, self).exec()
 
+    def _open_log_tail(self):
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("logtail_title"), t("tunnels_need_session"))
+            return
+        path, ok = QInputDialog.getText(self, t("logtail_title"), t("logtail_prompt"))
+        if not ok or not path.strip():
+            return
+        path = path.strip()
+        tab = logtail.LogTab(session.terminal.client, path)
+        self._add_tab(tab, t("log_tab_title", Path(path).name))
+
+    def _manage_services(self):
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("services_title"), t("tunnels_need_session"))
+            return
+        services.ServiceDialog(self, session.terminal.client).exec()
+
     def _edit_triggers(self):
         """Regexy, na które ma reagować powiadomienie — jeden na linię."""
         text, ok = QInputDialog.getMultiLineText(
@@ -1617,6 +1640,16 @@ def selftest():
     window._manage_tunnels()
     assert shown == [t("tunnels_need_session")], shown
 
+    # Podglad logu i menedzer uslug: to samo — bez sesji nie moga sie wywalic.
+    assert any(label == "menu_logtail" for label, _ in TOOLS), TOOLS
+    assert any(label == "menu_services" for label, _ in TOOLS), TOOLS
+    shown.clear()
+    window._open_log_tail()
+    assert shown == [t("tunnels_need_session")], shown
+    shown.clear()
+    window._manage_services()
+    assert shown == [t("tunnels_need_session")], shown
+
     # Notatki i polecenia startowe: startowe tylko dla SSH, notatki dla obu.
     extra = ConnectionDialog(
         data={"host": "h", "startup": "cd /var/log", "notes": "serwer klienta X"}
@@ -1696,6 +1729,8 @@ def selftest():
     scanner.selftest()
     notify.selftest()
     tunnels_module.selftest()
+    logtail.selftest()
+    services.selftest()
     del app
     print("main selftest OK")
 
