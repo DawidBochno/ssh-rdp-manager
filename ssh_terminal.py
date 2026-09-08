@@ -1,14 +1,13 @@
 """Sesja SSH (Paramiko) osadzona jako widget zakładki.
 
-Widget jest „głupim" terminalem: pokazuje tekst przysłany przez serwer i wysyła
-naciśnięte klawisze do zdalnej powłoki. Sekwencje ANSI są wycinane.
+Zwykłe wyjście powłoki (prompt, logi) dopisuje się do `QPlainTextEdit` jak
+dotąd — sekwencje ANSI są wycinane, kolory dorabia nasz `TerminalHighlighter`.
+Gdy zdalna aplikacja włączy alternate screen (vim, htop, mc, less, top),
+`_AltScreen`/`AltScreenView` (pyte) rysują siatkę znaków z prawdziwym
+adresowaniem kursora — patrz sekcja „emulacja VT100" niżej.
 
 Łączenie odbywa się w osobnym wątku (`SshConnector`), bo `paramiko.connect()`
 potrafi wisieć kilkanaście sekund — na wątku GUI zamroziłoby to całe okno.
-
-ponytail: brak emulacji VT100 — kolory i adresowanie kursora są odrzucane, więc
-programy pełnoekranowe (vim, htop, mc) będą wyglądać źle. Gdy będą potrzebne,
-podmień renderowanie na `pyte` (emulator ekranu w czystym Pythonie) albo QTermWidget.
 """
 import json
 import os
@@ -22,6 +21,7 @@ from binascii import hexlify
 from pathlib import Path
 
 import paramiko
+import pyte
 from PySide6.QtCore import (
     QEvent,
     QEventLoop,
@@ -37,6 +37,8 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QKeySequence,
+    QPainter,
+    QPalette,
     QShortcut,
     QSyntaxHighlighter,
     QTextCharFormat,
@@ -121,6 +123,20 @@ def set_terminal_theme(name):
     i18n.settings().setValue("terminal_theme", _theme)
 
 
+def _alt_colors(editor, name=None):
+    """Kolory tła/tekstu dla siatki pyte — z motywu terminala albo z palety Qt.
+
+    „Default" nie ma własnych kolorów (zdejmuje arkusz stylów), więc nakładka
+    pełnoekranowa bierze wtedy paletę widgetu — jasną albo ciemną, zależnie
+    od `Widok → Ciemny motyw okna`.
+    """
+    colors = TERMINAL_THEMES.get(name or terminal_theme())
+    if colors:
+        return colors
+    palette = editor.palette()
+    return palette.color(QPalette.Base).name(), palette.color(QPalette.Text).name()
+
+
 def apply_terminal_theme(editor, name=None):
     """Nakłada schemat kolorów na pole terminala (albo zdejmuje go dla „Default")."""
     colors = TERMINAL_THEMES.get(name or terminal_theme())
@@ -129,6 +145,9 @@ def apply_terminal_theme(editor, name=None):
     else:
         bg, fg = colors
         editor.setStyleSheet(f"background-color: {bg}; color: {fg};")
+    alt_view = getattr(editor, "alt_view", None)
+    if alt_view is not None:
+        alt_view.set_colors(*_alt_colors(editor, name))
 
 
 # Ile linii trzyma terminal. Więcej = więcej pamięci na zakładkę, ale i dłuższa
@@ -976,6 +995,131 @@ class _StatsPoller(QThread):
             self._stop.wait(STATS_INTERVAL)
 
 
+# --- emulacja VT100 dla programów pełnoekranowych (pyte) --------------------
+#
+# Zwykłe wyjście powłoki dopisuje się jak dotąd (`apply_output`) — działa
+# dobrze, bo prompt tylko dopisuje tekst i czasem cofa się o linię. Programy
+# pełnoekranowe (vim, htop, mc, less, top) adresują kursor swobodnie po całym
+# ekranie, czego `apply_output` nie umie — stąd „rozjechany" wygląd. Zamiast
+# przepisywać cały terminal na siatkę znaków (i psuć znaczniki czasu, zapis
+# sesji, podświetlanie regexem — wszystko to działa na ciągłym tekście),
+# taki program włącza *alternate screen* (`\x1b[?1049h` i pokrewne), a to
+# wykrywamy i tylko wtedy nakładamy siatkę pyte na terminal.
+
+_ANSI_COLORS = {
+    "black": "#000000", "red": "#cd0000", "green": "#00cd00", "brown": "#cdcd00",
+    "blue": "#1e90ff", "magenta": "#cd00cd", "cyan": "#00cdcd", "white": "#e5e5e5",
+    "brightblack": "#7f7f7f", "brightred": "#ff0000", "brightgreen": "#00ff00",
+    "brightbrown": "#ffff00", "brightblue": "#5c5cff", "brightmagenta": "#ff00ff",
+    "brightcyan": "#00ffff", "brightwhite": "#ffffff",
+}
+_HEX_COLOR_RE = re.compile(r"[0-9a-fA-F]{6}$")
+
+
+def resolve_color(value):
+    """Nazwa koloru pyte (16 barw albo hex z trybu 256/truecolor) -> „#rrggbb".
+
+    `None` oznacza „default" — dzwonnik zostawia wtedy kolor motywu terminala.
+    """
+    if value in _ANSI_COLORS:
+        return _ANSI_COLORS[value]
+    if value and _HEX_COLOR_RE.fullmatch(value):
+        return "#" + value
+    return None
+
+
+class _AltScreen(pyte.Screen):
+    """Ekran pyte na osobny bufor pełnoekranowy.
+
+    Zwykły `Screen` nie rozróżnia trybu alternate screen — dopisujemy tylko
+    wykrywanie sekwencji `?47`/`?1047`/`?1049` (`alt_active`), reszta (kolory,
+    kursor, przewijanie w obrębie ekranu) jest już wbudowana w pyte.
+    """
+
+    ALT_CODES = (47, 1047, 1049)
+
+    def __init__(self, columns, lines):
+        super().__init__(columns, lines)
+        self.alt_active = False
+
+    def set_mode(self, *modes, **kwargs):
+        super().set_mode(*modes, **kwargs)
+        if kwargs.get("private") and any(code in modes for code in self.ALT_CODES):
+            self.alt_active = True
+            self.reset()  # czysty ekran dla wchodzącej aplikacji
+
+    def reset_mode(self, *modes, **kwargs):
+        super().reset_mode(*modes, **kwargs)
+        if kwargs.get("private") and any(code in modes for code in self.ALT_CODES):
+            self.alt_active = False
+
+
+class AltScreenView(QWidget):
+    """Rysuje siatkę znaków z `_AltScreen` — dokładne adresowanie kursora.
+
+    Doklejany jako dziecko `SshTerminal` (ten sam wzorzec co `FindBar`) i
+    pokazywany tylko, gdy zdalna aplikacja włączy alternate screen; resztę
+    czasu terminal działa jak dotąd (dopisywanie tekstu do `QPlainTextEdit`,
+    więc znaczniki czasu, zapis sesji i szukanie nie widzą różnicy).
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.screen = None
+        self.bg = QColor("#1e1e1e")
+        self.fg = QColor("#d4d4d4")
+
+    def set_colors(self, bg, fg):
+        self.bg, self.fg = QColor(bg), QColor(fg)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self.bg)
+        screen = self.screen
+        if screen is None:
+            return
+        painter.setFont(self.font())
+        metrics = painter.fontMetrics()
+        char_w = metrics.horizontalAdvance("M")
+        line_h = metrics.lineSpacing()
+        ascent = metrics.ascent()
+        base_font = QFont(self.font())
+        for y in range(screen.lines):
+            row = screen.buffer[y]
+            x = 0
+            while x < screen.columns:
+                cell = row[x]
+                run = [cell.data or " "]
+                x += 1
+                while x < screen.columns and row[x][1:] == cell[1:]:
+                    run.append(row[x].data or " ")
+                    x += 1
+                text = "".join(run)
+                run_x = (x - len(run)) * char_w
+                run_w = len(run) * char_w
+                fg_hex, bg_hex = resolve_color(cell.fg), resolve_color(cell.bg)
+                fg_color = QColor(fg_hex) if fg_hex else self.fg
+                bg_color = QColor(bg_hex) if bg_hex else self.bg
+                if cell.reverse:
+                    fg_color, bg_color = bg_color, fg_color
+                if bg_color != self.bg or cell.reverse:
+                    painter.fillRect(run_x, y * line_h, run_w, line_h, bg_color)
+                font = QFont(base_font)
+                font.setBold(cell.bold)
+                font.setUnderline(cell.underscore)
+                font.setStrikeOut(cell.strikethrough)
+                painter.setFont(font)
+                painter.setPen(fg_color)
+                painter.drawText(run_x, y * line_h + ascent, text)
+        # ponytail: kursor to pólprzezroczysty prostokat, nie odwrocenie barw
+        # pod spodem — prostsze, i tak widac gdzie jest.
+        if not screen.cursor.hidden:
+            cx = min(screen.cursor.x, screen.columns - 1)
+            cy = min(screen.cursor.y, screen.lines - 1)
+            painter.fillRect(cx * char_w, cy * line_h, char_w, line_h, QColor(255, 255, 255, 90))
+
+
 class _Reader(QThread):
     """Czyta z kanału w tle, żeby nie blokować GUI."""
 
@@ -1025,6 +1169,16 @@ class SshTerminal(QPlainTextEdit):
         self.highlighter = TerminalHighlighter(self.document())
         install_find(self)
 
+        # Emulacja VT100 dla programow pelnoekranowych (vim/htop/mc) — patrz
+        # sekcja przy `_AltScreen`. Nakladka jest niewidoczna, dopoki `_append`
+        # nie wykryje alternate screen.
+        self._alt_screen = _AltScreen(100, 30)
+        self._alt_stream = pyte.Stream(self._alt_screen)
+        self.alt_view = AltScreenView(self)
+        self.alt_view.setFont(terminal_font())
+        self.alt_view.setGeometry(self.viewport().rect())
+        self.alt_view.set_colors(*_alt_colors(self))
+
         self.client = client
         self.channel = channel
         self._pty_size = (0, 0)
@@ -1056,7 +1210,26 @@ class SshTerminal(QPlainTextEdit):
             self._trigger_at = now
             notify.notify(t("notify_title"), t("notify_trigger", hits[0].strip()[:120]))
 
+    def _show_alt(self, visible):
+        if self.alt_view.isVisible() != visible:
+            self.alt_view.setVisible(visible)
+            if visible:
+                self.alt_view.raise_()
+
     def _append(self, text):
+        was_alt = self._alt_screen.alt_active
+        self._alt_stream.feed(text)
+        now_alt = self._alt_screen.alt_active
+        if was_alt or now_alt:
+            # ponytail: kawalek na granicy wejscia/wyjscia z alternate screen
+            # (rzadkie — serwer zdazyl spakowac oba w jednym odczycie) idzie
+            # w calosci tutaj, nie do zwyklego bufora. Traci sie kilka znakow
+            # tekstu sprzed przelaczenia, ale ekran nigdy nie rozjezdza sie
+            # w pol slowa.
+            self._show_alt(True)
+            self.alt_view.update()
+            return
+        self._show_alt(False)
         text = strip_ansi(text)
         self._check_triggers(text)
         if self.timestamps:
@@ -1075,6 +1248,9 @@ class SshTerminal(QPlainTextEdit):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        alt_view = getattr(self, "alt_view", None)
+        if alt_view is not None:
+            alt_view.setGeometry(self.viewport().rect())
         self._sync_pty_size()
 
     def _sync_pty_size(self):
@@ -1096,6 +1272,7 @@ class SshTerminal(QPlainTextEdit):
         if size == self._pty_size:
             return  # bez tego każdy piksel zmiany szedłby po sieci
         self._pty_size = size
+        self._alt_screen.resize(columns=size[0], lines=size[1])
         try:
             channel.resize_pty(width=size[0], height=size[1])
         except Exception:
@@ -2059,6 +2236,24 @@ def selftest():
     else:
         i18n.settings().setValue("terminal_theme", stored_theme)
 
+    # Emulacja VT100: kolory pyte -> hex, i przelaczanie alternate screen.
+    assert resolve_color("red") == "#cd0000"
+    assert resolve_color("brightgreen") == "#00ff00"
+    assert resolve_color("ff00aa") == "#ff00aa", "kolor 256/truecolor to gotowy hex"
+    assert resolve_color("default") is None, "domyslny kolor = None (bierz motyw)"
+
+    alt_screen = _AltScreen(20, 5)
+    alt_stream = pyte.Stream(alt_screen)
+    assert not alt_screen.alt_active
+    alt_stream.feed("\x1b[?1049h")
+    assert alt_screen.alt_active, "wejscie w alternate screen musi sie wykryc"
+    alt_stream.feed("\x1b[31mabc\x1b[0m")
+    assert alt_screen.buffer[0][0].data == "a" and alt_screen.buffer[0][0].fg == "red"
+    alt_stream.feed("\x1b[?1049l")
+    assert not alt_screen.alt_active, "wyjscie z alternate screen musi sie wykryc"
+
+    # `_append` ma pominac zwykly bufor podczas alternate screen i wrocic
+    # do niego po wyjsciu, bez smiecenia ekranem vima w logu sesji.
     print("ssh_terminal selftest OK")
 
 
