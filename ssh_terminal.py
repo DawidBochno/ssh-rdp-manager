@@ -26,15 +26,18 @@ from PySide6.QtCore import (
     QEvent,
     QEventLoop,
     QFileSystemWatcher,
+    QMimeData,
     QObject,
     Qt,
     QThread,
     QTimer,
+    QUrl,
     Signal,
     Slot,
 )
 from PySide6.QtGui import (
     QColor,
+    QDrag,
     QFont,
     QKeySequence,
     QPainter,
@@ -1399,6 +1402,42 @@ def run_transfer(parent, sftp, mode, remote_path, local_path, title):
 # ponytail: listdir/get/put wołane wprost na wątku GUI — dla admina po LAN/VPN
 # to milisekundy, więc osobny wątek na razie nie jest wart złożoności.
 # Przy wolnych/dużych transferach przenieść na QThread jak _StatsPoller.
+class _SftpListWidget(QListWidget):
+    """Lista plików SFTP z drag-out: przeciągnięcie pliku do Eksploratora.
+
+    Qt nie umie "pobrać w trakcie przeciągania", więc plik idzie na dysk
+    (blokująco, jak przy edycji zdalnego pliku) *przed* startem `QDrag` —
+    inaczej Eksplorator dostałby ścieżkę do niczego.
+    """
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.setDragEnabled(True)
+
+    def startDrag(self, supportedActions):
+        item = self.currentItem()
+        if item is None or not self.panel.sftp:
+            return
+        name, is_dir = item.data(Qt.UserRole)
+        if is_dir:
+            return  # foldery pomijamy — bez rekurencji, jak przy uploadzie
+        local_path = Path(tempfile.mkdtemp(prefix="sshrdp_drag_")) / name
+        error = run_transfer(
+            self.panel, self.panel.sftp, "get",
+            self.panel._child_path(name), str(local_path),
+            t("transfer_download", name),
+        )
+        if error:
+            QMessageBox.warning(self.panel, t("err_download"), error)
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(local_path))])
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.CopyAction)
+
+
 class SftpPanel(QWidget):
     """Panel plików po lewej stronie zakładki sesji — wzorem MobaXterm."""
 
@@ -1453,7 +1492,7 @@ class SftpPanel(QWidget):
         self.path_edit.returnPressed.connect(self._go_to_typed_path)
         layout.addWidget(self.path_edit)
 
-        self.list = QListWidget()
+        self.list = _SftpListWidget(self)
         self.list.itemDoubleClicked.connect(self._open_item)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._context_menu)
