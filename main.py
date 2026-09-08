@@ -6,13 +6,27 @@ Prawa strona: zakładki, jedna na każde otwarte połączenie.
 import base64
 import ctypes
 import json
+import socket
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QKeySequence, QPalette, QShortcut
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -132,6 +146,76 @@ ICON_DATA = Qt.UserRole + 2
 ICONS = ["📁", "🗂️", "🖥️", "🐧", "🪟",
          "🌐", "🗄️", "🔒", "⭐", "🔥",
          "🧪", "⚙️"]
+
+# Kropka statusu (żywy/martwy zapisany serwer) — ikona osobno od ICON_DATA
+# (emoji doklejone do nazwy), więc jedno nie koliduje z drugim.
+STATUS_INTERVAL_DEFAULT = 120  # sekund; sprawdzanie ma być rzadkie, nie skaner
+
+
+def _status_icon(color):
+    pixmap = QPixmap(10, 10)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(QColor(color))
+    painter.setPen(Qt.NoPen)
+    painter.drawEllipse(0, 0, 10, 10)
+    painter.end()
+    return QIcon(pixmap)
+
+
+# Leniwie: QPixmap przed QApplication potrafi wywalić proces (tak samo jak
+# QFont w terminal_font()).
+_status_icons = {}
+
+
+def status_icon(online):
+    if online not in _status_icons:
+        _status_icons[online] = _status_icon("#2ecc71" if online else "#e74c3c")
+    return _status_icons[online]
+
+
+class _TreeStatusPoller(QThread):
+    """Sprawdza port zapisanych połączeń co `interval` sekund.
+
+    Same gniazda na tym wątku — żadnych obiektów Qt poza sygnałem na końcu,
+    `get_targets` oddaje płaską migawkę {id(item): (host, port)} z wątku GUI.
+    """
+
+    result = Signal(dict)
+
+    def __init__(self, get_targets, interval):
+        super().__init__()
+        self.get_targets = get_targets
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    @staticmethod
+    def _check(host, port):
+        try:
+            with socket.socket() as probe:
+                probe.settimeout(2)
+                return probe.connect_ex((host, port)) == 0
+        except OSError:
+            return False
+
+    def run(self):
+        while not self._stop.is_set():
+            targets = self.get_targets()
+            with ThreadPoolExecutor(max_workers=scanner.WORKERS) as pool:
+                futures = {
+                    key: pool.submit(self._check, host, port)
+                    for key, (host, port) in targets.items()
+                }
+                results = {key: future.result() for key, future in futures.items()}
+            if self._stop.is_set():
+                return
+            self.result.emit(results)
+            self._stop.wait(self.interval)
+
 
 # Hasła szyfrujemy DPAPI: klucz jest przypisany do konta Windows,
 # więc plik skopiowany na inny komputer jest bezużyteczny.
@@ -666,6 +750,34 @@ class ConnectionTree(QTreeWidget):
         parent.removeChild(item)
         self.save()
 
+    # --- kropka statusu (żywy/martwy serwer) --------------------------------
+
+    def status_targets(self):
+        """{id(item): (host, port)} dla wszystkich zapisanych połączeń."""
+        targets = {}
+        it = QTreeWidgetItemIterator(self)
+        while it.value():
+            item = it.value()
+            if item.type() == CONNECTION_TYPE:
+                data = item.data(0, CONNECTION_DATA) or {}
+                host = data.get("host")
+                if host:
+                    port = data.get("port") or (RDP_PORT if data.get("protocol") == "rdp" else 22)
+                    targets[id(item)] = (host, int(port))
+            it += 1
+        return targets
+
+    def apply_status(self, results):
+        """Nakłada wynik `_TreeStatusPoller` (id(item) -> bool) na ikony."""
+        it = QTreeWidgetItemIterator(self)
+        while it.value():
+            item = it.value()
+            if id(item) in results:
+                online = results[id(item)]
+                item.setIcon(0, status_icon(online))
+                item.setToolTip(0, t("status_online") if online else t("status_offline"))
+            it += 1
+
 
 class HomeTab(QWidget):
     """Pulpit startowy — pierwsza, niezamykalna zakładka (wzorem MobaXterm)."""
@@ -853,6 +965,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(t("status_idle"))
         self._restore_layout()
         self._update_check = None  # wątek startuje z main(), nie w testach
+        self._status_poller = None  # tak samo — --selftest nie ma chodzić po sieci
 
     # --- aktualizacja ------------------------------------------------------
 
@@ -871,6 +984,45 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, t("update_title"), t("update_failed", error))
         else:
             QMessageBox.information(self, t("update_title"), t("update_done"))
+
+    # --- status serwerów w drzewie -----------------------------------------
+
+    def start_status_polling(self):
+        """Wołane z `main()`, nie z `__init__` — inaczej `--selftest` chodziłby po sieci."""
+        if i18n.settings().value("tree_status_enabled", True, type=bool):
+            self._start_status_poller()
+
+    def _start_status_poller(self):
+        interval = int(i18n.settings().value("tree_status_interval", STATUS_INTERVAL_DEFAULT))
+        self._status_poller = _TreeStatusPoller(self.tree.status_targets, interval)
+        self._status_poller.result.connect(self.tree.apply_status)
+        self._status_poller.start()
+
+    def _stop_status_poller(self):
+        if self._status_poller:
+            self._status_poller.stop()
+            self._status_poller.wait()  # inaczej Qt wywala proces przy zamykaniu
+            self._status_poller = None
+
+    def _toggle_status_polling(self, on):
+        i18n.settings().setValue("tree_status_enabled", on)
+        if on:
+            self._start_status_poller()
+        else:
+            self._stop_status_poller()
+
+    def _pick_status_interval(self):
+        interval, ok = QInputDialog.getInt(
+            self, t("menu_tree_status_interval"), t("tree_status_prompt"),
+            int(i18n.settings().value("tree_status_interval", STATUS_INTERVAL_DEFAULT)),
+            10, 3600, 10,
+        )
+        if not ok:
+            return
+        i18n.settings().setValue("tree_status_interval", interval)
+        if self._status_poller:
+            self._stop_status_poller()
+            self._start_status_poller()
 
     # --- układ okna między uruchomieniami ---------------------------------
 
@@ -923,6 +1075,14 @@ class MainWindow(QMainWindow):
         view_menu.addAction(t("menu_scrollback"), self._pick_scrollback)
         view_menu.addAction(t("menu_triggers"), self._edit_triggers)
         view_menu.addAction(t("menu_save_log"), self._save_session_log)
+
+        status_action = QAction(
+            t("menu_tree_status"), self, checkable=True,
+            checked=bool(i18n.settings().value("tree_status_enabled", True, type=bool)),
+        )
+        status_action.toggled.connect(self._toggle_status_polling)
+        view_menu.addAction(status_action)
+        view_menu.addAction(t("menu_tree_status_interval"), self._pick_status_interval)
 
         theme_menu = view_menu.addMenu(t("menu_theme"))
         theme_group = QActionGroup(self)
@@ -1381,6 +1541,7 @@ class MainWindow(QMainWindow):
         self._save_layout()
         if self._update_check:
             self._update_check.wait()  # inaczej Qt wywala proces przy zamykaniu
+        self._stop_status_poller()
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
             if hasattr(widget, "close_session"):
@@ -1416,6 +1577,17 @@ def selftest():
         saved.setData(0, CONNECTION_DATA, conn_data)
         tree.save()
         assert CONFIG_FILE.exists(), "plik konfiguracji nie powstał"
+
+        # Kropka statusu: cel bierze host/port z połączenia, wynik trafia na ikonę.
+        targets = tree.status_targets()
+        assert targets[id(saved)] == ("10.0.0.1", 2222), "zły cel sprawdzania statusu"
+        tree.apply_status({id(saved): True})
+        assert not saved.icon(0).isNull(), "brak kropki statusu po odpowiedzi online"
+        tree.apply_status({id(saved): False})
+        assert not saved.icon(0).isNull(), "brak kropki statusu po odpowiedzi offline"
+        rdp_conn = QTreeWidgetItem(group, ["rdp-01"], CONNECTION_TYPE)
+        rdp_conn.setData(0, CONNECTION_DATA, {"name": "rdp-01", "host": "10.0.0.2", "protocol": "rdp"})
+        assert tree.status_targets()[id(rdp_conn)] == ("10.0.0.2", RDP_PORT), "brak domyślnego portu RDP"
 
         # Nowe drzewo = symulacja restartu aplikacji.
         reloaded = ConnectionTree()
@@ -1743,6 +1915,7 @@ def main():
     window = MainWindow()
     window.show()
     window.check_updates()
+    window.start_status_polling()
     sys.exit(app.exec())
 
 

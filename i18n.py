@@ -311,6 +311,21 @@ TEXTS = {
         "services_refresh": "Refresh",
         "services_failed": "Could not list services on this server.",
         "services_action_failed": "The action failed (permissions? does sudo need a password?).",
+        # --- wolne miejsce, rename i chmod w SFTP ---
+        "sftp_free_space": "Free: {0} ({1}% used)",
+        "sftp_rename": "Rename…",
+        "sftp_rename_prompt": "New name:",
+        "err_rename": "Rename error",
+        "sftp_chmod": "Permissions (chmod)…",
+        "sftp_chmod_prompt": "Permissions (octal, e.g. 755):",
+        "err_chmod": "Permissions error",
+        "err_chmod_bad": "Enter permissions as octal digits, e.g. 755.",
+        # --- status serwera w drzewie ---
+        "menu_tree_status": "Server status in the tree",
+        "menu_tree_status_interval": "Status check interval…",
+        "tree_status_prompt": "Seconds between checks:",
+        "status_online": "online",
+        "status_offline": "offline",
     },
     "pl": {
         # --- okno i formularz połączenia ---
@@ -604,6 +619,21 @@ TEXTS = {
         "services_refresh": "Odśwież",
         "services_failed": "Nie udało się pobrać listy usług na tym serwerze.",
         "services_action_failed": "Operacja nie powiodła się (uprawnienia? sudo wymaga hasła?).",
+        # --- wolne miejsce, rename i chmod w SFTP ---
+        "sftp_free_space": "Wolne: {0} (zajęte {1}%)",
+        "sftp_rename": "Zmień nazwę…",
+        "sftp_rename_prompt": "Nowa nazwa:",
+        "err_rename": "Błąd zmiany nazwy",
+        "sftp_chmod": "Uprawnienia (chmod)…",
+        "sftp_chmod_prompt": "Uprawnienia (ósemkowo, np. 755):",
+        "err_chmod": "Błąd zmiany uprawnień",
+        "err_chmod_bad": "Podaj uprawnienia jako cyfry ósemkowe, np. 755.",
+        # --- status serwera w drzewie ---
+        "menu_tree_status": "Status serwera w drzewie",
+        "menu_tree_status_interval": "Odstęp sprawdzania statusu…",
+        "tree_status_prompt": "Sekundy między sprawdzeniami:",
+        "status_online": "dostępny",
+        "status_offline": "niedostępny",
     },
 }
 

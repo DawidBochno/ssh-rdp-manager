@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -959,7 +960,7 @@ class _StatsPoller(QThread):
     nie wie — użytkownik nie widzi śmieci w terminalu.
     """
 
-    updated = Signal(str)
+    updated = Signal(str, object)  # tekst na pasek + surowy slownik (dla panelu SFTP)
 
     def __init__(self, client):
         super().__init__()
@@ -991,9 +992,9 @@ class _StatsPoller(QThread):
             if current is None:
                 # Serwer bez /proc albo zamknięta sesja — nie ma sensu pytać dalej.
                 if not self._stop.is_set():
-                    self.updated.emit(t("stats_unavailable"))
+                    self.updated.emit(t("stats_unavailable"), None)
                 return
-            self.updated.emit(format_stats(current, previous))
+            self.updated.emit(format_stats(current, previous), current)
             previous = current
             self._stop.wait(STATS_INTERVAL)
 
@@ -1153,6 +1154,7 @@ class SshTerminal(QPlainTextEdit):
     """
 
     stats_changed = Signal(str)
+    disk_changed = Signal(object)  # dict z disk_free/disk_pct albo None — dla panelu SFTP
 
     # Atrybuty klasy, nie instancji — przełącznik z menu ma łapać także zakładki
     # otwarte później, dokładnie jak `TerminalHighlighter.enabled`.
@@ -1192,13 +1194,16 @@ class SshTerminal(QPlainTextEdit):
 
         # Statystyki serwera dla dolnego paska okna.
         self.last_stats = ""
+        self.last_disk = None
         self.stats = _StatsPoller(client)
         self.stats.updated.connect(self._on_stats)
         self.stats.start()
 
-    def _on_stats(self, text):
+    def _on_stats(self, text, current):
         self.last_stats = text
+        self.last_disk = current
         self.stats_changed.emit(text)
+        self.disk_changed.emit(current)
 
     def _check_triggers(self, text):
         """Dymek w zasobniku, gdy w wyjściu padnie coś z listy wzorców."""
@@ -1498,12 +1503,26 @@ class SftpPanel(QWidget):
         self.list.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.list)
 
+        # Wolne miejsce na dysku — dane liczy już _StatsPoller (dolny pasek),
+        # panel tylko je wyświetla, żadnego własnego odpytywania.
+        self.disk_label = QLabel("")
+        layout.addWidget(self.disk_label)
+
         if self.sftp is None:
             self.path_edit.setEnabled(False)
             self.list.addItem(t("sftp_unavailable"))
             self.list.setEnabled(False)
         else:
             self.refresh()
+
+    def set_disk_stats(self, current):
+        """Wpięte pod `SshTerminal.disk_changed` — None dopóki nie ma pierwszej próbki."""
+        if current is None:
+            self.disk_label.setText("")
+        else:
+            self.disk_label.setText(
+                t("sftp_free_space", human_bytes(current["disk_free"]), f"{current['disk_pct']:.0f}")
+            )
 
     # --- nawigacja ------------------------------------------------------
 
@@ -1702,8 +1721,37 @@ class SftpPanel(QWidget):
         if not is_dir:
             menu.addAction(t("sftp_download"), lambda: self._download(self._child_path(name), name))
             menu.addAction(t("sftp_edit"), lambda: self._edit(self._child_path(name), name))
+        menu.addAction(t("sftp_rename"), lambda: self._rename(name))
+        menu.addAction(t("sftp_chmod"), lambda: self._chmod(name))
         menu.addAction(t("menu_delete"), lambda: self._delete(name, is_dir))
         menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def _rename(self, name):
+        new_name, ok = QInputDialog.getText(self, t("sftp_rename"), t("sftp_rename_prompt"), text=name)
+        if not ok or not new_name or new_name == name:
+            return
+        try:
+            self.sftp.rename(self._child_path(name), self._child_path(new_name))
+        except Exception as error:
+            QMessageBox.warning(self, t("err_rename"), str(error))
+        self.refresh()
+
+    def _chmod(self, name):
+        mode_text, ok = QInputDialog.getText(self, t("sftp_chmod"), t("sftp_chmod_prompt"))
+        if not ok or not mode_text:
+            return
+        try:
+            mode = int(mode_text, 8)
+            if not (0 <= mode <= 0o7777):
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, t("err_chmod"), t("err_chmod_bad"))
+            return
+        try:
+            self.sftp.chmod(self._child_path(name), mode)
+        except Exception as error:
+            QMessageBox.warning(self, t("err_chmod"), str(error))
+        self.refresh()
 
     def _delete(self, name, is_dir):
         if QMessageBox.question(
@@ -1733,6 +1781,7 @@ class SessionTab(QWidget):
         super().__init__(parent)
         self.terminal = terminal
         self.sftp_panel = SftpPanel(terminal.client, self, bookmarks, on_change)
+        self.terminal.disk_changed.connect(self.sftp_panel.set_disk_stats)
         # Tunele stoją na tym samym transporcie co powłoka — znikają z sesją.
         self.tunnels = []          # krotki z `tunnels.parse_tunnel`, w kolejności
         self._tunnel_objects = {}  # krotka -> działający tunel
