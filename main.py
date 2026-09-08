@@ -8,7 +8,6 @@ import ctypes
 import json
 import socket
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
@@ -175,23 +174,22 @@ def status_icon(online):
     return _status_icons[online]
 
 
-class _TreeStatusPoller(QThread):
-    """Sprawdza port zapisanych połączeń co `interval` sekund.
+class _TreeStatusCheck(QThread):
+    """Sprawdza port podanych hostów — jednorazowo, jedno wywołanie na rundę.
 
-    Same gniazda na tym wątku — żadnych obiektów Qt poza sygnałem na końcu,
-    `get_targets` oddaje płaską migawkę {id(item): (host, port)} z wątku GUI.
+    Dostaje gotową migawkę {id(item): (host, port)} zebraną na wątku GUI
+    (przed startem, patrz `MainWindow._poll_status_once`) i nie dotyka
+    żadnego obiektu Qt poza własnym sygnałem — QTreeWidget wolno czytać
+    tylko z wątku GUI, a to właśnie tu wcześniej cicho się wywalało.
     """
 
-    result = Signal(dict)
+    # object, nie dict: klucze to id(item) (int), a Signal(dict) w PySide
+    # próbuje je zmapować na QVariantMap (klucze-stringi) i wywala konwersję.
+    result = Signal(object)
 
-    def __init__(self, get_targets, interval):
+    def __init__(self, targets):
         super().__init__()
-        self.get_targets = get_targets
-        self.interval = interval
-        self._stop = threading.Event()
-
-    def stop(self):
-        self._stop.set()
+        self.targets = targets
 
     @staticmethod
     def _check(host, port):
@@ -203,18 +201,13 @@ class _TreeStatusPoller(QThread):
             return False
 
     def run(self):
-        while not self._stop.is_set():
-            targets = self.get_targets()
-            with ThreadPoolExecutor(max_workers=scanner.WORKERS) as pool:
-                futures = {
-                    key: pool.submit(self._check, host, port)
-                    for key, (host, port) in targets.items()
-                }
-                results = {key: future.result() for key, future in futures.items()}
-            if self._stop.is_set():
-                return
-            self.result.emit(results)
-            self._stop.wait(self.interval)
+        with ThreadPoolExecutor(max_workers=scanner.WORKERS) as pool:
+            futures = {
+                key: pool.submit(self._check, host, port)
+                for key, (host, port) in self.targets.items()
+            }
+            results = {key: future.result() for key, future in futures.items()}
+        self.result.emit(results)
 
 
 # Hasła szyfrujemy DPAPI: klucz jest przypisany do konta Windows,
@@ -768,7 +761,7 @@ class ConnectionTree(QTreeWidget):
         return targets
 
     def apply_status(self, results):
-        """Nakłada wynik `_TreeStatusPoller` (id(item) -> bool) na ikony."""
+        """Nakłada wynik `_TreeStatusCheck` (id(item) -> bool) na ikony."""
         it = QTreeWidgetItemIterator(self)
         while it.value():
             item = it.value()
@@ -965,7 +958,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(t("status_idle"))
         self._restore_layout()
         self._update_check = None  # wątek startuje z main(), nie w testach
-        self._status_poller = None  # tak samo — --selftest nie ma chodzić po sieci
+        self._status_timer = None  # tak samo — --selftest nie ma chodzić po sieci
+        self._status_check = None
 
     # --- aktualizacja ------------------------------------------------------
 
@@ -990,26 +984,38 @@ class MainWindow(QMainWindow):
     def start_status_polling(self):
         """Wołane z `main()`, nie z `__init__` — inaczej `--selftest` chodziłby po sieci."""
         if i18n.settings().value("tree_status_enabled", True, type=bool):
-            self._start_status_poller()
+            self._start_status_timer()
 
-    def _start_status_poller(self):
+    def _start_status_timer(self):
         interval = int(i18n.settings().value("tree_status_interval", STATUS_INTERVAL_DEFAULT))
-        self._status_poller = _TreeStatusPoller(self.tree.status_targets, interval)
-        self._status_poller.result.connect(self.tree.apply_status)
-        self._status_poller.start()
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self._poll_status_once)
+        self._status_timer.start(interval * 1000)
+        self._poll_status_once()  # od razu, nie czekaj na pierwszy odstęp
 
-    def _stop_status_poller(self):
-        if self._status_poller:
-            self._status_poller.stop()
-            self._status_poller.wait()  # inaczej Qt wywala proces przy zamykaniu
-            self._status_poller = None
+    def _poll_status_once(self):
+        """Cele zbiera GUI thread (bezpieczny odczyt drzewa); gniazda idą w tle."""
+        targets = self.tree.status_targets()
+        if not targets:
+            return
+        self._status_check = _TreeStatusCheck(targets)
+        self._status_check.result.connect(self.tree.apply_status)
+        self._status_check.start()
+
+    def _stop_status_timer(self):
+        if self._status_timer:
+            self._status_timer.stop()
+            self._status_timer = None
+        if self._status_check:
+            self._status_check.wait()  # inaczej Qt wywala proces przy zamykaniu
+            self._status_check = None
 
     def _toggle_status_polling(self, on):
         i18n.settings().setValue("tree_status_enabled", on)
         if on:
-            self._start_status_poller()
+            self._start_status_timer()
         else:
-            self._stop_status_poller()
+            self._stop_status_timer()
 
     def _pick_status_interval(self):
         interval, ok = QInputDialog.getInt(
@@ -1020,9 +1026,9 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         i18n.settings().setValue("tree_status_interval", interval)
-        if self._status_poller:
-            self._stop_status_poller()
-            self._start_status_poller()
+        if self._status_timer:
+            self._stop_status_timer()
+            self._start_status_timer()
 
     # --- układ okna między uruchomieniami ---------------------------------
 
@@ -1541,7 +1547,7 @@ class MainWindow(QMainWindow):
         self._save_layout()
         if self._update_check:
             self._update_check.wait()  # inaczej Qt wywala proces przy zamykaniu
-        self._stop_status_poller()
+        self._stop_status_timer()
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
             if hasattr(widget, "close_session"):
