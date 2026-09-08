@@ -7,7 +7,7 @@ albo pulpit RDP w tym samym oknie.
 ## Wymagania
 
 - Python 3.11+ (na Windows uruchamiaj przez `py`, nie `python`)
-- PySide6, Paramiko
+- PySide6, Paramiko, pyte
 - RDP w zakładce działa **tylko na Windows** (kontrolka ActiveX `MsTscAx`, ta sama,
   na której stoi `mstsc.exe`); gdy się nie uruchomi, sesja idzie do osobnego okna `mstsc`.
 
@@ -52,6 +52,9 @@ py main.py --selftest
 
 - Podświetlanie składni po naszej stronie (błędy, ostrzeżenia, IP, ścieżki, URL-e),
   więc działa też, gdy serwer kolorów nie wysyła.
+- **Programy pełnoekranowe działają poprawnie** (`vim`, `htop`, `mc`, `less`, `top`):
+  terminal wykrywa alternate screen i rysuje siatkę znaków z prawdziwym
+  adresowaniem kursora i kolorami zamiast rozjeżdżać tekst.
 - Szukanie w terminalu (Ctrl+F), wklejanie (Ctrl+V i Ctrl+Shift+V), rozmiar PTY
   idący za rozmiarem okna.
 - **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; **Widok → Czcionka terminala**
@@ -118,9 +121,6 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 ## Znane ograniczenia
 
-- **Brak emulacji VT100.** Sekwencje ANSI są wycinane, więc zwykła powłoka wygląda
-  dobrze, ale programy pełnoekranowe (`vim`, `htop`, `mc`) będą rozjechane.
-  To największa pozostała dziura — kierunek: `pyte`.
 - Brak drag-out w SFTP (pobieranie przez wyciągnięcie pliku z panelu) — upload
   przez przeciągnięcie już jest, w drugą stronę jeszcze nie.
 - Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej stronie).
