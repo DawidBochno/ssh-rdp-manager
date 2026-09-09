@@ -326,6 +326,34 @@ TEXTS = {
         "tree_status_prompt": "Seconds between checks:",
         "status_online": "online",
         "status_offline": "offline",
+        # --- panel dyskow ---
+        "menu_disks": "Disks…",
+        "disks_title": "Disks",
+        "disks_col_mount": "Mount point",
+        "disks_col_used": "Used",
+        "disks_col_inodes": "Inodes",
+        "disks_failed": "Could not read disk usage on this server.",
+        # --- generator kluczy SSH ---
+        "menu_keygen": "SSH key generator…",
+        "keygen_title": "SSH key generator",
+        "keygen_type": "Key type:",
+        "keygen_generate": "Generate",
+        "keygen_placeholder": "Generated public key will appear here…",
+        "keygen_save": "Save private key…",
+        "keygen_copy_pub": "Copy public key",
+        "keygen_install": "Install to authorized_keys (active session)",
+        "keygen_no_key": "Generate a key first.",
+        "keygen_saved": "Private key saved: {0}",
+        "keygen_installed": "Public key appended to ~/.ssh/authorized_keys.",
+        "keygen_install_failed": "Could not write to authorized_keys.",
+        # --- kopiowanie komendy wget/curl ---
+        "srv_copy_wget": "Copy wget command",
+        "srv_copy_curl": "Copy curl command",
+        # --- alerty progowe ---
+        "menu_alerts": "Threshold alerts (CPU/RAM/disk)",
+        "menu_alerts_threshold": "Alert threshold…",
+        "alerts_threshold_prompt": "Alert threshold (%, applies to CPU/RAM/disk):",
+        "alert_title": "Threshold exceeded — {0}",
     },
     "pl": {
         # --- okno i formularz połączenia ---
@@ -634,6 +662,34 @@ TEXTS = {
         "tree_status_prompt": "Sekundy między sprawdzeniami:",
         "status_online": "dostępny",
         "status_offline": "niedostępny",
+        # --- panel dyskow ---
+        "menu_disks": "Dyski…",
+        "disks_title": "Dyski",
+        "disks_col_mount": "Punkt montowania",
+        "disks_col_used": "Zajęte",
+        "disks_col_inodes": "Inode'y",
+        "disks_failed": "Nie udało się odczytać zajętości dysków na tym serwerze.",
+        # --- generator kluczy SSH ---
+        "menu_keygen": "Generator kluczy SSH…",
+        "keygen_title": "Generator kluczy SSH",
+        "keygen_type": "Typ klucza:",
+        "keygen_generate": "Generuj",
+        "keygen_placeholder": "Tu pojawi się wygenerowany klucz publiczny…",
+        "keygen_save": "Zapisz klucz prywatny…",
+        "keygen_copy_pub": "Kopiuj klucz publiczny",
+        "keygen_install": "Wgraj do authorized_keys (aktywna sesja)",
+        "keygen_no_key": "Najpierw wygeneruj klucz.",
+        "keygen_saved": "Klucz prywatny zapisany: {0}",
+        "keygen_installed": "Klucz publiczny dopisany do ~/.ssh/authorized_keys.",
+        "keygen_install_failed": "Nie udało się zapisać do authorized_keys.",
+        # --- kopiowanie komendy wget/curl ---
+        "srv_copy_wget": "Kopiuj komendę wget",
+        "srv_copy_curl": "Kopiuj komendę curl",
+        # --- alerty progowe ---
+        "menu_alerts": "Alerty progowe (CPU/RAM/dysk)",
+        "menu_alerts_threshold": "Próg alertów…",
+        "alerts_threshold_prompt": "Próg alertów (%, dotyczy CPU/RAM/dysku):",
+        "alert_title": "Przekroczono próg — {0}",
     },
 }
 

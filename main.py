@@ -59,7 +59,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import disks
 import i18n
+import keygen
 import logtail
 import notify
 import scanner
@@ -68,13 +70,15 @@ import tunnels
 import update
 from i18n import t
 from rdp import RDP_PORT, open_rdp
-from servers import SERVERS
+from servers import SERVERS, HttpShare, curl_command, wget_command
 from ssh_terminal import (
     SCRIPTS,
     SessionTab,
     SshTerminal,
     TERMINAL_THEMES,
     TerminalHighlighter,
+    alert_threshold,
+    alerts_enabled,
     apply_terminal_theme,
     connect_with_progress,
     load_user_scripts,
@@ -82,6 +86,8 @@ from ssh_terminal import (
     save_text,
     script_label,
     scrollback,
+    set_alert_threshold,
+    set_alerts_enabled,
     set_scrollback,
     set_terminal_font,
     set_terminal_theme,
@@ -102,6 +108,8 @@ TOOLS = (
     ("menu_dashboard", "_open_dashboard"),
     ("menu_logtail", "_open_log_tail"),
     ("menu_services", "_manage_services"),
+    ("menu_disks", "_open_disks"),
+    ("menu_keygen", "_open_keygen"),
 )
 
 
@@ -1090,6 +1098,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(status_action)
         view_menu.addAction(t("menu_tree_status_interval"), self._pick_status_interval)
 
+        alerts_action = QAction(t("menu_alerts"), self, checkable=True, checked=alerts_enabled())
+        alerts_action.toggled.connect(set_alerts_enabled)
+        view_menu.addAction(alerts_action)
+        view_menu.addAction(t("menu_alerts_threshold"), self._pick_alert_threshold)
+
         theme_menu = view_menu.addMenu(t("menu_theme"))
         theme_group = QActionGroup(self)
         for name in TERMINAL_THEMES:
@@ -1222,11 +1235,25 @@ class MainWindow(QMainWindow):
             return
         self._servers[spec["label"]] = server
         action.setChecked(True)
-        QMessageBox.information(
-            self,
-            t(spec["label"]),
-            t("srv_running", server.url, directory),
-        )
+        self._show_server_started(spec, server, directory)
+
+    def _show_server_started(self, spec, server, directory):
+        """HTTP dostaje dwa przyciski kopiujące gotową komendę pobierania."""
+        if not isinstance(server, HttpShare):
+            QMessageBox.information(self, t(spec["label"]), t("srv_running", server.url, directory))
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(t(spec["label"]))
+        box.setText(t("srv_running", server.url, directory))
+        wget_btn = box.addButton(t("srv_copy_wget"), QMessageBox.ActionRole)
+        curl_btn = box.addButton(t("srv_copy_curl"), QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Ok)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is wget_btn:
+            QApplication.clipboard().setText(wget_command(server.url))
+        elif clicked is curl_btn:
+            QApplication.clipboard().setText(curl_command(server.url))
 
     def _stop_servers(self):
         for server in self._servers.values():
@@ -1386,6 +1413,13 @@ class MainWindow(QMainWindow):
             if isinstance(widget, SessionTab):
                 widget.terminal.document().setMaximumBlockCount(lines)
 
+    def _pick_alert_threshold(self):
+        value, ok = QInputDialog.getInt(
+            self, t("menu_alerts_threshold"), t("alerts_threshold_prompt"), alert_threshold(), 1, 100
+        )
+        if ok:
+            set_alert_threshold(value)
+
     def _set_terminal_theme(self, name):
         """Schemat kolorów terminala — wspólny dla wszystkich zakładek."""
         set_terminal_theme(name)
@@ -1415,6 +1449,20 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, t("services_title"), t("tunnels_need_session"))
             return
         services.ServiceDialog(self, session.terminal.client).exec()
+
+    def _open_disks(self):
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("disks_title"), t("tunnels_need_session"))
+            return
+        disks.DiskDialog(self, session.terminal.client).exec()
+
+    def _open_keygen(self):
+        # Wgranie do authorized_keys wymaga sesji, ale generowanie i zapis — nie;
+        # bez otwartej zakładki przycisk wgrania jest tylko wyszarzony.
+        session = self.tabs.currentWidget()
+        client = session.terminal.client if isinstance(session, SessionTab) else None
+        keygen.KeyGenDialog(self, client).exec()
 
     def _edit_triggers(self):
         """Regexy, na które ma reagować powiadomienie — jeden na linię."""
@@ -1827,6 +1875,17 @@ def selftest():
     shown.clear()
     window._manage_services()
     assert shown == [t("tunnels_need_session")], shown
+
+    # Panel dysków: bez sesji nie może się wywalić; generator kluczy działa nawet bez.
+    assert any(label == "menu_disks" for label, _ in TOOLS), TOOLS
+    assert any(label == "menu_keygen" for label, _ in TOOLS), TOOLS
+    shown.clear()
+    window._open_disks()
+    assert shown == [t("tunnels_need_session")], shown
+
+    # Alerty progowe: wynik czysto funkcyjny, patrz ssh_terminal.selftest();
+    # tutaj tylko sprawdzamy, że menu Widok je wystawia.
+    assert any(a.text() == t("menu_alerts") for a in window.findChildren(QAction))
 
     # Notatki i polecenia startowe: startowe tylko dla SSH, notatki dla obu.
     extra = ConnectionDialog(

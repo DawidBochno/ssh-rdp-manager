@@ -50,6 +50,15 @@ class HttpShare:
         self._server.server_close()
 
 
+def wget_command(url):
+    """Gotowa komenda do wklejenia w sesję SSH — admin dopisuje nazwę pliku."""
+    return f"wget {url}"
+
+
+def curl_command(url):
+    return f"curl -O {url}"
+
+
 class TftpShare:
     """Serwer TFTP (RFC 1350) na katalogu — odczyt i zapis, tryb octet.
 
@@ -213,6 +222,9 @@ def selftest():
             assert tftp._safe_path("plik.txt"), "zwykły plik odrzucony"
         finally:
             tftp.stop()
+
+    assert wget_command("http://1.2.3.4:8080/") == "wget http://1.2.3.4:8080/"
+    assert curl_command("http://1.2.3.4:8080/") == "curl -O http://1.2.3.4:8080/"
 
     print("servers selftest OK")
 

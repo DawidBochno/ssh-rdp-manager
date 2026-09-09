@@ -917,24 +917,32 @@ def parse_windows_stats(text):
     return stats
 
 
+def cpu_percent(current, previous):
+    """% zajętości CPU, albo None gdy jeszcze nie da się policzyć (pierwsza próbka)."""
+    if "cpu_pct" in current:
+        return current["cpu_pct"]
+    if previous and current["uptime"] > previous["uptime"]:
+        total = current["cpu_total"] - previous["cpu_total"]
+        idle = current["cpu_idle"] - previous["cpu_idle"]
+        if total > 0:
+            return max(0.0, 100 * (1 - idle / total))
+    return None
+
+
+def mem_percent(current):
+    return 100 * (current["mem_total"] - current["mem_free"]) / current["mem_total"] if current["mem_total"] else 0.0
+
+
 def format_stats(current, previous=None):
     """Składa tekst na pasek. Bez poprzedniej próbki nie ma czym policzyć tempa."""
     seconds = current["uptime"] - previous["uptime"] if previous else 0
 
-    busy = "—"
-    if "cpu_pct" in current:
-        busy = f"{current['cpu_pct']:.0f}%"
-    elif previous and seconds > 0:
-        total = current["cpu_total"] - previous["cpu_total"]
-        idle = current["cpu_idle"] - previous["cpu_idle"]
-        if total > 0:
-            busy = f"{max(0.0, 100 * (1 - idle / total)):.0f}%"
-    parts = [f"CPU {busy}"]
+    busy = cpu_percent(current, previous)
+    parts = [f"CPU {busy:.0f}%" if busy is not None else "CPU —"]
 
     used = current["mem_total"] - current["mem_free"]
-    share = 100 * used / current["mem_total"] if current["mem_total"] else 0
     parts.append(
-        f"RAM {human_bytes(used)} / {human_bytes(current['mem_total'])} ({share:.0f}%)"
+        f"RAM {human_bytes(used)} / {human_bytes(current['mem_total'])} ({mem_percent(current):.0f}%)"
     )
     parts.append(
         f"{t('stats_disk')} {current['disk_pct']:.0f}%"
@@ -953,6 +961,46 @@ def format_stats(current, previous=None):
     return "   |   ".join(parts)
 
 
+# Alerty progowe: CPU/RAM/dysk ponad próg -> dymek w zasobniku (notify.py).
+# Jeden wspólny próg dla trzech metryk — osobne progi to dodatkowy formularz
+# bez realnej korzyści, na jaki nikt tu jeszcze nie poprosił.
+DEFAULT_ALERT_THRESHOLD = 90
+ALERT_COOLDOWN = 60  # sekundy — tyle ciszy po dymku, ten sam wzorzec co TRIGGER_INTERVAL
+
+
+def alerts_enabled():
+    return bool(i18n.settings().value("alerts_enabled", False, type=bool))
+
+
+def set_alerts_enabled(on):
+    i18n.settings().setValue("alerts_enabled", bool(on))
+
+
+def alert_threshold():
+    try:
+        return max(1, min(100, int(i18n.settings().value("alert_threshold", DEFAULT_ALERT_THRESHOLD))))
+    except (TypeError, ValueError):
+        return DEFAULT_ALERT_THRESHOLD
+
+
+def set_alert_threshold(value):
+    i18n.settings().setValue("alert_threshold", int(value))
+
+
+def check_thresholds(current, previous, threshold):
+    """Metryki ponad próg -> lista tekstów typu „CPU 95%". Czysta funkcja, stąd testy."""
+    hits = []
+    busy = cpu_percent(current, previous)
+    if busy is not None and busy >= threshold:
+        hits.append(f"CPU {busy:.0f}%")
+    mem = mem_percent(current)
+    if mem >= threshold:
+        hits.append(f"RAM {mem:.0f}%")
+    if current["disk_pct"] >= threshold:
+        hits.append(f"{t('stats_disk')} {current['disk_pct']:.0f}%")
+    return hits
+
+
 class _StatsPoller(QThread):
     """Odpytuje serwer o statystyki co `STATS_INTERVAL` sekund.
 
@@ -961,11 +1009,13 @@ class _StatsPoller(QThread):
     """
 
     updated = Signal(str, object)  # tekst na pasek + surowy slownik (dla panelu SFTP)
+    alert = Signal(str)  # tekst dymka; emitowany z wątku, GUI łapie sygnałem (jak `updated`)
 
     def __init__(self, client):
         super().__init__()
         self.client = client
         self._stop = threading.Event()
+        self._alert_at = 0.0
 
     def stop(self):
         self._stop.set()
@@ -995,6 +1045,12 @@ class _StatsPoller(QThread):
                     self.updated.emit(t("stats_unavailable"), None)
                 return
             self.updated.emit(format_stats(current, previous), current)
+            if alerts_enabled():
+                hits = check_thresholds(current, previous, alert_threshold())
+                now = time.monotonic()
+                if hits and now - self._alert_at > ALERT_COOLDOWN:
+                    self._alert_at = now
+                    self.alert.emit(", ".join(hits))
             previous = current
             self._stop.wait(STATS_INTERVAL)
 
@@ -1192,11 +1248,18 @@ class SshTerminal(QPlainTextEdit):
         self.reader.finished_session.connect(self._on_closed)
         self.reader.start()
 
+        # Etykieta hosta dla dymka progowego — z transportu, bez nowego parametru.
+        try:
+            self.host = client.get_transport().getpeername()[0]
+        except Exception:
+            self.host = ""
+
         # Statystyki serwera dla dolnego paska okna.
         self.last_stats = ""
         self.last_disk = None
         self.stats = _StatsPoller(client)
         self.stats.updated.connect(self._on_stats)
+        self.stats.alert.connect(self._on_alert)
         self.stats.start()
 
     def _on_stats(self, text, current):
@@ -1204,6 +1267,9 @@ class SshTerminal(QPlainTextEdit):
         self.last_disk = current
         self.stats_changed.emit(text)
         self.disk_changed.emit(current)
+
+    def _on_alert(self, text):
+        notify.notify(t("alert_title", self.host), text)
 
     def _check_triggers(self, text):
         """Dymek w zasobniku, gdy w wyjściu padnie coś z listy wzorców."""
@@ -1300,6 +1366,14 @@ class SshTerminal(QPlainTextEdit):
         text = QApplication.clipboard().text()
         if text:
             self.channel.send(paste_bytes(text))
+
+    def mousePressEvent(self, event):
+        # Wklejanie środkowym klawiszem myszy — zwyczaj uniksowych terminali.
+        # Windows nie ma schowka PRIMARY (zaznaczenie), więc leci zwykły schowek.
+        if event.button() == Qt.MiddleButton:
+            self._paste()
+            return
+        super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Find):
@@ -2103,6 +2177,12 @@ def selftest():
     assert "↑ 0 B/s" in text, text
     assert "uptime 16 min" in text and "users: 2" in text, text
     assert "CPU —" in format_stats(first), "pierwsza próbka nie ma z czym się porównać"
+
+    # Alerty progowe: powyżej progu trafia w wynik, poniżej — nie.
+    assert "CPU 50%" in check_thresholds(second, first, 50), check_thresholds(second, first, 50)
+    assert check_thresholds(second, first, 99) == []
+    high_disk = dict(second, disk_pct=95.0)
+    assert any(hit.startswith(t("stats_disk")) for hit in check_thresholds(high_disk, first, 90))
 
     assert human_bytes(0) == "0 B"
     assert human_bytes(1536) == "1.5 kB"
