@@ -18,9 +18,11 @@ Pułapki, które kosztowały czas przy pisaniu tego modułu:
   statystykach serwera i skryptach.
 """
 
+import os
 import subprocess
 import sys
 import tempfile
+import threading
 
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QLabel, QMessageBox, QVBoxLayout, QWidget
@@ -75,6 +77,15 @@ def rdp_file_text(conn):
     return "\n".join(lines) + "\n"
 
 
+def _cleanup_rdp_file(process, path):
+    """Kasuje plik `.rdp` dopiero jak mstsc (cały proces okna) się skończy."""
+    process.wait()
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def launch_mstsc(conn):
     """Otwiera sesję w osobnym oknie `mstsc.exe`. Zwraca None albo tekst błędu."""
     try:
@@ -83,9 +94,15 @@ def launch_mstsc(conn):
         )
         with handle as rdp_file:
             rdp_file.write(rdp_file_text(conn))
-        subprocess.Popen(["mstsc", handle.name])
+        process = subprocess.Popen(["mstsc", handle.name])
     except OSError as error:
         return str(error)
+    # Plik zawiera host/login — nie zostawiamy go w %TEMP% na stałe. mstsc.exe
+    # to samo okno sesji (nie launcher, ktory od razu wraca), wiec czekanie na
+    # koniec procesu w watku w tle jest prostym i pewnym momentem na sprzatanie.
+    threading.Thread(
+        target=_cleanup_rdp_file, args=(process, handle.name), daemon=True
+    ).start()
     return None
 
 
@@ -201,6 +218,16 @@ def selftest():
     assert "password" not in text, "hasło nie ma prawa trafić do pliku .rdp"
     # Port domyślny, gdy wpis go nie ma.
     assert "full address:s:h:3389" in rdp_file_text({"host": "h"})
+
+    # Plik .rdp (host/login) nie moze zostac w %TEMP% na stale — sprzatanie
+    # czeka na koniec "procesu" mstsc, tu podstawionego zamiast prawdziwego.
+    class _FakeProcess:
+        def wait(self):
+            pass
+
+    tmp_path = tempfile.NamedTemporaryFile(suffix=".rdp", delete=False).name
+    _cleanup_rdp_file(_FakeProcess(), tmp_path)
+    assert not os.path.exists(tmp_path), "plik .rdp mial zniknac po zakonczeniu mstsc"
 
     control = make_control()
     if control is None:

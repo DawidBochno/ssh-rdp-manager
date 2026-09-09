@@ -70,7 +70,7 @@ import tunnels
 import update
 from i18n import t
 from rdp import RDP_PORT, open_rdp
-from servers import SERVERS, HttpShare, curl_command, wget_command
+from servers import SERVERS, HttpShare, TftpShare, curl_command, wget_command
 from ssh_terminal import (
     SCRIPTS,
     SessionTab,
@@ -259,9 +259,18 @@ SSH_PORT = 22
 class ConnectionDialog(QDialog):
     """Formularz danych połączenia — SSH albo RDP."""
 
+    # Klucze, które formularz odczytuje/zapisuje. Reszta (np. "bookmarks"
+    # zakładek SFTP, "tunnels" tuneli SSH) ma zostać nietknięta przy edycji.
+    _FORM_KEYS = {
+        "name", "host", "port", "username", "protocol", "key_file",
+        "jump_host", "startup", "notes", "redirect_drives",
+        "password", "passphrase",
+    }
+
     def __init__(self, parent=None, data=None):
         super().__init__(parent)
         data = data or {}
+        self._data = data
 
         self.protocol = QComboBox()
         self.protocol.addItem("SSH", "ssh")
@@ -390,13 +399,16 @@ class ConnectionDialog(QDialog):
     def values(self):
         host = self.host.text().strip()
         protocol = self.protocol.currentData()
-        data = {
+        # Zaczynamy od pól spoza formularza (bookmarks, tunnels...), żeby
+        # edycja połączenia ich nie kasowała.
+        data = {k: v for k, v in self._data.items() if k not in self._FORM_KEYS}
+        data.update({
             "name": self.name.text().strip() or host,
             "host": host,
             "port": self.port.value(),
             "username": self.username.text().strip(),
             "protocol": protocol,
-        }
+        })
         if protocol == "ssh" and self.key_file.text().strip():
             data["key_file"] = self.key_file.text().strip()
         if protocol == "ssh" and self.jump_host.text().strip():
@@ -500,11 +512,17 @@ class ConnectionTree(QTreeWidget):
     def load(self):
         if not CONFIG_FILE.exists():
             return
+        root = self.topLevelItem(0)
         try:
             nodes = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            # Uszkodzonego pliku nie nadpisujemy w ciszy — odkładamy kopię,
-            # żeby dało się odzyskać wpisy ręcznie.
+            for node in nodes:
+                self._build(root, node)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            # Uszkodzonego pliku (zly JSON albo zla struktura wewnatrz) nie
+            # nadpisujemy w ciszy — odkladamy kopie, zeby dalo sie odzyskac
+            # wpisy recznie. Czesciowo zbudowane galezie tez wywalamy, zeby
+            # nie zostac z ucietym drzewem bez ostrzezenia.
+            root.takeChildren()
             backup = CONFIG_FILE.with_suffix(".json.bak")
             try:
                 CONFIG_FILE.replace(backup)
@@ -516,11 +534,6 @@ class ConnectionTree(QTreeWidget):
                 t("err_load_body", error)
                 + (t("err_load_backup", backup) if backup else ""),
             )
-            return
-
-        root = self.topLevelItem(0)
-        for node in nodes:
-            self._build(root, node)
 
     # --- eksport i import ---------------------------------------------------
 
@@ -1223,8 +1236,28 @@ class MainWindow(QMainWindow):
         if not ok:
             action.setChecked(False)
             return
+
+        # Katalog jest widoczny dla calej sieci lokalnej, dopoki nie ograniczymy
+        # go do konkretnego adresu — podpowiadamy host biezacej sesji SSH/RDP.
+        current = self.tabs.currentWidget()
+        suggested_ip = getattr(getattr(current, "terminal", None), "host", "") or ""
+        allowed_ip, ok = QInputDialog.getText(
+            self, t(spec["label"]), t("srv_allowed_ip_prompt"), text=suggested_ip
+        )
+        if not ok:
+            action.setChecked(False)
+            return
+        allowed_ip = allowed_ip.strip() or None
+
+        kwargs = {"allowed_ip": allowed_ip}
+        if spec["cls"] is TftpShare:
+            kwargs["allow_write"] = QMessageBox.question(
+                self, t(spec["label"]), t("srv_allow_write_prompt"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            ) == QMessageBox.Yes
+
         try:
-            server = spec["cls"](directory, port)
+            server = spec["cls"](directory, port, **kwargs)
         except OSError as error:
             action.setChecked(False)
             QMessageBox.warning(
@@ -1693,6 +1726,17 @@ def selftest():
         broken = ConnectionTree()
         assert broken.topLevelItem(0).childCount() == 0
         assert CONFIG_FILE.with_suffix(".json.bak").exists(), "brak kopii uszkodzonego pliku"
+
+        # Poprawny JSON, ale zla struktura wewnatrz (polaczenie bez "name")
+        # rowniez nie moze wywalic calej aplikacji przy starcie.
+        CONFIG_FILE.with_suffix(".json.bak").unlink()
+        CONFIG_FILE.write_text(
+            json.dumps([{"name": "x", "connection": {"host": "h"}}]), encoding="utf-8"
+        )
+        malformed = ConnectionTree()
+        assert malformed.topLevelItem(0).childCount() == 0, "drzewo nie zostalo wyczyszczone"
+        assert CONFIG_FILE.with_suffix(".json.bak").exists(), "brak kopii zlej struktury"
+
         # Eksport i import: ten sam format co plik konfiguracyjny.
         export_file = Path(tmp) / "eksport.json"
         tree.export_to(export_file)
@@ -1897,6 +1941,15 @@ def selftest():
     extra.protocol.setCurrentIndex(extra.protocol.findData("rdp"))
     assert "startup" not in extra.values(), "RDP nie ma powloki do karmienia"
     assert extra.values()["notes"] == "serwer klienta X", "notatki dotycza obu protokolow"
+
+    # Edycja polaczenia nie moze skasowac zakladek SFTP ani tuneli - dawniej
+    # values() budowalo slownik tylko z pol formularza i gubilo reszte.
+    with_extras = ConnectionDialog(
+        data={"host": "h", "bookmarks": ["/var/log"], "tunnels": [{"local": 8080}]}
+    )
+    saved = with_extras.values()
+    assert saved["bookmarks"] == ["/var/log"], "edycja skasowala zakladki SFTP"
+    assert saved["tunnels"] == [{"local": 8080}], "edycja skasowala tunele"
 
     # Duplikat: kopia obok oryginalu, z tymi samymi danymi i inna nazwa.
     copy = window.tree._duplicate(conn)

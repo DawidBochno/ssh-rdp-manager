@@ -65,7 +65,10 @@ def action_command(variant, action, name):
     """Polecenie start/stop/restart usługi `name` dla wykrytego wariantu."""
     if variant == "windows":
         verb = _WIN_VERBS[action]
-        return f"powershell -NoProfile -NonInteractive -Command \"{verb} -Name '{name}'\""
+        # W literale PowerShella w apostrofach escapuje się apostrof przez
+        # podwojenie (`''`), inaczej "O'Brien" jako nazwa usługi łamie polecenie.
+        quoted = name.replace("'", "''")
+        return f"powershell -NoProfile -NonInteractive -Command \"{verb} -Name '{quoted}'\""
     return f"sudo systemctl {action} {shlex.quote(name)}"
 
 
@@ -172,6 +175,11 @@ def selftest():
     win_cmd = action_command("windows", "restart", "Spooler")
     assert "Restart-Service" in win_cmd and "-Force" in win_cmd and "Spooler" in win_cmd
     assert "Start-Service" in action_command("windows", "start", "Spooler")
+
+    # Apostrof w nazwie usługi nie może wyrwać się z literału PowerShella.
+    injected = action_command("windows", "stop", "x'; Remove-Item C:\\ -Force; '")
+    assert "-Name 'x''; Remove-Item C:\\ -Force; '''" in injected, injected
+
     print("services selftest OK")
 
 

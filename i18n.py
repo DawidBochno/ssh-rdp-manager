@@ -112,6 +112,10 @@ TEXTS = {
                            "Ports below 1024 require administrator rights.",
         "srv_running": "Server is running.\n\nAddress: {0}\nDirectory: {1}",
         "srv_all_stopped": "Servers stopped",
+        "srv_allowed_ip_prompt": "Restrict to IP address (empty = whole network)",
+        "srv_allow_write_prompt": "Allow writing (TFTP upload)?\n\n"
+                                  "Any client on the network will be able to "
+                                  "create/overwrite files in this directory.",
         # --- skrypty administracyjne ---
         "scripts_short": "Scripts",
         "scripts_need_session": "Open an SSH connection first.",
@@ -130,6 +134,8 @@ TEXTS = {
         "script_connections": "Active network connections",
         "script_no_output": "(no output)",
         "script_failed": "Could not run the script on this server.",
+        "script_param_unsafe": "This value contains characters that are not allowed here "
+                               "(quotes, pipes, semicolons...).",
         # --- pasek boczny, okno „o programie", pasek stanu ---
         "sidebar": "Sidebar",
         "about_title": "About",
@@ -346,6 +352,7 @@ TEXTS = {
         "keygen_saved": "Private key saved: {0}",
         "keygen_installed": "Public key appended to ~/.ssh/authorized_keys.",
         "keygen_install_failed": "Could not write to authorized_keys.",
+        "keygen_passphrase": "Private key passphrase (optional):",
         # --- kopiowanie komendy wget/curl ---
         "srv_copy_wget": "Copy wget command",
         "srv_copy_curl": "Copy curl command",
@@ -448,6 +455,10 @@ TEXTS = {
                            "Porty poniżej 1024 wymagają uprawnień administratora.",
         "srv_running": "Serwer działa.\n\nAdres: {0}\nKatalog: {1}",
         "srv_all_stopped": "Serwery zatrzymane",
+        "srv_allowed_ip_prompt": "Ogranicz do adresu IP (puste = cała sieć)",
+        "srv_allow_write_prompt": "Zezwolić na zapis (wgrywanie przez TFTP)?\n\n"
+                                  "Dowolny klient w sieci będzie mógł "
+                                  "tworzyć/nadpisywać pliki w tym katalogu.",
         # --- skrypty administracyjne ---
         "scripts_short": "Skrypty",
         "scripts_need_session": "Otwórz najpierw połączenie SSH.",
@@ -466,6 +477,8 @@ TEXTS = {
         "script_connections": "Aktywne połączenia sieciowe",
         "script_no_output": "(brak wyniku)",
         "script_failed": "Nie udało się uruchomić skryptu na tym serwerze.",
+        "script_param_unsafe": "Ta wartość zawiera niedozwolone znaki "
+                               "(cudzysłowy, potoki, średniki...).",
         # --- pasek boczny, okno „o programie", pasek stanu ---
         "sidebar": "Pasek boczny",
         "about_title": "O programie",
@@ -682,6 +695,7 @@ TEXTS = {
         "keygen_saved": "Klucz prywatny zapisany: {0}",
         "keygen_installed": "Klucz publiczny dopisany do ~/.ssh/authorized_keys.",
         "keygen_install_failed": "Nie udało się zapisać do authorized_keys.",
+        "keygen_passphrase": "Hasło klucza prywatnego (opcjonalne):",
         # --- kopiowanie komendy wget/curl ---
         "srv_copy_wget": "Kopiuj komendę wget",
         "srv_copy_curl": "Kopiuj komendę curl",

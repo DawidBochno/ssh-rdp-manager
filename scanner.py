@@ -128,7 +128,12 @@ def parse_range(text):
         if not part:
             continue
         if "/" in part:
-            hosts += [str(a) for a in ipaddress.ip_network(part, strict=False).hosts()]
+            network = ipaddress.ip_network(part, strict=False)
+            # Liczymy rozmiar PRZED materializacja hosts() — dla np. "/1"
+            # to inaczej miliardy stringow zanim padnie ValueError.
+            if network.num_addresses > MAX_HOSTS:
+                raise ValueError(f"{network.num_addresses} > {MAX_HOSTS}")
+            hosts += [str(a) for a in network.hosts()]
         elif "-" in part:
             start, end = (piece.strip() for piece in part.split("-", 1))
             first = ipaddress.ip_address(start)
@@ -138,11 +143,13 @@ def parse_range(text):
             )
             if int(last) < int(first):
                 raise ValueError(part)
+            if int(last) - int(first) + 1 > MAX_HOSTS:
+                raise ValueError(f"{int(last) - int(first) + 1} > {MAX_HOSTS}")
             hosts += [str(ipaddress.ip_address(n)) for n in range(int(first), int(last) + 1)]
         else:
             hosts.append(str(ipaddress.ip_address(part)))
-    if len(hosts) > MAX_HOSTS:
-        raise ValueError(f"{len(hosts)} > {MAX_HOSTS}")
+        if len(hosts) > MAX_HOSTS:
+            raise ValueError(f"{len(hosts)} > {MAX_HOSTS}")
     return hosts
 
 
@@ -486,6 +493,14 @@ def selftest():
         try:
             parse_range(bad)
             raise AssertionError(f"{bad} powinno sie wywalic")
+        except ValueError:
+            pass
+    # Zapora ma zadzialac PRZED zmaterializowaniem listy adresow - inaczej
+    # "/1" probuje zbudowac liste na miliardy stringow zanim padnie ValueError.
+    for huge in ("10.0.0.0/1", "0.0.0.1-255.255.255.254"):
+        try:
+            parse_range(huge)
+            raise AssertionError(f"{huge} powinno sie wywalic")
         except ValueError:
             pass
     arp = parse_arp(
