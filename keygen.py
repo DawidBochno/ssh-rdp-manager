@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -74,6 +75,13 @@ class KeyGenDialog(QDialog):
         self.output.setPlaceholderText(t("keygen_placeholder"))
         layout.addWidget(self.output)
 
+        pass_row = QHBoxLayout()
+        pass_row.addWidget(QLabel(t("keygen_passphrase")))
+        self.passphrase = QLineEdit()
+        self.passphrase.setEchoMode(QLineEdit.Password)
+        pass_row.addWidget(self.passphrase)
+        layout.addLayout(pass_row)
+
         actions = QHBoxLayout()
         save = QPushButton(t("keygen_save"))
         save.clicked.connect(self._save_private)
@@ -104,7 +112,7 @@ class KeyGenDialog(QDialog):
         if not path:
             return
         try:
-            self.key.write_private_key_file(path)
+            self.key.write_private_key_file(path, password=self.passphrase.text() or None)
         except OSError as error:
             QMessageBox.warning(self, t("keygen_title"), str(error))
             return
@@ -137,6 +145,19 @@ def selftest():
     tricky = public_line(key, "o'brien")
     quoted_cmd = install_command(tricky)
     assert "o'\\''brien" in quoted_cmd, quoted_cmd  # apostrof bezpiecznie zamknięty
+
+    # Klucz prywatny z haslem musi wyjsc zaszyfrowany, nie jawnym tekstem.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f"{tmp}/id_test"
+        key.write_private_key_file(path, password="sekret123")
+        try:
+            paramiko.RSAKey.from_private_key_file(path)
+            raise AssertionError("klucz mial byc zaszyfrowany hasłem")
+        except paramiko.PasswordRequiredException:
+            pass
+        reloaded = paramiko.RSAKey.from_private_key_file(path, password="sekret123")
+        assert reloaded.get_base64() == key.get_base64(), "zle haslo albo zly klucz po odczycie"
     print("keygen selftest OK")
 
 

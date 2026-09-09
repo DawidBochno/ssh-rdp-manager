@@ -2076,6 +2076,13 @@ def _show_script_output(parent, title, text):
     dialog.exec()
 
 
+# Parametr trafia surowy w {0} do polecen powloki trzech roznych shelli
+# (bash, cmd.exe, powershell) — zamiast cytowac osobno dla kazdego, po
+# prostu odrzucamy znaki, ktorych zadna prawdziwa nazwa uslugi/host nie ma,
+# a ktore wyrywaja sie z cudzyslowu/lancucha polecen w ktoryms z nich.
+_SCRIPT_PARAM_UNSAFE = re.compile(r"[;&|`$<>\"'\\\n\r]")
+
+
 def run_script(parent, client, script):
     """Pyta o parametr (jeśli skrypt go wymaga), uruchamia i pokazuje wynik."""
     param = None
@@ -2087,6 +2094,9 @@ def run_script(parent, client, script):
         if not ok or not param.strip():
             return
         param = param.strip()
+        if _SCRIPT_PARAM_UNSAFE.search(param):
+            QMessageBox.warning(parent, label, t("script_param_unsafe"))
+            return
 
     unix_cmd = script["unix"].format(param) if param is not None else script["unix"]
     windows_cmd = script.get("windows")
@@ -2386,6 +2396,14 @@ def selftest():
         script_file.write_text("{to nie lista}", encoding="utf-8")
         assert load_user_scripts(script_file), "uszkodzony plik musi zwrocic tekst bledu"
         assert len(SCRIPTS) == before, "uszkodzony plik nie moze nic dopisac"
+
+    # Parametr skryptu (nazwa uslugi, host) nie moze wyrwac sie z polecenia
+    # powloki, ktora go dostaje — patrz run_script().
+    assert not _SCRIPT_PARAM_UNSAFE.search("sshd"), "zwykla nazwa uslugi nie moze odpasc"
+    assert not _SCRIPT_PARAM_UNSAFE.search("8.8.8.8"), "zwykly adres nie moze odpasc"
+    assert not _SCRIPT_PARAM_UNSAFE.search("moj serwer"), "spacja to normalna nazwa"
+    for zly in ("x; rm -rf /", "x' -Force; '", 'x" & del C:\\', "a|b", "a`b", "a$b"):
+        assert _SCRIPT_PARAM_UNSAFE.search(zly), f"{zly!r} mial odpasc"
 
     # Motywy terminala: "Default" zdejmuje arkusz stylów, reszta ustawia kolory.
     stored_theme = i18n.settings().value("terminal_theme")
