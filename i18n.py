@@ -361,6 +361,17 @@ TEXTS = {
         "menu_alerts_threshold": "Alert threshold…",
         "alerts_threshold_prompt": "Alert threshold (%, applies to CPU/RAM/disk):",
         "alert_title": "Threshold exceeded — {0}",
+        # --- blokada okna po bezczynnosci ---
+        "menu_lock": "Lock after inactivity",
+        "menu_lock_timeout": "Lock timeout…",
+        "lock_timeout_prompt": "Minutes of inactivity before locking:",
+        "lock_set_pin_title": "Set lock PIN",
+        "lock_set_pin_prompt": "PIN to unlock the window (at least 4 characters):",
+        "lock_pin_too_short": "PIN must be at least 4 characters.",
+        "lock_screen_title": "Window locked",
+        "lock_pin_prompt": "Enter PIN to unlock:",
+        "lock_unlock_button": "Unlock",
+        "lock_wrong_pin": "Wrong PIN.",
     },
     "pl": {
         # --- okno i formularz połączenia ---
@@ -704,6 +715,17 @@ TEXTS = {
         "menu_alerts_threshold": "Próg alertów…",
         "alerts_threshold_prompt": "Próg alertów (%, dotyczy CPU/RAM/dysku):",
         "alert_title": "Przekroczono próg — {0}",
+        # --- blokada okna po bezczynnosci ---
+        "menu_lock": "Blokada po bezczynności",
+        "menu_lock_timeout": "Czas do blokady…",
+        "lock_timeout_prompt": "Minuty bezczynności do zablokowania okna:",
+        "lock_set_pin_title": "Ustaw PIN blokady",
+        "lock_set_pin_prompt": "PIN do odblokowania okna (min. 4 znaki):",
+        "lock_pin_too_short": "PIN musi mieć co najmniej 4 znaki.",
+        "lock_screen_title": "Okno zablokowane",
+        "lock_pin_prompt": "Wpisz PIN, aby odblokować:",
+        "lock_unlock_button": "Odblokuj",
+        "lock_wrong_pin": "Błędny PIN.",
     },
 }
 

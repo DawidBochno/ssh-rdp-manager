@@ -5,6 +5,7 @@ Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
 import base64
 import ctypes
+import hashlib
 import json
 import socket
 import sys
@@ -13,11 +14,12 @@ from ctypes import wintypes
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QBrush,
+    QCloseEvent,
     QColor,
     QIcon,
     QKeySequence,
@@ -157,6 +159,59 @@ ICONS = ["📁", "🗂️", "🖥️", "🐧", "🪟",
 # Kropka statusu (żywy/martwy zapisany serwer) — ikona osobno od ICON_DATA
 # (emoji doklejone do nazwy), więc jedno nie koliduje z drugim.
 STATUS_INTERVAL_DEFAULT = 120  # sekund; sprawdzanie ma być rzadkie, nie skaner
+
+LOCK_TIMEOUT_DEFAULT = 10  # minut bezczynności do zablokowania okna
+
+# Aktywnosc, ktora ma odkladac blokade — nie AllEvents, bo np. same Timer/Paint
+# tez by ja odkladaly i blokada nigdy by sie nie wlaczyla.
+_ACTIVITY_EVENTS = {QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel}
+
+
+def _hash_pin(pin):
+    """Sam PIN nigdy nie idzie do QSettings otwartym tekstem."""
+    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
+
+
+class _LockDialog(QDialog):
+    """Ekran blokady. Modalnosc Qt sama blokuje reszte okna — bez wlasnej nakladki.
+
+    Escape i przycisk zamkniecia sa wylaczone (`reject()`/`closeEvent()`),
+    inaczej blokada wychodzilaby bez podania PIN-u.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._unlocked = False
+        self.setWindowTitle(t("lock_screen_title"))
+        self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(t("lock_pin_prompt")))
+        self.pin_field = QLineEdit()
+        self.pin_field.setEchoMode(QLineEdit.Password)
+        self.pin_field.returnPressed.connect(self._try_unlock)
+        layout.addWidget(self.pin_field)
+        unlock_button = QPushButton(t("lock_unlock_button"))
+        unlock_button.clicked.connect(self._try_unlock)
+        layout.addWidget(unlock_button)
+
+    def _try_unlock(self):
+        if _hash_pin(self.pin_field.text()) == i18n.settings().value("lock_pin_hash"):
+            self._unlocked = True
+            self.accept()
+        else:
+            QMessageBox.warning(self, t("lock_screen_title"), t("lock_wrong_pin"))
+            self.pin_field.clear()
+
+    def reject(self):
+        pass  # Escape nie ma prawa zamknac blokady bez PIN-u
+
+    def closeEvent(self, event):
+        if self._unlocked:
+            super().closeEvent(event)
+        else:
+            event.ignore()
 
 
 def _status_icon(color):
@@ -981,6 +1036,8 @@ class MainWindow(QMainWindow):
         self._update_check = None  # wątek startuje z main(), nie w testach
         self._status_timer = None  # tak samo — --selftest nie ma chodzić po sieci
         self._status_check = None
+        self._lock_timer = None  # tak samo — event filter startuje z main()
+        self._locked = False
 
     # --- aktualizacja ------------------------------------------------------
 
@@ -1051,6 +1108,69 @@ class MainWindow(QMainWindow):
             self._stop_status_timer()
             self._start_status_timer()
 
+    # --- blokada okna po bezczynności --------------------------------------
+
+    def start_lock_watch(self):
+        """Wołane z `main()`, nie z `__init__` — inaczej `--selftest` instalowałby
+        globalny event filter i mógłby się zablokować sam sobie."""
+        QApplication.instance().installEventFilter(self)
+        if i18n.settings().value("lock_enabled", False, type=bool):
+            self._arm_lock_timer()
+
+    def eventFilter(self, obj, event):
+        if (
+            not self._locked
+            and event.type() in _ACTIVITY_EVENTS
+            and i18n.settings().value("lock_enabled", False, type=bool)
+        ):
+            self._arm_lock_timer()
+        return super().eventFilter(obj, event)
+
+    def _arm_lock_timer(self):
+        if self._lock_timer is None:
+            self._lock_timer = QTimer(self)
+            self._lock_timer.setSingleShot(True)
+            self._lock_timer.timeout.connect(self._lock_now)
+        minutes = int(i18n.settings().value("lock_timeout", LOCK_TIMEOUT_DEFAULT))
+        self._lock_timer.start(minutes * 60 * 1000)
+
+    def _lock_now(self):
+        if self._locked or not i18n.settings().value("lock_enabled", False, type=bool):
+            return
+        self._locked = True
+        _LockDialog(self).exec()
+        self._locked = False
+        self._arm_lock_timer()  # odliczanie od nowa po odblokowaniu
+
+    def _toggle_lock(self, on):
+        if on and not i18n.settings().value("lock_pin_hash"):
+            pin, ok = QInputDialog.getText(
+                self, t("lock_set_pin_title"), t("lock_set_pin_prompt"), QLineEdit.Password
+            )
+            if not ok or len(pin) < 4:
+                if ok:
+                    QMessageBox.warning(self, t("lock_set_pin_title"), t("lock_pin_too_short"))
+                self._lock_action.setChecked(False)
+                return
+            i18n.settings().setValue("lock_pin_hash", _hash_pin(pin))
+        i18n.settings().setValue("lock_enabled", on)
+        if on:
+            self._arm_lock_timer()
+        elif self._lock_timer:
+            self._lock_timer.stop()
+
+    def _pick_lock_timeout(self):
+        minutes, ok = QInputDialog.getInt(
+            self, t("menu_lock_timeout"), t("lock_timeout_prompt"),
+            int(i18n.settings().value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
+            1, 240, 1,
+        )
+        if not ok:
+            return
+        i18n.settings().setValue("lock_timeout", minutes)
+        if self._lock_timer and self._lock_timer.isActive():
+            self._arm_lock_timer()
+
     # --- układ okna między uruchomieniami ---------------------------------
 
     def _restore_layout(self):
@@ -1115,6 +1235,14 @@ class MainWindow(QMainWindow):
         alerts_action.toggled.connect(set_alerts_enabled)
         view_menu.addAction(alerts_action)
         view_menu.addAction(t("menu_alerts_threshold"), self._pick_alert_threshold)
+
+        self._lock_action = QAction(
+            t("menu_lock"), self, checkable=True,
+            checked=bool(i18n.settings().value("lock_enabled", False, type=bool)),
+        )
+        self._lock_action.toggled.connect(self._toggle_lock)
+        view_menu.addAction(self._lock_action)
+        view_menu.addAction(t("menu_lock_timeout"), self._pick_lock_timeout)
 
         theme_menu = view_menu.addMenu(t("menu_theme"))
         theme_group = QActionGroup(self)
@@ -1629,6 +1757,8 @@ class MainWindow(QMainWindow):
         if self._update_check:
             self._update_check.wait()  # inaczej Qt wywala proces przy zamykaniu
         self._stop_status_timer()
+        if self._lock_timer:
+            self._lock_timer.stop()
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
             if hasattr(widget, "close_session"):
@@ -1962,6 +2092,60 @@ def selftest():
     assert saved["bookmarks"] == ["/var/log"], "edycja skasowala zakladki SFTP"
     assert saved["tunnels"] == [{"local": 8080}], "edycja skasowala tunele"
 
+    # Blokada po bezczynności — QSettings tego testu nie mogą zostać w realnym
+    # profilu użytkownika (inaczej --selftest włączyłby blokadę z PIN-em "1234"
+    # w prawdziwej aplikacji), stąd zapis/odtworzenie na wejściu i wyjściu.
+    _stored_lock = {
+        key: i18n.settings().value(key)
+        for key in ("lock_enabled", "lock_pin_hash", "lock_timeout")
+    }
+    try:
+        assert _hash_pin("1234") == _hash_pin("1234")
+        assert _hash_pin("1234") != _hash_pin("4321")
+
+        # Za krótki PIN albo Cancel nie mogą włączyć blokady.
+        QInputDialog.getText = staticmethod(lambda *a, **k: ("ab", True))
+        window._toggle_lock(True)
+        assert not i18n.settings().value("lock_enabled", False, type=bool), "krotki PIN wlaczyl blokade"
+        QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
+        window._toggle_lock(True)
+        assert not i18n.settings().value("lock_enabled", False, type=bool), "Cancel wlaczyl blokade"
+
+        # Poprawny PIN włącza blokadę i zbroi timer.
+        QInputDialog.getText = staticmethod(lambda *a, **k: ("1234", True))
+        window._toggle_lock(True)
+        assert i18n.settings().value("lock_enabled", False, type=bool), "poprawny PIN nie wlaczyl blokady"
+        assert i18n.settings().value("lock_pin_hash") == _hash_pin("1234")
+        assert window._lock_timer.isActive(), "wlaczenie blokady musi zazbroic timer"
+
+        # Ekran blokady: zly PIN nie odblokowuje, dobry — tak; Escape/X nie zamykają.
+        dialog = _LockDialog(window)
+        dialog.pin_field.setText("0000")
+        dialog._try_unlock()
+        assert not dialog._unlocked, "zly PIN nie moze odblokowac"
+        close_event = QCloseEvent()
+        dialog.closeEvent(close_event)
+        assert not close_event.isAccepted(), "blokada nie moze zamknac sie bez PIN-u"
+        dialog.reject()  # Escape — nie ma prawa nic zrobic
+        assert not dialog._unlocked
+        dialog.pin_field.setText("1234")
+        dialog._try_unlock()
+        assert dialog._unlocked, "dobry PIN musi odblokowac"
+        dialog.deleteLater()
+
+        # Wyłączenie zatrzymuje timer.
+        window._toggle_lock(False)
+        assert not i18n.settings().value("lock_enabled", False, type=bool)
+        assert not window._lock_timer.isActive(), "wylaczenie blokady musi zdjac timer"
+    finally:
+        for key, value in _stored_lock.items():
+            if value is None:
+                i18n.settings().remove(key)
+            else:
+                i18n.settings().setValue(key, value)
+        if window._lock_timer:
+            window._lock_timer.stop()
+
     # Duplikat: kopia obok oryginalu, z tymi samymi danymi i inna nazwa.
     copy = window.tree._duplicate(conn)
     assert copy.parent() is conn.parent()
@@ -2045,6 +2229,7 @@ def main():
     window.show()
     window.check_updates()
     window.start_status_polling()
+    window.start_lock_watch()
     sys.exit(app.exec())
 
 
