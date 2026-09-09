@@ -1204,7 +1204,7 @@ class MainWindow(QMainWindow):
             return
         try:
             count = self.tree.import_from(path, answer == QMessageBox.Yes)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             QMessageBox.warning(self, t("import_short"), t("err_import", error))
             return
         QMessageBox.information(self, t("import_short"), t("import_done", count))
@@ -1757,6 +1757,17 @@ def selftest():
             empty.import_from(export_file.with_name("brak.json"), replace=True)
             raise AssertionError("brak pliku musi się zgłosić wyjątkiem")
         except OSError:
+            pass
+
+        # Zla struktura wewnatrz importowanego pliku (nie tylko zly JSON) ma
+        # sie zglosic wyjatkiem, ktory _import_connections() umie obslozyc —
+        # ten sam blad co przy starcie z zepsutym connections.json (patrz wyzej).
+        bad_import = Path(tmp) / "zly-import.json"
+        bad_import.write_text(json.dumps([{"connection": "nie-slownik"}]), encoding="utf-8")
+        try:
+            empty.import_from(bad_import, replace=True)
+            raise AssertionError("zla struktura musi sie zglosic wyjatkiem")
+        except (KeyError, TypeError, AttributeError):
             pass
 
         print("persystencja: OK")

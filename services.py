@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import t
-from ssh_terminal import _try_command
+from ssh_terminal import _SCRIPT_PARAM_UNSAFE, _try_command
 
 LINUX_LIST_CMD = "systemctl list-units --type=service --all --no-legend --no-pager"
 WINDOWS_LIST_CMD = (
@@ -144,6 +144,14 @@ class ServiceDialog(QDialog):
         name = self._selected_name()
         if not name or not self.variant:
             return
+        # Escapowanie apostrofu w PowerShellu (action_command) nie chroni przed
+        # warstwa cmd.exe, ktora OpenSSH na Windows uzywa do wykonania calego
+        # polecenia — znak '"' przerywa zewnetrzny cudzyslow -Command "..." o
+        # poziom wyzej. Prosciej odrzucic niebezpieczne znaki, tak jak
+        # run_script() robi dla parametru gotowego skryptu.
+        if _SCRIPT_PARAM_UNSAFE.search(name):
+            QMessageBox.warning(self, t("services_title"), t("script_param_unsafe"))
+            return
         command = action_command(self.variant, action, name)
         text = _try_command(self.client, command)
         if text is None:
@@ -179,6 +187,11 @@ def selftest():
     # Apostrof w nazwie usługi nie może wyrwać się z literału PowerShella.
     injected = action_command("windows", "stop", "x'; Remove-Item C:\\ -Force; '")
     assert "-Name 'x''; Remove-Item C:\\ -Force; '''" in injected, injected
+
+    # Cudzyslow wyrywa sie z zewnetrznej warstwy cmd.exe (nie chroni jej
+    # escapowanie apostrofu) — taka nazwa ma odpasc jeszcze przed zbudowaniem
+    # polecenia, patrz _run_action().
+    assert _SCRIPT_PARAM_UNSAFE.search('x" & del C:\\'), "cudzyslow ma odpasc"
 
     print("services selftest OK")
 
