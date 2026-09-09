@@ -118,6 +118,11 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
   akceptowany automatycznie. To ochrona przed atakiem typu man-in-the-middle.
 - Skaner sieci wysyła zwykłe pingi i sprawdza kilka portów — używaj go w sieci,
   którą administrujesz.
+- **Widok → Blokada po bezczynności**: po ustawionym czasie braku ruchu myszą/
+  klawiaturą okno pokazuje ekran blokady, który otwiera tylko PIN ustawiony przy
+  włączeniu (hash, nie plaintext). To lekki odstraszacz przed przypadkowym
+  zerknięciem, gdy Windows jest odblokowany — nie zastępuje hasła głównego do
+  pliku połączeń (wciąż na liście do zrobienia).
 
 ## Znane ograniczenia
 
