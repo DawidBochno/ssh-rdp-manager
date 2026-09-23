@@ -1220,6 +1220,21 @@ class AltScreenView(QWidget):
             painter.fillRect(cx * char_w, cy * line_h, char_w, line_h, QColor(255, 255, 255, 90))
 
 
+# Odstępy (s) kolejnych prób ponownego łączenia. Po ostatniej koniec — bez tego
+# zakładka dobijałaby się w nieskończoność do wyłączonego serwera.
+RECONNECT_DELAYS = (2, 5, 10, 30, 60)
+
+
+def session_lost_unexpectedly(channel):
+    """`exit` w powłoce przysyła status wyjścia, zerwane łącze — nie.
+
+    Nie `exit_status_ready()` — Paramiko zwraca tam True dla każdego
+    zamkniętego kanału, także zerwanego. `exit_status` zostaje -1, dopóki
+    serwer nie przyśle statusu.
+    """
+    return channel.exit_status == -1
+
+
 class _Reader(QThread):
     """Czyta z kanału w tle, żeby nie blokować GUI."""
 
@@ -1251,6 +1266,7 @@ class SshTerminal(QPlainTextEdit):
 
     stats_changed = Signal(str)
     disk_changed = Signal(object)  # dict z disk_free/disk_pct albo None — dla panelu SFTP
+    session_lost = Signal()  # zerwane łącze — nie `exit` w powłoce ani zamknięcie zakładki
 
     # Atrybuty klasy, nie instancji — przełącznik z menu ma łapać także zakładki
     # otwarte później, dokładnie jak `TerminalHighlighter.enabled`.
@@ -1280,6 +1296,13 @@ class SshTerminal(QPlainTextEdit):
         self.alt_view.setGeometry(self.viewport().rect())
         self.alt_view.set_colors(*_alt_colors(self))
 
+        self._closing = False
+        self.last_stats = ""
+        self.last_disk = None
+        self._start_io(client, channel)
+
+    def _start_io(self, client, channel):
+        """Czytnik kanału i statystyki — przy starcie i po ponownym połączeniu."""
         self.client = client
         self.channel = channel
         self._pty_size = (0, 0)
@@ -1295,12 +1318,24 @@ class SshTerminal(QPlainTextEdit):
             self.host = ""
 
         # Statystyki serwera dla dolnego paska okna.
-        self.last_stats = ""
-        self.last_disk = None
         self.stats = _StatsPoller(client)
         self.stats.updated.connect(self._on_stats)
         self.stats.alert.connect(self._on_alert)
         self.stats.start()
+
+    def attach(self, client, channel):
+        """Podmienia zerwane połączenie na nowe — treść terminala zostaje."""
+        self._close_client()
+        # Zerwane w środku htopa: nowa powłoka startuje na zwykłym ekranie.
+        self._alt_screen.alt_active = False
+        self._show_alt(False)
+        self._start_io(client, channel)
+        self.setReadOnly(False)
+        self._sync_pty_size()
+
+    def note(self, text):
+        """Komunikat aplikacji w terminalu (np. o ponownym łączeniu)."""
+        self._append("\n" + text + "\n")
 
     def _on_stats(self, text, current):
         self.last_stats = text
@@ -1357,8 +1392,12 @@ class SshTerminal(QPlainTextEdit):
         self.ensureCursorVisible()
 
     def _on_closed(self):
-        self._append("\n" + t("session_closed") + "\n")
+        if self._closing or self.sender() is not self.reader:
+            return  # zamknięta zakładka albo spóźniony sygnał starego czytnika
+        self.note(t("session_closed"))
         self.setReadOnly(True)
+        if session_lost_unexpectedly(self.channel):
+            self.session_lost.emit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1439,6 +1478,10 @@ class SshTerminal(QPlainTextEdit):
 
     def close_session(self):
         """Zamyka kanał i połączenie; bezpieczne do wielokrotnego wywołania."""
+        self._closing = True
+        self._close_client()
+
+    def _close_client(self):
         if self.channel and not self.channel.closed:
             self.channel.close()
         self.reader.wait(2000)
@@ -1628,6 +1671,17 @@ class SftpPanel(QWidget):
             self.list.setEnabled(False)
         else:
             self.refresh()
+
+    def set_client(self, client):
+        """Nowy kanał SFTP po ponownym połączeniu — ścieżka zostaje ta sama."""
+        try:
+            self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
+        except Exception:
+            self.sftp = None
+        enabled = self.sftp is not None
+        self.path_edit.setEnabled(enabled)
+        self.list.setEnabled(enabled)
+        self.refresh()
 
     def set_disk_stats(self, current):
         """Wpięte pod `SshTerminal.disk_changed` — None dopóki nie ma pierwszej próbki."""
@@ -1900,6 +1954,18 @@ class SessionTab(QWidget):
         self.tunnels = []          # krotki z `tunnels.parse_tunnel`, w kolejności
         self._tunnel_objects = {}  # krotka -> działający tunel
 
+        # Ponowne łączenie: argumenty `SshConnector` ustawia okno główne;
+        # None (np. w testach) = zerwanie tylko zamyka sesję, jak dotąd.
+        self.reconnect_args = None
+        self.startup = None
+        self._attempt = 0
+        self._connector = None
+        self._asker = HostKeyAsker(self)
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._try_reconnect)
+        self.terminal.session_lost.connect(self._on_session_lost)
+
         splitter = QSplitter(Qt.Horizontal, self)
         splitter.addWidget(self.sftp_panel)
         splitter.addWidget(self.terminal)
@@ -1937,7 +2003,55 @@ class SessionTab(QWidget):
         if spec in self.tunnels:
             self.tunnels.remove(spec)
 
+    # --- ponowne łączenie ---------------------------------------------------
+
+    def _on_session_lost(self):
+        if self.reconnect_args is None:
+            return
+        self._attempt = 0
+        self._schedule_reconnect()
+
+    def _schedule_reconnect(self, error=""):
+        if error:
+            self.terminal.note(t("reconnect_failed", error))
+        if self._attempt >= len(RECONNECT_DELAYS):
+            self.terminal.note(t("reconnect_gave_up"))
+            return
+        delay = RECONNECT_DELAYS[self._attempt]
+        self._attempt += 1
+        self.terminal.note(t("reconnect_in", delay, self._attempt, len(RECONNECT_DELAYS)))
+        self._reconnect_timer.start(delay * 1000)
+
+    def _try_reconnect(self):
+        connector = SshConnector(**self.reconnect_args)
+        # Nowy/zmieniony klucz serwera pyta tak samo jak przy pierwszym łączeniu.
+        connector.ask_host_key.connect(self._asker.ask, Qt.BlockingQueuedConnection)
+        connector.connected.connect(self._on_reconnected)
+        connector.failed.connect(self._schedule_reconnect)
+        _pending.add(connector)
+        connector.finished.connect(lambda: _pending.discard(connector))
+        self._connector = connector
+        connector.start()
+
+    def _on_reconnected(self, client, channel):
+        self._connector = None
+        self.terminal.attach(client, channel)
+        self.sftp_panel.set_client(client)
+        # Stare tunele siedziały na martwym transporcie — stawiamy je od nowa.
+        specs = list(self.tunnels)
+        for spec in specs:
+            self.close_tunnel(spec)
+        for spec in specs:
+            error = self.open_tunnel(spec)
+            if error:
+                self.terminal.note(t("tunnel_restore_failed", f"{tunnels.format_tunnel(spec)} — {error}"))
+        self.terminal.note(t("reconnected"))
+        self.terminal.send_startup(self.startup)
+
     def close_session(self):
+        self._reconnect_timer.stop()
+        if self._connector is not None:
+            self._connector.cancel()
         for spec in list(self.tunnels):
             self.close_tunnel(spec)
         self.sftp_panel.close()
@@ -2168,6 +2282,13 @@ def selftest():
         known = fresh.get_host_keys()
         assert known.check("[srv]:2222", key) and known.check("inny", other)
         assert not known.check("[srv]:2222", other), "podmieniony klucz przeszedł"
+
+    # Ponowne łączenie: `exit` (jest status wyjścia) nie łączy od nowa, zerwanie tak;
+    # liczba prób skończona, żeby nie dobijać się do wyłączonego serwera.
+    exited = type("C", (), {"exit_status": 0})()
+    dropped = type("C", (), {"exit_status": -1})()
+    assert not session_lost_unexpectedly(exited) and session_lost_unexpectedly(dropped)
+    assert 0 < len(RECONNECT_DELAYS) <= 10
     assert strip_ansi("\x1b[31mczerwony\x1b[0m") == "czerwony"
     assert strip_ansi("\x1b]0;tytul\x07tekst") == "tekst"
     assert strip_ansi("linia\r\ndruga") == "linia\ndruga"

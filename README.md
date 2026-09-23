@@ -126,6 +126,9 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
   Odcisk jest w formacie SHA256 (jak `ssh-keygen -lf`), a zaakceptowany klucz
   trafia do pliku `known_hosts` obok `connections.json` — kolejne połączenie
   nie pyta, a podmieniony klucz tego samego serwera zostaje odrzucony.
+- Zerwana sesja SSH łączy się ponownie sama (5 prób: po 2, 5, 10, 30 i 60 s);
+  treść terminala zostaje, SFTP, tunele i polecenia startowe wstają od nowa.
+  `exit` w powłoce zamyka sesję normalnie, bez ponownego łączenia.
 - Skaner sieci wysyła zwykłe pingi i sprawdza kilka portów — używaj go w sieci,
   którą administrujesz.
 - **Widok → Blokada po bezczynności**: po ustawionym czasie braku ruchu myszą/
@@ -136,7 +139,6 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 ## Znane ograniczenia
 
-- Po zerwaniu połączenia nie ma automatycznego ponownego łączenia.
 - Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej
   stronie); pliki idą po jednym, bez kolejki.
 - RDP: bez wielu monitorów i bramy RDP; rozdzielczość ustala się przed połączeniem.
@@ -145,11 +147,10 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Automatyczne ponowne łączenie** po zerwaniu, z limitem prób.
-2. **Jedno polecenie albo skrypt na wielu serwerach naraz**, z wynikiem per serwer.
-3. **Kolejka transferów SFTP** z możliwością anulowania.
-4. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
-5. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
+1. **Jedno polecenie albo skrypt na wielu serwerach naraz**, z wynikiem per serwer.
+2. **Kolejka transferów SFTP** z możliwością anulowania.
+3. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
+4. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
    **wykresy CPU/RAM w czasie**.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,

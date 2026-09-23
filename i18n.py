@@ -167,6 +167,10 @@ TEXTS = {
         "stats_users": "users",
         "stats_unavailable": "Statistics unavailable for this server",
         "session_closed": "[session closed]",
+        "reconnect_in": "[connection lost — reconnecting in {0} s, attempt {1}/{2}]",
+        "reconnect_failed": "[reconnect failed: {0}]",
+        "reconnect_gave_up": "[reconnecting gave up — close the tab and open the connection again]",
+        "reconnected": "[reconnected]",
         "decimal_sep": ".",
         # --- RDP ---
         "rdp_connecting": "Connecting to {0}…",
@@ -521,6 +525,10 @@ TEXTS = {
         "stats_users": "zalogowani",
         "stats_unavailable": "Statystyki niedostępne dla tego serwera",
         "session_closed": "[sesja zakończona]",
+        "reconnect_in": "[połączenie zerwane — ponowna próba za {0} s, próba {1}/{2}]",
+        "reconnect_failed": "[ponowne łączenie nieudane: {0}]",
+        "reconnect_gave_up": "[koniec prób — zamknij zakładkę i otwórz połączenie ponownie]",
+        "reconnected": "[połączono ponownie]",
         "decimal_sep": ",",
         # --- RDP ---
         "rdp_connecting": "Łączenie z {0}…",

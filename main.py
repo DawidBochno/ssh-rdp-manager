@@ -1693,6 +1693,12 @@ class MainWindow(QMainWindow):
             terminal, bookmarks=conn.setdefault("bookmarks", []), on_change=self.tree.save
         )
         session.conn = conn
+        session.reconnect_args = dict(
+            host=conn["host"], port=conn["port"], username=conn["username"],
+            password=password, key_file=conn.get("key_file"), passphrase=passphrase,
+            jump_host=conn.get("jump_host"),
+        )
+        session.startup = conn.get("startup")
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
         )
