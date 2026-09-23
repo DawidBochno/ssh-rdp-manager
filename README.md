@@ -123,6 +123,9 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
   z kluczem twojego konta Windows — plik skopiowany na inny komputer jest bezużyteczny.
 - Nieznany klucz serwera pokazuje odcisk i wymaga potwierdzenia, zamiast być
   akceptowany automatycznie. To ochrona przed atakiem typu man-in-the-middle.
+  Odcisk jest w formacie SHA256 (jak `ssh-keygen -lf`), a zaakceptowany klucz
+  trafia do pliku `known_hosts` obok `connections.json` — kolejne połączenie
+  nie pyta, a podmieniony klucz tego samego serwera zostaje odrzucony.
 - Skaner sieci wysyła zwykłe pingi i sprawdza kilka portów — używaj go w sieci,
   którą administrujesz.
 - **Widok → Blokada po bezczynności**: po ustawionym czasie braku ruchu myszą/
@@ -133,10 +136,7 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 ## Znane ograniczenia
 
-- Zaakceptowany klucz serwera nie jest zapamiętywany — dla hostów spoza
-  `~/.ssh/known_hosts` pytanie o odcisk wraca przy każdym połączeniu.
-- Brak keepalive SSH: bezczynna sesja za NAT-em albo firewallem potrafi po cichu
-  wygasnąć, a po zerwaniu nie ma automatycznego ponownego łączenia.
+- Po zerwaniu połączenia nie ma automatycznego ponownego łączenia.
 - Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej
   stronie); pliki idą po jednym, bez kolejki.
 - RDP: bez wielu monitorów i bramy RDP; rozdzielczość ustala się przed połączeniem.
@@ -145,14 +145,11 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Zapamiętywanie kluczy serwerów** we własnym pliku `known_hosts` i odcisk
-   w formacie SHA256 (do porównania z `ssh-keygen -lf`).
-2. **Keepalive SSH** — utrzymanie bezczynnych sesji przy życiu.
-3. **Automatyczne ponowne łączenie** po zerwaniu, z limitem prób.
-4. **Jedno polecenie albo skrypt na wielu serwerach naraz**, z wynikiem per serwer.
-5. **Kolejka transferów SFTP** z możliwością anulowania.
-6. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
-7. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
+1. **Automatyczne ponowne łączenie** po zerwaniu, z limitem prób.
+2. **Jedno polecenie albo skrypt na wielu serwerach naraz**, z wynikiem per serwer.
+3. **Kolejka transferów SFTP** z możliwością anulowania.
+4. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
+5. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
    **wykresy CPU/RAM w czasie**.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
