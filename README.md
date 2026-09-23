@@ -98,6 +98,13 @@ py main.py --selftest
 - Menu **Programy → Wake-on-LAN**: magiczny pakiet pod podany adres MAC.
 - Menu **Programy → Certyfikat TLS**: podmiot, wystawca, data ważności i liczba dni
   do wygaśnięcia — także dla certyfikatów samopodpisanych.
+- Menu **Programy → Usługi**: lista usług z aktywnej sesji (`systemctl` albo
+  `Get-Service`) ze start/stop/restart.
+- Menu **Programy → Podgląd logu na żywo**: `tail -f` w osobnym oknie, z filtrem (regex).
+- Menu **Programy → Dyski**: `df -h`/`df -i` (albo dyski Windows) w tabeli,
+  czerwony wiersz powyżej 90%.
+- Menu **Programy → Generator kluczy SSH**: RSA albo Ed25519, opcjonalne hasło klucza,
+  wgranie klucza publicznego do `authorized_keys` aktywnej sesji jednym kliknięciem.
 - Menu **Serwery**: wbudowany serwer HTTP i TFTP po *naszej* stronie — zdalny host
   pobiera plik od nas, zamiast stawiać cokolwiek u siebie.
 - Sprawdzanie aktualizacji przy starcie: gdy gałąź `main` na GitHubie jest nowsza,
@@ -126,10 +133,30 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 ## Znane ograniczenia
 
-- Brak drag-out w SFTP (pobieranie przez wyciągnięcie pliku z panelu) — upload
-  przez przeciągnięcie już jest, w drugą stronę jeszcze nie.
-- Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej stronie).
-- RDP: bez przekierowania schowka i dysków, bez wielu monitorów i bramy RDP.
+- Zaakceptowany klucz serwera nie jest zapamiętywany — dla hostów spoza
+  `~/.ssh/known_hosts` pytanie o odcisk wraca przy każdym połączeniu.
+- Brak keepalive SSH: bezczynna sesja za NAT-em albo firewallem potrafi po cichu
+  wygasnąć, a po zerwaniu nie ma automatycznego ponownego łączenia.
+- Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej
+  stronie); pliki idą po jednym, bez kolejki.
+- RDP: bez wielu monitorów i bramy RDP; rozdzielczość ustala się przed połączeniem.
+
+## Plany
+
+Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
+
+1. **Zapamiętywanie kluczy serwerów** we własnym pliku `known_hosts` i odcisk
+   w formacie SHA256 (do porównania z `ssh-keygen -lf`).
+2. **Keepalive SSH** — utrzymanie bezczynnych sesji przy życiu.
+3. **Automatyczne ponowne łączenie** po zerwaniu, z limitem prób.
+4. **Jedno polecenie albo skrypt na wielu serwerach naraz**, z wynikiem per serwer.
+5. **Kolejka transferów SFTP** z możliwością anulowania.
+6. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
+7. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
+   **wykresy CPU/RAM w czasie**.
+
+Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
+zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 
 ## Struktura
 
@@ -144,6 +171,10 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 | `i18n.py` | Napisy interfejsu po angielsku i po polsku |
 | `notify.py` | Powiadomienia systemowe (dymek z zasobnika) |
 | `tunnels.py` | Tunele SSH (przekierowanie portów) i okno do ich zarządzania |
+| `services.py` | Menedżer usług (start/stop/restart) |
+| `logtail.py` | Podgląd logu na żywo (`tail -f`) |
+| `disks.py` | Panel dysków i inode'ów |
+| `keygen.py` | Generator kluczy SSH |
 
 ## Licencja
 
