@@ -14,3 +14,6 @@ scripts.json
 # Notatki robocze dla Claude/deweloperów — nie dla uzytkownikow na GitHubie.
 CLAUDE.md
 TODO.md
+
+# Zaakceptowane klucze serwerow — lokalne, nie repo.
+known_hosts

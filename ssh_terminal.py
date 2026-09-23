@@ -17,7 +17,8 @@ import stat
 import tempfile
 import threading
 import time
-from binascii import hexlify
+import base64
+import hashlib
 from pathlib import Path
 
 import paramiko
@@ -579,6 +580,39 @@ def apply_output(cursor, text):
             cursor.removeSelectedText()
 
 
+# Zaakceptowane klucze serwerów — własny plik obok connections.json.
+# `~/.ssh/known_hosts` czytamy tylko do odczytu (to plik OpenSSH, nie nasz).
+KNOWN_HOSTS_FILE = Path(__file__).with_name("known_hosts")
+KEEPALIVE_SECONDS = 30
+_known_hosts_lock = threading.Lock()
+
+
+def fingerprint_sha256(key):
+    """Odcisk w formacie `ssh-keygen -lf` (SHA256:base64 bez `=`), nie MD5 hex."""
+    digest = hashlib.sha256(key.asbytes()).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+def load_host_keys(client, path=None):
+    """Systemowe known_hosts + nasz plik; zmieniony klucz = BadHostKeyException."""
+    path = path or KNOWN_HOSTS_FILE
+    client.load_system_host_keys()
+    if path.exists():
+        client.load_host_keys(str(path))
+
+
+def remember_host_key(hostname, key, path=None):
+    """Dopisuje klucz do pliku — wczytanego na świeżo pod blokadą, bo dwa
+    równoległe połączenia z własną kopią w pamięci nadpisywałyby sobie wpisy."""
+    path = path or KNOWN_HOSTS_FILE
+    with _known_hosts_lock:
+        keys = paramiko.HostKeys()
+        if path.exists():
+            keys.load(str(path))
+        keys.add(hostname, key.get_name(), key)
+        keys.save(str(path))
+
+
 class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
     """Pyta o nieznany klucz serwera — pytanie przekazuje do wątku GUI.
 
@@ -590,12 +624,15 @@ class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
         self.connector = connector
 
     def missing_host_key(self, client, hostname, key):
-        fingerprint = hexlify(key.get_fingerprint(), ":").decode()
+        fingerprint = fingerprint_sha256(key)
         answer = {}
         self.connector.ask_host_key.emit(hostname, key.get_name(), fingerprint, answer)
         if not answer.get("accepted"):
             raise paramiko.SSHException(t("hostkey_rejected", hostname))
         client.get_host_keys().add(hostname, key.get_name(), key)
+        # Bez zapisu pytanie wracałoby przy każdym połączeniu, aż „Tak”
+        # klika się odruchowo i ochrona przed MITM przestaje działać.
+        remember_host_key(hostname, key)
 
 
 class HostKeyAsker(QObject):
@@ -680,18 +717,19 @@ class SshConnector(QThread):
 
     def run(self):
         client = paramiko.SSHClient()
-        client.load_system_host_keys()
+        load_host_keys(client)
         client.set_missing_host_key_policy(_ThreadHostKeyPolicy(self))
         try:
             if self.jump_host:
                 jump_host, _, jump_port = self.jump_host.partition(":")
                 jump_client = paramiko.SSHClient()
-                jump_client.load_system_host_keys()
+                load_host_keys(jump_client)
                 jump_client.set_missing_host_key_policy(_ThreadHostKeyPolicy(self))
                 jump_client.connect(
                     hostname=jump_host, port=int(jump_port or 22), **self._connect_kwargs()
                 )
                 self._jump_client = jump_client
+                jump_client.get_transport().set_keepalive(KEEPALIVE_SECONDS)
                 sock = jump_client.get_transport().open_channel(
                     "direct-tcpip", (self.host, self.port), ("127.0.0.1", 0)
                 )
@@ -702,6 +740,8 @@ class SshConnector(QThread):
                 sock = self._sock
             # Puste hasło = próba logowania kluczem (agent lub ~/.ssh).
             client.connect(hostname=self.host, port=self.port, sock=sock, **self._connect_kwargs())
+            # Bezczynna sesja za NAT-em/firewallem inaczej wygasa po cichu.
+            client.get_transport().set_keepalive(KEEPALIVE_SECONDS)
             channel = client.invoke_shell(term="xterm", width=100, height=30)
         except Exception as error:
             client.close()
@@ -2113,6 +2153,21 @@ def selftest():
     import i18n
     app = QApplication.instance() or QApplication([])
     i18n.use("en")  # testy sprawdzaja napisy domyslnego jezyka
+
+    # Klucze hosta: odcisk jak `ssh-keygen -lf`, zapis przeżywa nowego klienta,
+    # a podmieniony klucz dla tego samego hosta ma być odrzucony (MITM).
+    with tempfile.TemporaryDirectory() as tmp:
+        kh = Path(tmp) / "known_hosts"
+        key, other = paramiko.RSAKey.generate(1024), paramiko.RSAKey.generate(1024)
+        fp = fingerprint_sha256(key)
+        assert fp.startswith("SHA256:") and not fp.endswith("=") and len(fp) == 50, fp
+        remember_host_key("[srv]:2222", key, kh)
+        remember_host_key("inny", other, kh)
+        fresh = paramiko.SSHClient()
+        load_host_keys(fresh, kh)
+        known = fresh.get_host_keys()
+        assert known.check("[srv]:2222", key) and known.check("inny", other)
+        assert not known.check("[srv]:2222", other), "podmieniony klucz przeszedł"
     assert strip_ansi("\x1b[31mczerwony\x1b[0m") == "czerwony"
     assert strip_ansi("\x1b]0;tytul\x07tekst") == "tekst"
     assert strip_ansi("linia\r\ndruga") == "linia\ndruga"
@@ -2379,7 +2434,6 @@ def selftest():
         i18n.settings().setValue("scrollback", stored)
 
     # Skrypty użytkownika: wpis bez polecenia odpada, reszta dochodzi do listy.
-    import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         script_file = Path(tmp) / "scripts.json"
         before = len(SCRIPTS)
