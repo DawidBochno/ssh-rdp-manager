@@ -103,6 +103,9 @@ py main.py --selftest
 - Menu **Programy → Podgląd logu na żywo**: `tail -f` w osobnym oknie, z filtrem (regex).
 - Menu **Programy → Dyski**: `df -h`/`df -i` (albo dyski Windows) w tabeli,
   czerwony wiersz powyżej 90%.
+- Menu **Programy → Polecenie na wielu serwerach**: własne polecenie albo gotowy
+  skrypt uruchamiany równolegle na zaznaczonych otwartych sesjach SSH, wynik
+  osobno dla każdego serwera (OK/BŁĄD), z zapisem do pliku.
 - Menu **Programy → Generator kluczy SSH**: RSA albo Ed25519, opcjonalne hasło klucza,
   wgranie klucza publicznego do `authorized_keys` aktywnej sesji jednym kliknięciem.
 - Menu **Serwery**: wbudowany serwer HTTP i TFTP po *naszej* stronie — zdalny host
@@ -147,10 +150,9 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Jedno polecenie albo skrypt na wielu serwerach naraz**, z wynikiem per serwer.
-2. **Kolejka transferów SFTP** z możliwością anulowania.
-3. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
-4. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
+1. **Kolejka transferów SFTP** z możliwością anulowania.
+2. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
+3. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
    **wykresy CPU/RAM w czasie**.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
@@ -172,6 +174,7 @@ zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 | `services.py` | Menedżer usług (start/stop/restart) |
 | `logtail.py` | Podgląd logu na żywo (`tail -f`) |
 | `disks.py` | Panel dysków i inode'ów |
+| `multirun.py` | Polecenie/skrypt na wielu serwerach naraz |
 | `keygen.py` | Generator kluczy SSH |
 
 ## Licencja

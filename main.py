@@ -65,6 +65,7 @@ import disks
 import i18n
 import keygen
 import logtail
+import multirun
 import notify
 import scanner
 import services
@@ -111,6 +112,7 @@ TOOLS = (
     ("menu_logtail", "_open_log_tail"),
     ("menu_services", "_manage_services"),
     ("menu_disks", "_open_disks"),
+    ("menu_multirun", "_open_multirun"),
     ("menu_keygen", "_open_keygen"),
 )
 
@@ -1618,6 +1620,17 @@ class MainWindow(QMainWindow):
             return
         disks.DiskDialog(self, session.terminal.client).exec()
 
+    def _open_multirun(self):
+        targets = [
+            (self.tabs.tabText(i), self.tabs.widget(i).terminal.client)
+            for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), SessionTab)
+        ]
+        if not targets:
+            QMessageBox.information(self, t("multirun_title"), t("scripts_need_session"))
+            return
+        multirun.MultiRunDialog(self, targets).exec()
+
     def _open_keygen(self):
         # Wgranie do authorized_keys wymaga sesji, ale generowanie i zapis — nie;
         # bez otwartej zakładki przycisk wgrania jest tylko wyszarzony.
@@ -2222,6 +2235,7 @@ def selftest():
     tunnels_module.selftest()
     logtail.selftest()
     services.selftest()
+    multirun.selftest()
     del app
     print("main selftest OK")
 
