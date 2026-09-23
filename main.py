@@ -69,6 +69,7 @@ import multirun
 import notify
 import scanner
 import services
+import transfers
 import tunnels
 import update
 from i18n import t
@@ -2236,6 +2237,7 @@ def selftest():
     logtail.selftest()
     services.selftest()
     multirun.selftest()
+    transfers.selftest()
     del app
     print("main selftest OK")
 

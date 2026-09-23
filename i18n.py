@@ -182,6 +182,17 @@ TEXTS = {
         # --- transfer plików ---
         "transfer_download": "Downloading {0}…",
         "transfer_upload": "Sending {0}…",
+        "transfer_cancelled": "Cancelled",
+        "transfer_file": "File",
+        "transfer_direction": "Direction",
+        "transfer_state": "State",
+        "transfer_cancel_selected": "Cancel selected",
+        "transfer_clear": "Clear finished",
+        "transfer_dir_get": "⬇ download",
+        "transfer_dir_put": "⬆ upload",
+        "transfer_waiting": "Waiting",
+        "transfer_done": "Done",
+        "transfer_queue_done": "Transfers finished: {0} OK, {1} failed",
         # --- panel SFTP ---
         "sftp_back": "Back",
         "sftp_forward": "Forward",
@@ -263,7 +274,6 @@ TEXTS = {
         "tls_error": "Could not read the certificate:\n\n{0}",
         # --- powiadomienia systemowe ---
         "notify_title": "SSH/RDP Manager",
-        "notify_transfer_done": "Transfer finished: {0}",
         "notify_script_done": "Script finished: {0}",
         "notify_scan_done": "Scan finished, hosts found: {0}",
         # --- pasek postępu skanera ---
@@ -554,6 +564,17 @@ TEXTS = {
         # --- transfer plików ---
         "transfer_download": "Pobieranie {0}…",
         "transfer_upload": "Wysyłanie {0}…",
+        "transfer_cancelled": "Anulowano",
+        "transfer_file": "Plik",
+        "transfer_direction": "Kierunek",
+        "transfer_state": "Stan",
+        "transfer_cancel_selected": "Anuluj zaznaczone",
+        "transfer_clear": "Wyczyść zakończone",
+        "transfer_dir_get": "⬇ pobieranie",
+        "transfer_dir_put": "⬆ wysyłanie",
+        "transfer_waiting": "Czeka",
+        "transfer_done": "Gotowe",
+        "transfer_queue_done": "Transfery zakończone: {0} OK, {1} z błędem",
         # --- panel SFTP ---
         "sftp_back": "Wstecz",
         "sftp_forward": "Do przodu",
@@ -635,7 +656,6 @@ TEXTS = {
         "tls_error": "Nie udało się odczytać certyfikatu:\n\n{0}",
         # --- powiadomienia systemowe ---
         "notify_title": "Menedżer SSH/RDP",
-        "notify_transfer_done": "Transfer zakończony: {0}",
         "notify_script_done": "Skrypt zakończony: {0}",
         "notify_scan_done": "Skanowanie zakończone, znaleziono hostów: {0}",
         # --- pasek postępu skanera ---
