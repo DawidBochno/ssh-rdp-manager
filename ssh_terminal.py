@@ -73,6 +73,7 @@ from PySide6.QtWidgets import (
 import i18n
 import notify
 import tunnels
+from transfers import TransferQueue, run_transfer
 from i18n import t
 
 CONNECT_TIMEOUT = 15  # sekundy
@@ -1497,73 +1498,8 @@ class SshTerminal(QPlainTextEdit):
 # --- graficzna przeglądarka plików (SFTP) -----------------------------------
 
 
-class _Transfer(QThread):
-    """Jeden `get`/`put` na wątku roboczym — duży plik nie zamraża okna."""
-
-    progress = Signal(int, int)  # bajtów zrobione, bajtów łącznie
-    done = Signal(str)  # pusty tekst = sukces
-
-    def __init__(self, sftp, mode, remote_path, local_path):
-        super().__init__()
-        self.sftp = sftp
-        self.mode = mode
-        self.remote_path = remote_path
-        self.local_path = local_path
-
-    def run(self):
-        try:
-            callback = self.progress.emit
-            if self.mode == "get":
-                self.sftp.get(self.remote_path, self.local_path, callback=callback)
-            else:
-                self.sftp.put(self.local_path, self.remote_path, callback=callback)
-        except Exception as error:
-            self.done.emit(str(error))
-            return
-        self.done.emit("")
-
-
-def transfer_percent(done, total):
-    """Procent do paska postępu; nieznany rozmiar (0) daje 0."""
-    return int(100 * done / total) if total else 0
-
-
-def run_transfer(parent, sftp, mode, remote_path, local_path, title):
-    """Przenosi plik pokazując postęp. Zwraca tekst błędu albo pusty tekst.
-
-    ponytail: bez przycisku anulowania — przerwanie w pół pliku zostawiłoby
-    obcięty plik po drugiej stronie, a sprzątanie po tym to więcej kodu niż
-    sam transfer. Dołożyć razem z wznawianiem, jeśli kiedyś będzie potrzebne.
-    """
-    dialog = QProgressDialog(title, "", 0, 100, parent)
-    dialog.setWindowModality(Qt.WindowModal)
-    dialog.setCancelButton(None)
-    dialog.setMinimumDuration(0)
-    dialog.setAutoClose(False)
-    dialog.setAutoReset(False)
-
-    worker = _Transfer(sftp, mode, remote_path, local_path)
-    result = {}
-    worker.progress.connect(lambda d, total: dialog.setValue(transfer_percent(d, total)))
-    worker.done.connect(lambda error: result.update(error=error))
-
-    loop = QEventLoop()
-    worker.finished.connect(loop.quit)
-    worker.start()
-    dialog.show()
-    loop.exec()
-    dialog.close()
-    worker.wait(1000)
-    error = result.get("error", "")
-    if not error:
-        # Duży transfer to moment, w którym admin robi coś innego — dymek
-        # w zasobniku wraca do niego, nawet gdy okno jest zminimalizowane.
-        notify.notify(t("notify_title"), t("notify_transfer_done", Path(remote_path).name))
-    return error
-
-# ponytail: listdir/get/put wołane wprost na wątku GUI — dla admina po LAN/VPN
-# to milisekundy, więc osobny wątek na razie nie jest wart złożoności.
-# Przy wolnych/dużych transferach przenieść na QThread jak _StatsPoller.
+# ponytail: listdir/rename/mkdir wołane wprost na wątku GUI — dla admina po
+# LAN/VPN to milisekundy. Transfery plików idą w tle (`transfers.py`).
 class _SftpListWidget(QListWidget):
     """Lista plików SFTP z drag-out: przeciągnięcie pliku do Eksploratora.
 
@@ -1615,6 +1551,7 @@ class SftpPanel(QWidget):
         # tutaj wystarczy, żeby `on_change` zrzuciło ją do connections.json.
         self.bookmarks = bookmarks if bookmarks is not None else []
         self.on_change = on_change
+        self.client = client
         try:
             self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
             self.path = self.sftp.normalize(".")
@@ -1665,6 +1602,14 @@ class SftpPanel(QWidget):
         self.disk_label = QLabel("")
         layout.addWidget(self.disk_label)
 
+        # Kolejka pobierania/wysyłania — `self.client` czytany w chwili otwarcia,
+        # więc po ponownym połączeniu bierze już nowy transport.
+        self.queue = TransferQueue(
+            lambda: paramiko.SFTPClient.from_transport(self.client.get_transport()), self
+        )
+        self.queue.upload_finished.connect(self.refresh)
+        layout.addWidget(self.queue)
+
         if self.sftp is None:
             self.path_edit.setEnabled(False)
             self.list.addItem(t("sftp_unavailable"))
@@ -1674,6 +1619,8 @@ class SftpPanel(QWidget):
 
     def set_client(self, client):
         """Nowy kanał SFTP po ponownym połączeniu — ścieżka zostaje ta sama."""
+        self.client = client
+        self.queue.reset_sftp()
         try:
             self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
         except Exception:
@@ -1788,21 +1735,11 @@ class SftpPanel(QWidget):
     def dropEvent(self, event):
         if not self.sftp:
             return
-        errors = []
         for url in event.mimeData().urls():
             local_path = url.toLocalFile()
             if not local_path or not Path(local_path).is_file():
                 continue  # foldery przeciągnięte całością pomijamy — bez rekurencji
-            name = Path(local_path).name
-            error = run_transfer(
-                self, self.sftp, "put", self._child_path(name), local_path,
-                t("transfer_upload", name),
-            )
-            if error:
-                errors.append(f"{name}: {error}")
-        self.refresh()
-        if errors:
-            QMessageBox.warning(self, t("err_upload"), "\n".join(errors))
+            self.queue.add("put", self._child_path(Path(local_path).name), local_path)
         event.acceptProposedAction()
 
     # --- edycja pliku w lokalnym edytorze -----------------------------------
@@ -1845,28 +1782,16 @@ class SftpPanel(QWidget):
 
     def _download(self, remote_path, name):
         local_path, _ = QFileDialog.getSaveFileName(self, t("sftp_download_title"), name)
-        if not local_path:
-            return
-        error = run_transfer(
-            self, self.sftp, "get", remote_path, local_path, t("transfer_download", name)
-        )
-        if error:
-            QMessageBox.warning(self, t("err_download"), error)
+        if local_path:
+            self.queue.add("get", remote_path, local_path)
 
     def _upload(self):
         if not self.sftp:
             return
-        local_path, _ = QFileDialog.getOpenFileName(self, t("sftp_upload"))
-        if not local_path:
-            return
-        name = Path(local_path).name
-        error = run_transfer(
-            self, self.sftp, "put", self._child_path(name), local_path,
-            t("transfer_upload", name),
-        )
-        if error:
-            QMessageBox.warning(self, t("err_upload"), error)
-        self.refresh()
+        # Kilka plików naraz — i tak idą do kolejki po jednym.
+        paths, _ = QFileDialog.getOpenFileNames(self, t("sftp_upload"))
+        for local_path in paths:
+            self.queue.add("put", self._child_path(Path(local_path).name), local_path)
 
     def _new_folder(self):
         if not self.sftp:
@@ -1937,6 +1862,7 @@ class SftpPanel(QWidget):
         self.refresh()
 
     def closeEvent(self, event):
+        self.queue.cancel_all()  # przerwany plik sprzątnięty, zanim kanał zniknie
         if self.sftp:
             self.sftp.close()
         super().closeEvent(event)
@@ -2447,21 +2373,7 @@ def selftest():
     assert _run_commands(fallback_client, "linux", "win") == "wynik win"
     assert "Could not run" in _run_commands(_FakeClient({}), "linux", None)
 
-    # Transfer plików: sukces, błąd i procent postępu.
-    assert transfer_percent(0, 0) == 0, "nieznany rozmiar nie może dzielić przez 0"
-    assert transfer_percent(50, 200) == 25
-
-    class _FakeSftp:
-        def get(self, remote, local, callback=None):
-            callback(64, 128)
-            callback(128, 128)
-
-        def put(self, local, remote, callback=None):
-            raise OSError("brak miejsca na dysku")
-
-    fake = _FakeSftp()
-    assert run_transfer(None, fake, "get", "/zdalny", "lokalny", "test") == ""
-    assert "brak miejsca" in run_transfer(None, fake, "put", "/zdalny", "lokalny", "test")
+    # Transfery plików: patrz transfers.selftest().
 
     # Panel SFTP: gdy transport nie daje kanału SFTP (obcy serwer, brak
     # uprawnień), panel ma się wyłączyć, a nie wywalić.

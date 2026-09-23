@@ -62,7 +62,9 @@ py main.py --selftest
   poprzedza każdą linię godziną, **Widok → Zapisz zapis sesji** odkłada bufor
   terminala do pliku.
 - Panel **SFTP** po lewej stronie zakładki: nawigacja, pobieranie, wysyłanie
-  (w tle, z paskiem postępu), nowy folder, usuwanie. Przycisk **⭐** trzyma
+  (w tle, w **kolejce transferów** pod listą plików: stan każdego pliku,
+  anulowanie zaznaczonych — przerwany plik jest kasowany, żeby nie zostawał
+  obcięty), nowy folder, usuwanie. Przycisk **⭐** trzyma
   **zakładki katalogów** (`/var/log`, `/etc/nginx`) — osobne dla każdego
   połączenia, zapisywane w `connections.json`.
 - **Przeciągnij i upuść** pliki z Eksploratora prosto do panelu SFTP — wysyła je
@@ -142,17 +144,15 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 ## Znane ograniczenia
 
-- Transferu SFTP nie da się przerwać w połowie (zostałby obcięty plik po drugiej
-  stronie); pliki idą po jednym, bez kolejki.
+- SFTP: bez przesyłania całych folderów i bez wznawiania przerwanego transferu.
 - RDP: bez wielu monitorów i bramy RDP; rozdzielczość ustala się przed połączeniem.
 
 ## Plany
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Kolejka transferów SFTP** z możliwością anulowania.
-2. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
-3. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
+1. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
+2. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
    **wykresy CPU/RAM w czasie**.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
@@ -164,6 +164,7 @@ zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 |---|---|
 | `main.py` | Okno, drzewo połączeń, zakładki, formularz połączenia, menu |
 | `ssh_terminal.py` | Sesja SSH (Paramiko), panel SFTP, statystyki, skrypty |
+| `transfers.py` | Transfery SFTP: kolejka w tle, anulowanie |
 | `rdp.py` | Sesja RDP (kontrolka ActiveX Microsoftu) jako widget zakładki |
 | `scanner.py` | Skaner sieci i okno z wynikami |
 | `servers.py` | Wbudowane serwery HTTP i TFTP |
