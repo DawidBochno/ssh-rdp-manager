@@ -2237,6 +2237,16 @@ def _show_script_output(parent, title, text):
 _SCRIPT_PARAM_UNSAFE = re.compile(r"[;&|`$<>\"'\\\n\r]")
 
 
+def script_commands(script, param=None):
+    """(Linux, Windows) z podstawionym parametrem — .format() tylko gdy skrypt
+    ma parametr, bo polecenia PowerShell zawierają dosłowne `{`."""
+    unix_cmd = script["unix"].format(param) if param is not None else script["unix"]
+    windows_cmd = script.get("windows")
+    if windows_cmd and param is not None:
+        windows_cmd = windows_cmd.format(param)
+    return unix_cmd, windows_cmd
+
+
 def run_script(parent, client, script):
     """Pyta o parametr (jeśli skrypt go wymaga), uruchamia i pokazuje wynik."""
     param = None
@@ -2252,12 +2262,7 @@ def run_script(parent, client, script):
             QMessageBox.warning(parent, label, t("script_param_unsafe"))
             return
 
-    unix_cmd = script["unix"].format(param) if param is not None else script["unix"]
-    windows_cmd = script.get("windows")
-    if windows_cmd and param is not None:
-        windows_cmd = windows_cmd.format(param)
-
-    text = _run_commands(client, unix_cmd, windows_cmd)
+    text = _run_commands(client, *script_commands(script, param))
     notify.notify(t("notify_title"), t("notify_script_done", label))
     _show_script_output(parent, label, text)
 
