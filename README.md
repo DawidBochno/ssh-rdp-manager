@@ -36,6 +36,11 @@ py main.py --selftest
 - Wskazanie pliku klucza prywatnego per połączenie; puste hasło = logowanie kluczem
   (agent albo `~/.ssh`). **Hasło klucza (passphrase)** ma osobne pole — to nie to
   samo co hasło konta i zapisuje się osobno.
+- **Poświadczenia** (menu **Programy → Poświadczenia** albo przycisk **Nowe…**
+  w formularzu połączenia): jedno konto — login, hasło, klucz, hasło klucza —
+  wskazywane przez wiele połączeń. Zmiana hasła na koncie działa od razu na
+  wszystkich. Konta leżą w `credentials.json` (hasła też przez DPAPI); usunięte
+  konto nie psuje połączeń — wracają one do własnych pól.
 - Zakładka **Home** z wyszukiwarką zapisanych połączeń i przycisk **+** na pasku
   zakładek — połączenie „na szybko”, które nie trafia do drzewa ani na dysk.
 - **Filtr nad drzewem**: wpisany tekst chowa wpisy niepasujące nazwą, hostem ani
@@ -151,8 +156,7 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Menedżer poświadczeń** — jedno konto współdzielone przez wiele wpisów.
-2. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
+1. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
    **wykresy CPU/RAM w czasie**.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
@@ -173,6 +177,7 @@ zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 | `notify.py` | Powiadomienia systemowe (dymek z zasobnika) |
 | `tunnels.py` | Tunele SSH (przekierowanie portów) i okno do ich zarządzania |
 | `services.py` | Menedżer usług (start/stop/restart) |
+| `credentials.py` | Szyfrowanie haseł (DPAPI) i konta współdzielone |
 | `logtail.py` | Podgląd logu na żywo (`tail -f`) |
 | `disks.py` | Panel dysków i inode'ów |
 | `multirun.py` | Polecenie/skrypt na wielu serwerach naraz |

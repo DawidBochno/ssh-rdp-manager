@@ -8,6 +8,10 @@ env/
 # Zapisane połączenia (z hasłami w DPAPI) — nie trafiają do repo.
 connections.json
 
+# Konta wspoldzielone (hasla w DPAPI) — tez nie do repo.
+credentials.json
+*.json.bak
+
 # Wlasne skrypty uzytkownika — plik lokalny, nie repo.
 scripts.json
 

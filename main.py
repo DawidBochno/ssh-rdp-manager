@@ -3,14 +3,11 @@
 Lewa strona: drzewo katalogów z grupami i połączeniami.
 Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
-import base64
-import ctypes
 import hashlib
 import json
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from ctypes import wintypes
 from pathlib import Path
 
 import paramiko
@@ -61,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import credentials
 import disks
 import i18n
 import keygen
@@ -72,6 +70,7 @@ import services
 import transfers
 import tunnels
 import update
+from credentials import CAN_STORE_PASSWORDS, decrypt_password, encrypt_password
 from i18n import t
 from rdp import RDP_PORT, open_rdp
 from servers import SERVERS, HttpShare, TftpShare, curl_command, wget_command
@@ -114,6 +113,7 @@ TOOLS = (
     ("menu_services", "_manage_services"),
     ("menu_disks", "_open_disks"),
     ("menu_multirun", "_open_multirun"),
+    ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
 )
 
@@ -276,41 +276,6 @@ class _TreeStatusCheck(QThread):
         self.result.emit(results)
 
 
-# Hasła szyfrujemy DPAPI: klucz jest przypisany do konta Windows,
-# więc plik skopiowany na inny komputer jest bezużyteczny.
-CAN_STORE_PASSWORDS = sys.platform == "win32"
-
-class _Blob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-
-def _dpapi(func, data):
-    buffer = ctypes.create_string_buffer(data, len(data))
-    blob_in = _Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
-    blob_out = _Blob()
-    if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
-        raise OSError("DPAPI refused the operation")
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-
-
-def encrypt_password(text):
-    """Szyfruje hasło dla bieżącego konta Windows; zwraca tekst do JSON-a."""
-    blob = _dpapi(ctypes.windll.crypt32.CryptProtectData, text.encode("utf-8"))
-    return base64.b64encode(blob).decode("ascii")
-
-
-def decrypt_password(stored):
-    """Odwrotność `encrypt_password`. Cudze lub uszkodzone dane = None."""
-    try:
-        blob = _dpapi(ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(stored))
-    except (OSError, ValueError):
-        return None
-    return blob.decode("utf-8")
-
-
 SSH_PORT = 22
 
 
@@ -322,7 +287,7 @@ class ConnectionDialog(QDialog):
     _FORM_KEYS = {
         "name", "host", "port", "username", "protocol", "key_file",
         "jump_host", "startup", "notes", "redirect_drives",
-        "password", "passphrase",
+        "password", "passphrase", "credential",
     }
 
     def __init__(self, parent=None, data=None):
@@ -392,11 +357,28 @@ class ConnectionDialog(QDialog):
         self.notes = QPlainTextEdit(data.get("notes", ""))
         self.notes.setFixedHeight(60)
 
+        # Konto współdzielone (menedżer poświadczeń): gdy wybrane, login/hasło/
+        # klucz idą z niego, a własne pola formularza są wyszarzone.
+        self.credential = QComboBox()
+        new_credential = QPushButton(t("cred_new"))
+        new_credential.clicked.connect(self._new_credential)
+        credential_box = QWidget()
+        credential_layout = QHBoxLayout(credential_box)
+        credential_layout.setContentsMargins(0, 0, 0, 0)
+        credential_layout.addWidget(self.credential, 1)
+        credential_layout.addWidget(new_credential)
+        self._fill_credentials(data.get("credential"))
+        self._auth_fields = (
+            self.username, self.password, key_box, self.passphrase, self.save_password
+        )
+        self.credential.currentIndexChanged.connect(self._credential_changed)
+
         form = QFormLayout(self)
         form.addRow(t("fld_protocol"), self.protocol)
         form.addRow(t("fld_name"), self.name)
         form.addRow(t("fld_host"), self.host)
         form.addRow(t("fld_port"), self.port)
+        form.addRow(t("fld_credential"), credential_box)
         form.addRow(t("fld_user"), self.username)
         form.addRow(t("fld_password"), self.password)
         self._key_row = form.rowCount()
@@ -420,6 +402,39 @@ class ConnectionDialog(QDialog):
         self._form = form
         self.protocol.currentIndexChanged.connect(self._protocol_changed)
         self._protocol_changed()
+        self._credential_changed()
+
+    # --- konto współdzielone ---------------------------------------------------
+
+    def _fill_credentials(self, selected=None):
+        self.credential.blockSignals(True)
+        self.credential.clear()
+        self.credential.addItem(t("cred_none"), None)
+        for cred in credentials.load()[0]:
+            self.credential.addItem(f"{cred['name']} ({cred.get('username', '')})", cred["id"])
+        # Wskazane konto mogło zostać usunięte — wtedy „brak”, własne pola.
+        self.credential.setCurrentIndex(max(0, self.credential.findData(selected)))
+        self.credential.blockSignals(False)
+
+    def _credential_changed(self):
+        own = self.credential.currentData() is None
+        for widget in self._auth_fields:
+            widget.setEnabled(own and (widget is not self.save_password or CAN_STORE_PASSWORDS))
+
+    def _new_credential(self):
+        dialog = credentials.CredentialDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        creds, _ = credentials.load()
+        cred = dialog.values()
+        creds.append(cred)
+        try:
+            credentials.save(creds)
+        except OSError as error:
+            QMessageBox.warning(self, t("err_save_title"), t("err_save_body", error))
+            return
+        self._fill_credentials(cred["id"])
+        self._credential_changed()
 
     # --- protokół -----------------------------------------------------------
 
@@ -477,6 +492,11 @@ class ConnectionDialog(QDialog):
             data["notes"] = self.notes.toPlainText().strip()
         if protocol == "rdp" and self.redirect_drives.isChecked():
             data["redirect_drives"] = True
+        if self.credential.currentData():
+            # Hasła są na koncie — własnych nie trzymamy, żeby nie zostały
+            # stare, zapomniane kopie obok.
+            data["credential"] = self.credential.currentData()
+            return data
         if self.save_password.isChecked() and self.password.text():
             data["password"] = encrypt_password(self.password.text())
         if protocol == "ssh" and self.save_password.isChecked() and self.passphrase.text():
@@ -493,6 +513,9 @@ class ConnectionTree(QTreeWidget):
         self.setHeaderLabel(t("tree_header"))
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+        # Konta do dymków (nazwa konta, jego login) — odświeżane przy każdej
+        # zmianie, formularz połączenia też potrafi dodać konto.
+        self.credentials = []
 
         # Przenoszenie elementów myszą wewnątrz drzewa.
         self.setDragDropMode(QTreeWidget.InternalMove)
@@ -568,6 +591,7 @@ class ConnectionTree(QTreeWidget):
             self.set_color(item, str(node["color"]))
 
     def load(self):
+        self.credentials = credentials.load()[0]
         if not CONFIG_FILE.exists():
             return
         root = self.topLevelItem(0)
@@ -693,9 +717,12 @@ class ConnectionTree(QTreeWidget):
     def _apply_connection(self, item, data):
         """Wpisuje dane połączenia do elementu drzewa (etykieta, tooltip, dane)."""
         item.setData(0, CONNECTION_DATA, data)
+        cred = credentials.find(self.credentials, data.get("credential"))
+        user = cred.get("username", "") if cred else data.get("username", "")
         item.setToolTip(
             0,
-            f"{data.get('username', '')}@{data.get('host', '')}:{data.get('port', 22)}"
+            f"{user}@{data.get('host', '')}:{data.get('port', 22)}"
+            + (t("tip_credential", cred["name"]) if cred else "")
             + (t("tip_password_saved") if data.get("password") else "")
             + (f"\n\n{data['notes']}" if data.get("notes") else ""),
         )
@@ -705,6 +732,7 @@ class ConnectionTree(QTreeWidget):
         dialog = ConnectionDialog(self, item.data(0, CONNECTION_DATA))
         if dialog.exec() != QDialog.Accepted:
             return
+        self.credentials = credentials.load()[0]
         self._apply_connection(item, dialog.values())
         self.save()
 
@@ -801,6 +829,7 @@ class ConnectionTree(QTreeWidget):
         if dialog.exec() != QDialog.Accepted:
             return
         data = dialog.values()
+        self.credentials = credentials.load()[0]
         parent_item = parent_item or self.topLevelItem(0)
         item = QTreeWidgetItem(parent_item, [], CONNECTION_TYPE)
         self._apply_connection(item, data)
@@ -823,6 +852,16 @@ class ConnectionTree(QTreeWidget):
         self.save()
 
     # --- kropka statusu (żywy/martwy serwer) --------------------------------
+
+    def refresh_tooltips(self):
+        """Po zmianach w menedżerze poświadczeń — dymki pokazują nazwę/login konta."""
+        self.credentials = credentials.load()[0]
+        it = QTreeWidgetItemIterator(self)
+        while it.value():
+            item = it.value()
+            if item.type() == CONNECTION_TYPE:
+                self._apply_connection(item, item.data(0, CONNECTION_DATA))
+            it += 1
 
     def status_targets(self):
         """{id(item): (host, port)} dla wszystkich zapisanych połączeń."""
@@ -1502,14 +1541,14 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 return
 
-        password = decrypt_password(conn["password"]) if conn.get("password") else None
-        passphrase = (
-            decrypt_password(conn["passphrase"]) if conn.get("passphrase") else None
-        )
+        # Konto współdzielone (jeśli wskazane i istnieje) albo własne pola połączenia.
+        auth = credentials.effective_auth(conn)
+        password = decrypt_password(auth["password"]) if auth["password"] else None
+        passphrase = decrypt_password(auth["passphrase"]) if auth["passphrase"] else None
 
         # RDP nie pyta nas o hasło: bez zapisanego kontrolka poprosi sama.
         if conn.get("protocol", "ssh") == "rdp":
-            self._open_rdp_tab(conn, password)
+            self._open_rdp_tab({**conn, "username": auth["username"]}, password)
             return
 
         # Zapisane hasło odszyfrowujemy, w przeciwnym razie pytamy.
@@ -1518,13 +1557,13 @@ class MainWindow(QMainWindow):
             password, ok = QInputDialog.getText(
                 self,
                 t("dlg_auth_title"),
-                t("dlg_auth_body", conn["username"], conn["host"]),
+                t("dlg_auth_body", auth["username"], conn["host"]),
                 QLineEdit.Password,
             )
             if not ok:
                 return
 
-        self._connect_and_add_tab(conn, password, passphrase)
+        self._connect_and_add_tab(conn, password, passphrase, auth)
 
     def _open_scanner(self):
         """Skaner sieci; wybrany host wchodzi wprost do formularza połączenia."""
@@ -1621,6 +1660,10 @@ class MainWindow(QMainWindow):
             return
         disks.DiskDialog(self, session.terminal.client).exec()
 
+    def _manage_credentials(self):
+        credentials.CredentialManager(self, self.tree.nodes).exec()
+        self.tree.refresh_tooltips()  # nazwa/login konta mogły się zmienić
+
     def _open_multirun(self):
         targets = [
             (self.tabs.tabText(i), self.tabs.widget(i).terminal.client)
@@ -1676,6 +1719,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         conn = dialog.values()
+        if conn.get("credential"):
+            self._open_connection_tab(conn)  # hasło z konta, jak przy wpisie z drzewa
+            return
         conn.pop("password", None)  # tymczasowe połączenie nic nie zapisuje
         conn.pop("passphrase", None)
         password = dialog.password.text() or None
@@ -1692,11 +1738,14 @@ class MainWindow(QMainWindow):
         tab.session_ended.connect(lambda text, w=tab: self._show_stats(w, text))
         self._add_tab(tab, conn["name"])
 
-    def _connect_and_add_tab(self, conn, password, passphrase=None):
+    def _connect_and_add_tab(self, conn, password, passphrase=None, auth=None):
+        # `auth` osobno, nie wmieszane w `conn` — `conn` to żywy słownik z drzewa
+        # (zakładki SFTP, tunele zapisują się przez niego), kopia by je gubiła.
+        auth = auth or conn
         # Okno postępu; None = anulowano lub błąd (komunikat już się pokazał).
         terminal = connect_with_progress(
-            self, conn["host"], conn["port"], conn["username"], password,
-            conn.get("key_file"), passphrase, conn.get("jump_host"),
+            self, conn["host"], conn["port"], auth["username"], password,
+            auth.get("key_file"), passphrase, conn.get("jump_host"),
         )
         if terminal is None:
             return
@@ -1708,8 +1757,8 @@ class MainWindow(QMainWindow):
         )
         session.conn = conn
         session.reconnect_args = dict(
-            host=conn["host"], port=conn["port"], username=conn["username"],
-            password=password, key_file=conn.get("key_file"), passphrase=passphrase,
+            host=conn["host"], port=conn["port"], username=auth["username"],
+            password=password, key_file=auth.get("key_file"), passphrase=passphrase,
             jump_host=conn.get("jump_host"),
         )
         session.startup = conn.get("startup")
@@ -2042,6 +2091,25 @@ def selftest():
     assert custom.port.value() == 2222, "własny port musi przeżyć zmianę protokołu"
 
     # Klucz prywatny zapisuje się tylko dla SSH.
+    # Konto współdzielone: formularz nie trzyma własnych haseł, pola są wyszarzone,
+    # a łączenie bierze login z konta. Plik kont w temp — nie w profilu użytkownika.
+    real_credentials = credentials.CREDENTIALS_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        credentials.CREDENTIALS_FILE = Path(tmp) / "credentials.json"
+        try:
+            credentials.save([{"id": "c1", "name": "admin", "username": "root"}])
+            shared = ConnectionDialog(data={"host": "h", "username": "jan", "credential": "c1"})
+            assert shared.credential.currentData() == "c1" and not shared.username.isEnabled()
+            values = shared.values()
+            assert values["credential"] == "c1" and "password" not in values, values
+            assert credentials.effective_auth(values)["username"] == "root"
+            shared.credential.setCurrentIndex(0)
+            assert shared.username.isEnabled() and "credential" not in shared.values()
+            gone = ConnectionDialog(data={"host": "h", "credential": "usuniete"})
+            assert gone.credential.currentData() is None, "usunięte konto = własne pola"
+        finally:
+            credentials.CREDENTIALS_FILE = real_credentials
+
     keyed = ConnectionDialog(data={"host": "h", "key_file": "C:/klucze/id_rsa"})
     assert keyed.values()["key_file"] == "C:/klucze/id_rsa"
     keyed.protocol.setCurrentIndex(keyed.protocol.findData("rdp"))
@@ -2238,6 +2306,7 @@ def selftest():
     services.selftest()
     multirun.selftest()
     transfers.selftest()
+    credentials.selftest()
     del app
     print("main selftest OK")
 
