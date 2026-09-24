@@ -7,6 +7,7 @@ import hashlib
 import json
 import socket
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -65,6 +66,7 @@ import keygen
 import logtail
 import multirun
 import notify
+import processes
 import scanner
 import services
 import transfers
@@ -112,6 +114,7 @@ TOOLS = (
     ("menu_logtail", "_open_log_tail"),
     ("menu_services", "_manage_services"),
     ("menu_disks", "_open_disks"),
+    ("menu_processes", "_open_processes"),
     ("menu_multirun", "_open_multirun"),
     ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
@@ -279,6 +282,23 @@ class _TreeStatusCheck(QThread):
 SSH_PORT = 22
 
 
+def parse_tags(text):
+    """„prod, db,  prod” -> ["prod", "db"] — bez pustych i duplikatów."""
+    tags = []
+    for tag in text.split(","):
+        tag = tag.strip().lstrip("#").lower()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def search_text(data):
+    """Tekst, po którym szuka filtr drzewa i wyszukiwarka Home (tagi jako #tag)."""
+    parts = [str(data.get(k, "")) for k in ("name", "host", "username")]
+    parts += ["#" + tag for tag in data.get("tags", [])]
+    return " ".join(parts).lower()
+
+
 class ConnectionDialog(QDialog):
     """Formularz danych połączenia — SSH albo RDP."""
 
@@ -286,7 +306,7 @@ class ConnectionDialog(QDialog):
     # zakładek SFTP, "tunnels" tuneli SSH) ma zostać nietknięta przy edycji.
     _FORM_KEYS = {
         "name", "host", "port", "username", "protocol", "key_file",
-        "jump_host", "startup", "notes", "redirect_drives",
+        "jump_host", "startup", "notes", "redirect_drives", "tags",
         "password", "passphrase", "credential",
     }
 
@@ -356,6 +376,8 @@ class ConnectionDialog(QDialog):
         self.startup.setFixedHeight(60)
         self.notes = QPlainTextEdit(data.get("notes", ""))
         self.notes.setFixedHeight(60)
+        self.tags = QLineEdit(", ".join(data.get("tags", [])))
+        self.tags.setPlaceholderText(t("ph_tags"))
 
         # Konto współdzielone (menedżer poświadczeń): gdy wybrane, login/hasło/
         # klucz idą z niego, a własne pola formularza są wyszarzone.
@@ -389,12 +411,15 @@ class ConnectionDialog(QDialog):
         form.addRow(t("fld_jump_host"), self.jump_host)
         self._startup_row = form.rowCount()
         form.addRow(t("fld_startup"), self.startup)
+        form.addRow(t("fld_tags"), self.tags)
         form.addRow(t("fld_notes"), self.notes)
         self._redirect_drives_row = form.rowCount()
         form.addRow("", self.redirect_drives)
         form.addRow("", self.save_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        test = buttons.addButton(t("btn_test_connection"), QDialogButtonBox.ActionRole)
+        test.clicked.connect(self._test_connection)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
@@ -463,6 +488,40 @@ class ConnectionDialog(QDialog):
         if path:
             self.key_file.setText(path)
 
+    def _test_connection(self):
+        """Łączy na próbę danymi z formularza i od razu rozłącza — bez zakładki."""
+        host = self.host.text().strip()
+        if not host:
+            QMessageBox.warning(self, t("err_missing_data_title"), t("err_missing_host"))
+            return
+        port = self.port.value()
+        if self.protocol.currentData() == "rdp":
+            # RDP łączy kontrolka ActiveX — sprawdzamy tylko, czy port odpowiada.
+            ok = _TreeStatusCheck._check(host, port)
+            (QMessageBox.information if ok else QMessageBox.warning)(
+                self, t("btn_test_connection"),
+                t("test_port_open" if ok else "test_port_closed", f"{host}:{port}"),
+            )
+            return
+        if self.credential.currentData():
+            auth = credentials.effective_auth({"credential": self.credential.currentData()})
+            password = decrypt_password(auth["password"]) if auth["password"] else ""
+            passphrase = decrypt_password(auth["passphrase"]) if auth["passphrase"] else ""
+        else:
+            auth = {"username": self.username.text().strip(),
+                    "key_file": self.key_file.text().strip()}
+            password, passphrase = self.password.text(), self.passphrase.text()
+        terminal = connect_with_progress(
+            self, host, port, auth["username"], password or "",
+            auth.get("key_file") or None, passphrase or None,
+            self.jump_host.text().strip() or None,
+        )
+        if terminal is None:
+            return  # błąd już pokazany
+        terminal.close_session()
+        terminal.deleteLater()
+        QMessageBox.information(self, t("btn_test_connection"), t("test_ok"))
+
     def accept(self):
         if not self.host.text().strip():
             QMessageBox.warning(self, t("err_missing_data_title"), t("err_missing_host"))
@@ -488,6 +547,9 @@ class ConnectionDialog(QDialog):
             data["jump_host"] = self.jump_host.text().strip()
         if protocol == "ssh" and self.startup.toPlainText().strip():
             data["startup"] = self.startup.toPlainText().strip()
+        tags = parse_tags(self.tags.text())
+        if tags:
+            data["tags"] = tags
         if self.notes.toPlainText().strip():
             data["notes"] = self.notes.toPlainText().strip()
         if protocol == "rdp" and self.redirect_drives.isChecked():
@@ -724,6 +786,7 @@ class ConnectionTree(QTreeWidget):
             f"{user}@{data.get('host', '')}:{data.get('port', 22)}"
             + (t("tip_credential", cred["name"]) if cred else "")
             + (t("tip_password_saved") if data.get("password") else "")
+            + ("\n" + " ".join("#" + tag for tag in data["tags"]) if data.get("tags") else "")
             + (f"\n\n{data['notes']}" if data.get("notes") else ""),
         )
         self.set_label(item, data["name"], item.data(0, ICON_DATA) or "")
@@ -757,9 +820,7 @@ class ConnectionTree(QTreeWidget):
     def _filter_item(self, item, query):
         """Zwraca True, gdy element (albo cokolwiek pod nim) pasuje do zapytania."""
         data = item.data(0, CONNECTION_DATA) or {}
-        haystack = " ".join(
-            [self.item_name(item)] + [str(data.get(k, "")) for k in ("host", "username")]
-        ).lower()
+        haystack = self.item_name(item).lower() + " " + search_text(data)
         hit = not query or query in haystack
         for i in range(item.childCount()):
             # Bez `or hit` po prawej krótkie spięcie pominęłoby chowanie dzieci.
@@ -955,15 +1016,19 @@ class HomeTab(QWidget):
         query = query.strip().lower()
         if not query:
             return True
-        haystack = " ".join(str(data.get(k, "")) for k in ("name", "host", "username"))
-        return query in haystack.lower()
+        return query in search_text(data)
 
     def refresh(self):
         self.results.clear()
-        for data in self.connections():
+        # Ostatnio używane na górze; nigdy nieotwierane dalej, w kolejności drzewa.
+        found = sorted(self.connections(), key=lambda d: -d.get("last_used", 0))
+        for data in found:
             if not self.matches(data, self.search.text()):
                 continue
             label = f"{data.get('name', '')} — {data.get('username', '')}@{data.get('host', '')}"
+            if data.get("last_used"):
+                used = time.strftime("%Y-%m-%d %H:%M", time.localtime(data["last_used"]))
+                label += "   " + t("home_last_used", used)
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, data)
             self.results.addItem(item)
@@ -1541,6 +1606,10 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 return
 
+        # `conn` to żywy słownik z drzewa — znacznik trafia do connections.json.
+        conn["last_used"] = int(time.time())
+        self.tree.save()
+
         # Konto współdzielone (jeśli wskazane i istnieje) albo własne pola połączenia.
         auth = credentials.effective_auth(conn)
         password = decrypt_password(auth["password"]) if auth["password"] else None
@@ -1659,6 +1728,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, t("disks_title"), t("tunnels_need_session"))
             return
         disks.DiskDialog(self, session.terminal.client).exec()
+
+    def _open_processes(self):
+        session = self.tabs.currentWidget()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("processes_title"), t("tunnels_need_session"))
+            return
+        processes.ProcessDialog(self, session.terminal.client).exec()
 
     def _manage_credentials(self):
         credentials.CredentialManager(self, self.tree.nodes).exec()
@@ -2155,6 +2231,15 @@ def selftest():
     shown.clear()
     window._open_disks()
     assert shown == [t("tunnels_need_session")], shown
+    shown.clear()
+    window._open_processes()
+    assert shown == [t("tunnels_need_session")], shown
+
+    # Tagi: parsowanie i wyszukiwanie po #tagu (drzewo i Home tym samym tekstem).
+    assert parse_tags(" Prod, #db,, prod ") == ["prod", "db"]
+    assert "#db" in search_text({"name": "x", "tags": ["db"]})
+    assert HomeTab.matches({"name": "x", "tags": ["klient-a"]}, "#klient")
+    assert not HomeTab.matches({"name": "x"}, "#klient")
 
     # Alerty progowe: wynik czysto funkcyjny, patrz ssh_terminal.selftest();
     # tutaj tylko sprawdzamy, że menu Widok je wystawia.
@@ -2304,6 +2389,7 @@ def selftest():
     tunnels_module.selftest()
     logtail.selftest()
     services.selftest()
+    processes.selftest()
     multirun.selftest()
     transfers.selftest()
     credentials.selftest()
