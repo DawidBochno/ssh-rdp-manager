@@ -28,6 +28,12 @@ py main.py --selftest
 
 **Połączenia**
 
+- **Paleta poleceń** (Ctrl+Shift+P): jedno pole szuka po połączeniach (nazwa,
+  host, login, `#tag`) i wszystkich akcjach menu, łącznie z Programami i skryptami.
+- **Przypinanie na Start** (prawy klik w drzewie): przypięte połączenia na górze
+  listy Start, pod nimi ostatnio używane.
+- **Menu zakładki** (prawy klik): zamknij pozostałe, zmień nazwę, duplikuj sesję,
+  podgląd logu. Zakładka w tle z nowym wyjściem dostaje znacznik „● ”.
 - Drzewo grup i połączeń: przeciąganie myszą, ikony (emoji), kolory dziedziczone
   w grupie, zmiana nazwy i edycja wpisu.
 - Zapis do `connections.json` obok programu; eksport i import tego samego formatu.
@@ -73,7 +79,7 @@ py main.py --selftest
 - **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; dymek nad zakładką pokazuje
   `użytkownik@host:port`. Czcionka i znacznik czasu przy każdej linii — w oknie
   **Ustawienia**; **Widok → Zapisz zapis sesji** odkłada bufor terminala do pliku.
-- Panel **SFTP** po lewej stronie zakładki: nawigacja, pobieranie, wysyłanie
+- Panel **SFTP** po lewej stronie zakładki (operacje w tle — wolny serwer nie zamraża okna): nawigacja, pobieranie, wysyłanie
   (w tle, w **kolejce transferów** pod listą plików: stan każdego pliku,
   anulowanie zaznaczonych — przerwany plik jest kasowany, żeby nie zostawał
   obcięty), nowy folder, usuwanie. Przycisk **⭐** trzyma
@@ -152,6 +158,7 @@ Skróty okna (pełna lista: **Pomoc → Skróty klawiszowe**):
 | Ctrl+Shift+W | zamknij zakładkę |
 | Ctrl+Shift+F | filtr listy połączeń |
 | Ctrl+Shift+S | ustawienia |
+| Ctrl+Shift+P | paleta poleceń: połączenia, akcje menu, skrypty |
 
 Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala.
 
@@ -184,10 +191,9 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Menu kontekstowe zakładki** (zamknij inne, zmień nazwę, zduplikuj sesję)
-   i **znacznik aktywności** na zakładce w tle.
-2. **SFTP poza wątkiem GUI** — wolny serwer nie zamraża okna.
-3. **Wykresy CPU/RAM w czasie**, paleta poleceń (Ctrl+Shift+P).
+1. **Wykresy CPU/RAM w czasie** (sparkline pod paskiem statusu).
+2. **Tryb tylko do odczytu zakładki**, makra/przyciski wysyłające tekst.
+3. `sudo` przy zabijaniu procesów.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
 zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
@@ -197,7 +203,8 @@ zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 | Plik | Zawartość |
 |---|---|
 | `main.py` | Okno, drzewo połączeń, zakładki, formularz połączenia, menu |
-| `ssh_terminal.py` | Sesja SSH (Paramiko), panel SFTP, statystyki, skrypty |
+| `ssh_terminal.py` | Sesja SSH (Paramiko), statystyki, skrypty |
+| `sftp.py` | Panel SFTP (operacje w wątku w tle) |
 | `transfers.py` | Transfery SFTP: kolejka w tle, anulowanie |
 | `rdp.py` | Sesja RDP (kontrolka ActiveX Microsoftu) jako widget zakładki |
 | `scanner.py` | Skaner sieci i okno z wynikami |
