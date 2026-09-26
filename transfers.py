@@ -52,6 +52,22 @@ class _Transfer(QThread):
         self.progress.emit(done, total)
 
     def run(self):
+        # Wywoływalne zamiast klienta = własny kanał na czas transferu, otwarty
+        # tutaj, w tle (edycja/drag-out z panelu SFTP, patrz `sftp.py`).
+        own = callable(self.sftp)
+        if own:
+            try:
+                self.sftp = self.sftp()
+            except Exception as error:
+                self.done.emit(str(error) or type(error).__name__, False)
+                return
+        try:
+            self._run()
+        finally:
+            if own:
+                self.sftp.close()
+
+    def _run(self):
         try:
             if self.mode == "get":
                 self.sftp.get(self.remote_path, self.local_path, callback=self._callback)
@@ -86,6 +102,8 @@ def run_transfer(parent, sftp, mode, remote_path, local_path, title):
     Dla edycji na miejscu i przeciągania na zewnątrz — tam plik jest potrzebny
     od razu. Zwykłe pobieranie/wysyłanie idzie przez `TransferQueue`.
     Anulowanie zwraca `t("transfer_cancelled")`.
+    `sftp` może być też funkcją otwierającą nowy kanał — wtedy otwiera go i
+    zamyka wątek transferu, a okno nie czeka na rundę po sieci.
     """
     dialog = QProgressDialog(title, t("cancel"), 0, 100, parent)
     dialog.setWindowModality(Qt.WindowModal)
