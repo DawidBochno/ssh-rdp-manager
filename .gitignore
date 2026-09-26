@@ -21,3 +21,6 @@ TODO.md
 
 # Zaakceptowane klucze serwerow — lokalne, nie repo.
 known_hosts
+
+# Ustawienia i skille Claude Code — lokalne, jak CLAUDE.md.
+.claude/

@@ -41,10 +41,17 @@ py main.py --selftest
   wskazywane przez wiele połączeń. Zmiana hasła na koncie działa od razu na
   wszystkich. Konta leżą w `credentials.json` (hasła też przez DPAPI); usunięte
   konto nie psuje połączeń — wracają one do własnych pól.
-- Zakładka **Home** z wyszukiwarką zapisanych połączeń i przycisk **+** na pasku
-  zakładek — połączenie „na szybko”, które nie trafia do drzewa ani na dysk.
+- Zakładka **Home** z wyszukiwarką zapisanych połączeń — **ostatnio używane**
+  na górze, z datą ostatniego otwarcia — i przycisk **+** na pasku zakładek:
+  połączenie „na szybko”, które nie trafia do drzewa ani na dysk.
 - **Filtr nad drzewem**: wpisany tekst chowa wpisy niepasujące nazwą, hostem ani
   użytkownikiem; grupa zostaje, gdy pasuje cokolwiek w środku.
+- **Tagi** na połączeniach (`prod, db, klient-x`): widoczne w dymku, a `#prod`
+  w filtrze drzewa albo w wyszukiwarce Home pokazuje tylko otagowane wpisy.
+- **Połącz na próbę** w formularzu połączenia: sprawdza dane logowania SSH
+  (albo dostępność portu RDP) bez otwierania zakładki.
+- Klawiatura w drzewie: **Enter** łączy, **F2** edytuje, **Delete** usuwa
+  (zawsze z potwierdzeniem).
 - **Import z `~/.ssh/config`** (Połączenie → Importuj): wpisy wchodzą jako osobna
   grupa, z hostem, portem, użytkownikiem i plikiem klucza. Parser jest z Paramiko,
   więc rozumie `Include` i `Match`.
@@ -61,11 +68,11 @@ py main.py --selftest
   terminal wykrywa alternate screen i rysuje siatkę znaków z prawdziwym
   adresowaniem kursora i kolorami zamiast rozjeżdżać tekst.
 - Szukanie w terminalu (Ctrl+F), wklejanie (Ctrl+V i Ctrl+Shift+V), rozmiar PTY
-  idący za rozmiarem okna.
-- **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; **Widok → Czcionka terminala**
-  zmienia krój i rozmiar (wybór przeżywa restart), **Widok → Znacznik czasu**
-  poprzedza każdą linię godziną, **Widok → Zapisz zapis sesji** odkłada bufor
-  terminala do pliku.
+  idący za rozmiarem okna. **Ctrl+C** kopiuje, gdy coś jest zaznaczone —
+  bez zaznaczenia przerywa polecenie (`^C`), jak w każdym terminalu.
+- **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; dymek nad zakładką pokazuje
+  `użytkownik@host:port`. Czcionka i znacznik czasu przy każdej linii — w oknie
+  **Ustawienia**; **Widok → Zapisz zapis sesji** odkłada bufor terminala do pliku.
 - Panel **SFTP** po lewej stronie zakładki: nawigacja, pobieranie, wysyłanie
   (w tle, w **kolejce transferów** pod listą plików: stan każdego pliku,
   anulowanie zaznaczonych — przerwany plik jest kasowany, żeby nie zostawał
@@ -79,15 +86,15 @@ py main.py --selftest
 - **Tunele SSH** (Programy → Tunele SSH): `L 8080:10.0.0.5:80` przekierowuje port
   lokalny na maszynę widzianą przez serwer, `R 9000:127.0.0.1:22` odwrotnie.
   Tunele zapisane przy połączeniu wstają razem z sesją i znikają razem z nią.
-- **Wyzwalacze na tekst** (Widok → Wyzwalacze): regex na wyjście serwera, jeden
+- **Wyzwalacze na tekst** (Ustawienia → Terminal): regex na wyjście serwera, jeden
   na linię; trafienie daje dymek w zasobniku, także gdy okno jest zminimalizowane.
-- **Widok → Długość historii przewijania** ustawia, ile linii trzyma terminal
+- **Ustawienia → Terminal → Historia przewijania** ustawia, ile linii trzyma terminal
   (domyślnie 5000) — tyle też trafia do zapisu sesji.
 - Dolny pasek ze statystykami serwera: CPU, RAM, dysk, ruch sieciowy, uptime,
   liczba zalogowanych — osobno dla Linuksa i Windows Servera.
 - **Zbiorczy dashboard** (Programy → Panel statystyk…): statystyki wszystkich
   otwartych zakładek SSH i RDP na jednym ekranie, odświeżane co 2 sekundy.
-- **Motywy kolorów terminala** (Widok → Motyw terminala): Dark, Solarized Dark,
+- **Motywy kolorów terminala** (Ustawienia → Wygląd): Dark, Solarized Dark,
   Dracula, Default.
 - Menu **Skrypty**: 11 gotowych poleceń administracyjnych (procesy, miejsce na dysku,
   błędy w logach, porty, restart usługi, aktualizacje, nieudane logowania, ping…),
@@ -110,6 +117,8 @@ py main.py --selftest
 - Menu **Programy → Podgląd logu na żywo**: `tail -f` w osobnym oknie, z filtrem (regex).
 - Menu **Programy → Dyski**: `df -h`/`df -i` (albo dyski Windows) w tabeli,
   czerwony wiersz powyżej 90%.
+- Menu **Programy → Procesy**: `ps` (albo `Get-Process`) w tabeli, posortowane
+  po CPU, z zabijaniem zaznaczonego procesu (po potwierdzeniu).
 - Menu **Programy → Polecenie na wielu serwerach**: własne polecenie albo gotowy
   skrypt uruchamiany równolegle na zaznaczonych otwartych sesjach SSH, wynik
   osobno dla każdego serwera (OK/BŁĄD), z zapisem do pliku.
@@ -122,10 +131,29 @@ py main.py --selftest
 
 **Interfejs**
 
-Domyślnie po **angielsku**; polski wybiera się w **Widok → Language** (zmiana działa
-po ponownym uruchomieniu). Rozmiar okna i podział paneli wracają między sesjami.
-Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobniku.
-**Widok → Ciemny motyw okna** przełącza całą aplikację na ciemną paletę.
+Wszystkie ustawienia w jednym oknie **Widok → Ustawienia** (Ctrl+Shift+S),
+w czterech zakładkach: **Terminal** (podświetlanie, znaczniki czasu, czcionka,
+historia przewijania, wyzwalacze), **Wygląd** (motyw terminala, ciemny motyw okna,
+język), **Powiadomienia** (status serwerów w drzewie, alerty progowe),
+**Bezpieczeństwo** (blokada po bezczynności, PIN). Zmiany działają po OK,
+Anuluj niczego nie rusza.
+
+Domyślnie po **angielsku**; polski wybiera się w Ustawieniach → Wygląd (zmiana
+działa po ponownym uruchomieniu). Rozmiar okna i podział paneli wracają między
+sesjami. Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem
+w zasobniku.
+
+Skróty okna (pełna lista: **Pomoc → Skróty klawiszowe**):
+
+| Skrót | Działanie |
+|---|---|
+| Ctrl+Shift+N | nowe połączenie |
+| Ctrl+Shift+T | szybkie połączenie |
+| Ctrl+Shift+W | zamknij zakładkę |
+| Ctrl+Shift+F | filtr listy połączeń |
+| Ctrl+Shift+S | ustawienia |
+
+Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala.
 
 ## Bezpieczeństwo
 
@@ -141,9 +169,9 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
   `exit` w powłoce zamyka sesję normalnie, bez ponownego łączenia.
 - Skaner sieci wysyła zwykłe pingi i sprawdza kilka portów — używaj go w sieci,
   którą administrujesz.
-- **Widok → Blokada po bezczynności**: po ustawionym czasie braku ruchu myszą/
-  klawiaturą okno pokazuje ekran blokady, który otwiera tylko PIN ustawiony przy
-  włączeniu (hash, nie plaintext). To lekki odstraszacz przed przypadkowym
+- **Ustawienia → Bezpieczeństwo → Blokada po bezczynności**: po ustawionym czasie
+  braku ruchu myszą/klawiaturą okno pokazuje ekran blokady, który otwiera tylko
+  PIN (hash, nie plaintext; zmienia się w tym samym oknie). To lekki odstraszacz przed przypadkowym
   zerknięciem, gdy Windows jest odblokowany — nie zastępuje hasła głównego do
   pliku połączeń (wciąż na liście do zrobienia).
 
@@ -156,8 +184,10 @@ Koniec długiego transferu, skryptu i skanowania zgłasza się dymkiem w zasobni
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Lista procesów z zabijaniem**, **„Połącz na próbę”** w formularzu,
-   **wykresy CPU/RAM w czasie**.
+1. **Menu kontekstowe zakładki** (zamknij inne, zmień nazwę, zduplikuj sesję)
+   i **znacznik aktywności** na zakładce w tle.
+2. **SFTP poza wątkiem GUI** — wolny serwer nie zamraża okna.
+3. **Wykresy CPU/RAM w czasie**, paleta poleceń (Ctrl+Shift+P).
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
 zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
@@ -180,6 +210,8 @@ zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 | `credentials.py` | Szyfrowanie haseł (DPAPI) i konta współdzielone |
 | `logtail.py` | Podgląd logu na żywo (`tail -f`) |
 | `disks.py` | Panel dysków i inode'ów |
+| `processes.py` | Lista procesów z zabijaniem |
+| `settings.py` | Okno Ustawień |
 | `multirun.py` | Polecenie/skrypt na wielu serwerach naraz |
 | `keygen.py` | Generator kluczy SSH |
 

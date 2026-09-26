@@ -66,6 +66,19 @@ TEXTS = {
         "dlg_icon_prompt": "Choose an icon:",
         "confirm_delete_group_title": "Delete group?",
         "confirm_delete_group_body": "„{0}” contains {1} items. Delete everything?",
+        "confirm_delete_body": "Delete „{0}”?",
+        "menu_shortcuts": "Keyboard shortcuts",
+        "shortcuts_body": (
+            "Ctrl+Shift+N — new connection\n"
+            "Ctrl+Shift+T — quick connect\n"
+            "Ctrl+Shift+W — close tab\n"
+            "Ctrl+Shift+F — filter connection list\n"
+            "Ctrl+Tab / Ctrl+Shift+Tab — next / previous tab\n"
+            "Ctrl+1..9 — go to tab\n\n"
+            "Connection list: Enter — connect, F2 — edit, Delete — remove\n"
+            "Terminal: Ctrl+F — find, Ctrl+C with selection — copy, "
+            "Ctrl+V / Ctrl+Shift+V / middle button — paste"
+        ),
         # --- pulpit startowy ---
         "home_subtitle": "Pick a saved connection on the left, or:",
         "home_quick_btn": "➕ New temporary connection",
@@ -80,6 +93,22 @@ TEXTS = {
         "menu_import": "Import connections…",
         "menu_quit": "Quit",
         "menu_view": "&View",
+        "menu_settings": "Settings…",
+        "settings_title": "Settings",
+        "settings_tab_terminal": "Terminal",
+        "settings_tab_appearance": "Appearance",
+        "settings_tab_notifications": "Notifications",
+        "settings_tab_security": "Security",
+        "settings_font": "Font:",
+        "settings_scrollback": "Scrollback (lines):",
+        "settings_triggers": "Text triggers:",
+        "settings_language_note": "Language change takes effect after restart.",
+        "settings_status_interval": "Check every:",
+        "settings_alert_threshold": "Alert threshold:",
+        "settings_lock_timeout": "Lock after:",
+        "settings_new_pin": "New PIN:",
+        "settings_pin_keep": "empty = keep current PIN",
+        "settings_pin_required": "Set a PIN (at least 4 characters) to enable locking.",
         "menu_connection_list": "Connection list",
         "menu_highlighting": "Syntax highlighting",
         "menu_language": "Language",
@@ -249,7 +278,6 @@ TEXTS = {
         "menu_duplicate": "Duplicate",
         "copy_suffix": "{0} (copy)",
         # --- widok: czcionka, znaczniki czasu, zapis sesji ---
-        "menu_font": "Terminal font…",
         "menu_timestamps": "Timestamps on each line",
         "menu_save_log": "Save session log…",
         "log_saved": "Session saved to:\n\n{0}",
@@ -295,10 +323,6 @@ TEXTS = {
         "menu_dashboard": "Statistics dashboard…",
         "dashboard_title": "Statistics dashboard",
         "dashboard_no_sessions": "No open sessions with statistics yet.",
-        "menu_scrollback": "Scrollback length…",
-        "scrollback_prompt": "Lines kept in the terminal:",
-        "menu_triggers": "Text triggers…",
-        "triggers_title": "Text triggers",
         "triggers_hint": "One regular expression per line. A matching line raises a system notification.",
         "notify_trigger": "Match: {0}",
         "sftp_bookmarks": "Directory bookmarks",
@@ -358,8 +382,6 @@ TEXTS = {
         "err_chmod_bad": "Enter permissions as octal digits, e.g. 755.",
         # --- status serwera w drzewie ---
         "menu_tree_status": "Server status in the tree",
-        "menu_tree_status_interval": "Status check interval…",
-        "tree_status_prompt": "Seconds between checks:",
         "status_online": "online",
         "status_offline": "offline",
         # --- panel dyskow ---
@@ -415,13 +437,9 @@ TEXTS = {
         "srv_copy_curl": "Copy curl command",
         # --- alerty progowe ---
         "menu_alerts": "Threshold alerts (CPU/RAM/disk)",
-        "menu_alerts_threshold": "Alert threshold…",
-        "alerts_threshold_prompt": "Alert threshold (%, applies to CPU/RAM/disk):",
         "alert_title": "Threshold exceeded — {0}",
         # --- blokada okna po bezczynnosci ---
         "menu_lock": "Lock after inactivity",
-        "menu_lock_timeout": "Lock timeout…",
-        "lock_timeout_prompt": "Minutes of inactivity before locking:",
         "lock_set_pin_title": "Set lock PIN",
         "lock_set_pin_prompt": "PIN to unlock the window (at least 4 characters):",
         "lock_pin_too_short": "PIN must be at least 4 characters.",
@@ -477,6 +495,19 @@ TEXTS = {
         "dlg_icon_prompt": "Wybierz ikonę:",
         "confirm_delete_group_title": "Usunąć grupę?",
         "confirm_delete_group_body": "„{0}” zawiera {1} elementów. Usunąć wszystko?",
+        "confirm_delete_body": "Usunąć „{0}”?",
+        "menu_shortcuts": "Skróty klawiszowe",
+        "shortcuts_body": (
+            "Ctrl+Shift+N — nowe połączenie\n"
+            "Ctrl+Shift+T — szybkie połączenie\n"
+            "Ctrl+Shift+W — zamknij zakładkę\n"
+            "Ctrl+Shift+F — filtr listy połączeń\n"
+            "Ctrl+Tab / Ctrl+Shift+Tab — następna / poprzednia zakładka\n"
+            "Ctrl+1..9 — przejdź do zakładki\n\n"
+            "Lista połączeń: Enter — połącz, F2 — edytuj, Delete — usuń\n"
+            "Terminal: Ctrl+F — szukaj, Ctrl+C z zaznaczeniem — kopiuj, "
+            "Ctrl+V / Ctrl+Shift+V / środkowy przycisk — wklej"
+        ),
         # --- pulpit startowy ---
         "home_subtitle": "Wybierz zapisane połączenie po lewej albo:",
         "home_quick_btn": "➕ Nowe połączenie tymczasowe",
@@ -491,6 +522,22 @@ TEXTS = {
         "menu_import": "Importuj połączenia…",
         "menu_quit": "Zakończ",
         "menu_view": "&Widok",
+        "menu_settings": "Ustawienia…",
+        "settings_title": "Ustawienia",
+        "settings_tab_terminal": "Terminal",
+        "settings_tab_appearance": "Wygląd",
+        "settings_tab_notifications": "Powiadomienia",
+        "settings_tab_security": "Bezpieczeństwo",
+        "settings_font": "Czcionka:",
+        "settings_scrollback": "Historia przewijania (linie):",
+        "settings_triggers": "Wyzwalacze na tekst:",
+        "settings_language_note": "Zmiana języka działa po ponownym uruchomieniu.",
+        "settings_status_interval": "Sprawdzaj co:",
+        "settings_alert_threshold": "Próg alertów:",
+        "settings_lock_timeout": "Zablokuj po:",
+        "settings_new_pin": "Nowy PIN:",
+        "settings_pin_keep": "puste = bez zmiany PIN-u",
+        "settings_pin_required": "Ustaw PIN (min. 4 znaki), żeby włączyć blokadę.",
         "menu_connection_list": "Lista połączeń",
         "menu_highlighting": "Podświetlanie składni",
         "menu_language": "Język",
@@ -660,7 +707,6 @@ TEXTS = {
         "menu_duplicate": "Duplikuj",
         "copy_suffix": "{0} (kopia)",
         # --- widok: czcionka, znaczniki czasu, zapis sesji ---
-        "menu_font": "Czcionka terminala…",
         "menu_timestamps": "Znacznik czasu przy każdej linii",
         "menu_save_log": "Zapisz zapis sesji…",
         "log_saved": "Sesja zapisana do:\n\n{0}",
@@ -706,10 +752,6 @@ TEXTS = {
         "menu_dashboard": "Panel statystyk…",
         "dashboard_title": "Panel statystyk",
         "dashboard_no_sessions": "Brak otwartych sesji ze statystykami.",
-        "menu_scrollback": "Długość historii przewijania…",
-        "scrollback_prompt": "Ile linii trzymać w terminalu:",
-        "menu_triggers": "Wyzwalacze na tekst…",
-        "triggers_title": "Wyzwalacze na tekst",
         "triggers_hint": "Jeden regex na linię. Pasująca linia daje powiadomienie systemowe.",
         "notify_trigger": "Trafienie: {0}",
         "sftp_bookmarks": "Zakładki katalogów",
@@ -769,8 +811,6 @@ TEXTS = {
         "err_chmod_bad": "Podaj uprawnienia jako cyfry ósemkowe, np. 755.",
         # --- status serwera w drzewie ---
         "menu_tree_status": "Status serwera w drzewie",
-        "menu_tree_status_interval": "Odstęp sprawdzania statusu…",
-        "tree_status_prompt": "Sekundy między sprawdzeniami:",
         "status_online": "dostępny",
         "status_offline": "niedostępny",
         # --- panel dyskow ---
@@ -826,13 +866,9 @@ TEXTS = {
         "srv_copy_curl": "Kopiuj komendę curl",
         # --- alerty progowe ---
         "menu_alerts": "Alerty progowe (CPU/RAM/dysk)",
-        "menu_alerts_threshold": "Próg alertów…",
-        "alerts_threshold_prompt": "Próg alertów (%, dotyczy CPU/RAM/dysku):",
         "alert_title": "Przekroczono próg — {0}",
         # --- blokada okna po bezczynnosci ---
         "menu_lock": "Blokada po bezczynności",
-        "menu_lock_timeout": "Czas do blokady…",
-        "lock_timeout_prompt": "Minuty bezczynności do zablokowania okna:",
         "lock_set_pin_title": "Ustaw PIN blokady",
         "lock_set_pin_prompt": "PIN do odblokowania okna (min. 4 znaki):",
         "lock_pin_too_short": "PIN musi mieć co najmniej 4 znaki.",
