@@ -5,6 +5,7 @@ Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
 import hashlib
 import json
+import re
 import socket
 import sys
 import time
@@ -48,6 +49,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabBar,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QToolBar,
     QTreeWidget,
@@ -1057,22 +1060,57 @@ class HomeTab(QWidget):
             self._open_item(self.results.item(0))
 
 
+STATS_SEPARATOR = "   |   "  # tak `format_stats` skleja części paska
+
+
+def dashboard_row(name, stats):
+    """Tekst paska statystyk -> komórki wiersza tabeli (serwer + 6 kolumn).
+
+    Czysta funkcja na gotowym tekście z `format_stats`, bez drugiego liczenia.
+    Etykieta z przodu („CPU”, „dysk”) wylatuje, bo stoi już w nagłówku;
+    sieć (↓/↑) zostaje w całości. Inny tekst (koniec sesji RDP, brak /proc)
+    idzie w całości do drugiej kolumny.
+    """
+    parts = stats.split(STATS_SEPARATOR)
+    if len(parts) != 6:
+        return [name, stats, "", "", "", "", ""]
+    return [name] + [p if i == 3 else p.split(" ", 1)[-1] for i, p in enumerate(parts)]
+
+
+def over_threshold(text, threshold):
+    """Pierwszy „NN%” w komórce na progu albo ponad nim."""
+    match = re.search(r"(\d+)%", text)
+    return bool(match) and int(match.group(1)) >= threshold
+
+
 class StatsDashboard(QDialog):
-    """Kafelki statystyk wszystkich otwartych sesji naraz, nie tylko aktywnej.
+    """Tabela statystyk wszystkich otwartych sesji naraz, nie tylko aktywnej.
 
     `_StatsPoller` już liczy to per zakładka (`SessionTab.last_stats`) — okno
     tylko odczytuje gotowy tekst co 2 s, bez własnego odpytywania serwerów.
+    Komórki są przepisywane w miejscu, nie czyszczone — inaczej odświeżenie
+    gubiło przewinięcie i zaznaczenie.
     """
 
     def __init__(self, parent, main_window):
         super().__init__(parent)
         self.main_window = main_window
         self.setWindowTitle(t("dashboard_title"))
-        self.resize(700, 300)
+        self.resize(900, 300)
 
         layout = QVBoxLayout(self)
-        self.list = QListWidget()
-        layout.addWidget(self.list)
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels([
+            t("dashboard_server"), "CPU", "RAM", t("stats_disk"),
+            t("dashboard_network"), t("stats_uptime"), t("stats_users"),
+        ])
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.verticalHeader().hide()
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+        self.empty = QLabel(t("dashboard_no_sessions"))
+        layout.addWidget(self.empty)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
@@ -1084,18 +1122,27 @@ class StatsDashboard(QDialog):
         self.refresh()
 
     def refresh(self):
-        self.list.clear()
         tabs = self.main_window.tabs
-        found = False
+        rows = []
         for i in range(tabs.count()):
             widget = tabs.widget(i)
             stats = getattr(widget, "last_stats", "")
-            if not stats:
-                continue
-            found = True
-            self.list.addItem(f"{tabs.tabText(i)}\n{stats}\n")
-        if not found:
-            self.list.addItem(t("dashboard_no_sessions"))
+            if stats:
+                rows.append(dashboard_row(getattr(widget, "tab_name", tabs.tabText(i)), stats))
+        self.empty.setVisible(not rows)
+        self.table.setRowCount(len(rows))
+        threshold = alert_threshold()
+        hot = QBrush(QColor(220, 50, 50, 90))  # półprzezroczysty — czytelny w obu motywach
+        for row, cells in enumerate(rows):
+            for column, text in enumerate(cells):
+                item = self.table.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.table.setItem(row, column, item)
+                item.setText(text)
+                item.setBackground(
+                    hot if column in (1, 2, 3) and over_threshold(text, threshold) else QBrush()
+                )
 
     def closeEvent(self, event):
         self.timer.stop()
@@ -1117,6 +1164,9 @@ class MainWindow(QMainWindow):
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._show_current_stats)
         self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
+        self.tabs.currentChanged.connect(self._clear_activity)
+        self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
 
         # "Home": pulpit startowy, zawsze pierwsza zakładka, bez przycisku zamknięcia.
         home_index = self.tabs.addTab(HomeTab(self), t("tab_home"))
@@ -1629,10 +1679,11 @@ class MainWindow(QMainWindow):
             return
         self._open_connection_tab(item.data(0, CONNECTION_DATA))
 
-    def _open_connection_tab(self, conn):
+    def _open_connection_tab(self, conn, duplicate=False):
         # Po samym słowniku połączenia, nie po nazwie — dwa „web01” w różnych
-        # grupach to dwa różne serwery, a nie jedna zakładka.
-        for i in range(self.tabs.count()):
+        # grupach to dwa różne serwery, a nie jedna zakładka. `duplicate` =
+        # „Duplikuj sesję” z menu zakładki: świadomie drugi raz to samo.
+        for i in range(0 if duplicate else self.tabs.count()):
             if getattr(self.tabs.widget(i), "origin", None) is conn:
                 self.tabs.setCurrentIndex(i)
                 return
@@ -1731,7 +1782,7 @@ class MainWindow(QMainWindow):
 
     def _open_multirun(self):
         targets = [
-            (self.tabs.tabText(i), self.tabs.widget(i).terminal.client)
+            (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
             for i in range(self.tabs.count())
             if isinstance(self.tabs.widget(i), SessionTab)
         ]
@@ -1822,6 +1873,7 @@ class MainWindow(QMainWindow):
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
         )
+        session.terminal.activity.connect(lambda w=session: self._mark_activity(w))
         self._add_tab(session, conn["name"], conn)
         self._restore_tunnels(session, conn)
         session.terminal.send_startup(conn.get("startup"))
@@ -1863,6 +1915,8 @@ class MainWindow(QMainWindow):
         poznaje, że zakładka już jest otwarta.
         """
         widget.origin = origin
+        widget.tab_name = name  # nazwa bez znacznika aktywności „● ”
+        widget.has_activity = False
         index = self.tabs.insertTab(self.tabs.count() - 1, widget, name)
         if origin:
             self.tabs.setTabToolTip(
@@ -1877,6 +1931,63 @@ class MainWindow(QMainWindow):
             return
         self.tabs.setCurrentIndex(index - 1)  # "+" jest zawsze ostatnie
         self._quick_connect()
+
+    # --- menu i znacznik aktywności zakładki ------------------------------
+
+    def _update_tab_text(self, widget):
+        index = self.tabs.indexOf(widget)
+        if index >= 0:
+            mark = "● " if widget.has_activity else ""
+            self.tabs.setTabText(index, mark + widget.tab_name)
+
+    def _mark_activity(self, widget):
+        """Wyjście w zakładce, która nie jest na wierzchu -> „● ” przed nazwą."""
+        if getattr(widget, "has_activity", True) or widget is self.tabs.currentWidget():
+            return
+        widget.has_activity = True
+        self._update_tab_text(widget)
+
+    def _clear_activity(self, _index=None):
+        widget = self.tabs.currentWidget()
+        if getattr(widget, "has_activity", False):
+            widget.has_activity = False
+            self._update_tab_text(widget)
+
+    def _tab_menu(self, pos):
+        bar = self.tabs.tabBar()
+        index = bar.tabAt(pos)
+        widget = self.tabs.widget(index)
+        if index <= 0 or widget is self._plus_tab:
+            return  # Home, "+" i puste miejsce paska
+        menu = QMenu(self)
+        menu.addAction(t("tab_close_others"), lambda: self._close_other_tabs(widget))
+        menu.addAction(t("tab_rename"), lambda: self._rename_tab(widget))
+        origin = getattr(widget, "origin", None)
+        duplicate = menu.addAction(
+            t("tab_duplicate"), lambda: self._open_connection_tab(origin, duplicate=True)
+        )
+        duplicate.setEnabled(origin is not None)  # szybkie połączenie nie ma wpisu w drzewie
+        if isinstance(widget, SessionTab):
+            menu.addAction(t("tab_open_log"), lambda: self._open_log_from(widget))
+        menu.exec(bar.mapToGlobal(pos))
+
+    def _open_log_from(self, session):
+        self.tabs.setCurrentWidget(session)  # `_open_log_tail` bierze aktywną zakładkę
+        self._open_log_tail()
+
+    def _close_other_tabs(self, keep):
+        # Od końca, bez Home (0) i "+" (ostatnie) — indeksy nie przesuwają się pod nami.
+        for i in range(self.tabs.count() - 2, 0, -1):
+            if self.tabs.widget(i) is not keep:
+                self._close_tab(i)
+
+    def _rename_tab(self, widget):
+        name, ok = QInputDialog.getText(
+            self, t("tab_rename"), t("tab_rename_prompt"), text=widget.tab_name
+        )
+        if ok and name.strip():
+            widget.tab_name = name.strip()
+            self._update_tab_text(widget)
 
     def _close_tab(self, index):
         widget = self.tabs.widget(index)
@@ -2084,6 +2195,34 @@ def selftest():
     window._open_connection_tab(data)
     assert window.tabs.count() == 3, "ponowne otwarcie nie może duplikować zakładki"
     assert window.tabs.widget(window.tabs.count() - 1) is window._plus_tab, "+ musi zostać ostatnie"
+
+    # Znacznik aktywności: tylko nieaktywna zakładka, znika po przełączeniu.
+    first = window.tabs.currentWidget()
+    second = QWidget()
+    window._add_tab(second, "srv-02")
+    window._mark_activity(second)
+    assert window.tabs.tabText(window.tabs.indexOf(second)) == "srv-02", "aktywna zakładka bez znacznika"
+    window._mark_activity(first)
+    assert window.tabs.tabText(window.tabs.indexOf(first)) == "● srv-01", "brak znacznika aktywności"
+    window.tabs.setCurrentWidget(first)
+    assert window.tabs.tabText(window.tabs.indexOf(first)) == "srv-01", "znacznik nie zniknął"
+    window._mark_activity(second)
+    second.tab_name = "nowa"
+    window._update_tab_text(second)
+    assert window.tabs.tabText(window.tabs.indexOf(second)) == "● nowa", "zmiana nazwy zgubiła znacznik"
+    window._close_other_tabs(first)
+    assert window.tabs.count() == 3 and window.tabs.widget(1) is first, "zamknij pozostałe"
+    assert window.tabs.widget(2) is window._plus_tab, "+ musi zostać ostatnie"
+
+    # Dashboard: tekst paska -> komórki; inny tekst w całości w drugiej kolumnie.
+    row = dashboard_row("web", STATS_SEPARATOR.join([
+        "CPU 95%", "RAM 1 GB / 2 GB (50%)", "dysk 40% (wolne 3 GB)",
+        "↓ 1 KB/s  ↑ 2 KB/s", "uptime 3 d", "zalogowani: 2",
+    ]))
+    assert row == ["web", "95%", "1 GB / 2 GB (50%)", "40% (wolne 3 GB)", "↓ 1 KB/s  ↑ 2 KB/s", "3 d", "2"], row
+    assert dashboard_row("rdp", "Sesja zakończona") == ["rdp", "Sesja zakończona", "", "", "", "", ""]
+    assert over_threshold("95%", 90) and not over_threshold("1 GB / 2 GB (50%)", 90)
+    assert not over_threshold("—", 90), "brak liczby to nie alarm"
 
     # Przeciąganie: korzeń nie odjeżdża, połączenie nie przyjmuje dzieci.
     assert not root.flags() & Qt.ItemIsDragEnabled, "korzeń musi zostać na miejscu"
