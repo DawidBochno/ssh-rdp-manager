@@ -3,6 +3,9 @@
 Ten sam wzorzec „spróbuj obu" co `services.py`/`disks.py` — przy pierwszym
 odświeżeniu Linux, dopiero potem Windows; wariant zapamiętany na czas okna.
 """
+import re
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -42,12 +45,33 @@ def parse_processes(variant, text):
     return rows
 
 
-def kill_command(variant, pid):
-    """PID to liczba (int()), więc nie ma czego cytować."""
+def kill_command(variant, pid, force=False):
+    """PID to liczba (int()), więc nie ma czego cytować.
+
+    `force` = SIGKILL na Linuksie; `Stop-Process -Force` na Windows i tak
+    nie pyta procesu o zgodę, więc tam oba warianty są jednym poleceniem.
+    """
     pid = int(pid)
     if variant == "windows":
         return f"powershell -NoProfile -NonInteractive -Command \"Stop-Process -Id {pid} -Force\""
-    return f"kill {pid}"
+    return f"kill -9 {pid}" if force else f"kill {pid}"
+
+
+def sort_key(text):
+    """Liczba z początku komórki („12.5%”, „140 MB”, PID) albo sam tekst.
+
+    Krotka, żeby liczby i teksty w jednej kolumnie dało się porównać:
+    liczby najpierw, tekst potem.
+    """
+    match = re.match(r"\s*(\d+(?:\.\d+)?)", text)
+    return (0, float(match.group(1)), "") if match else (1, 0.0, text.lower())
+
+
+class _SortItem(QTableWidgetItem):
+    """Sortowanie po wartości, nie po tekście — inaczej „9%” > „10%”."""
+
+    def __lt__(self, other):
+        return sort_key(self.text()) < sort_key(other.text())
 
 
 class ProcessDialog(QDialog):
@@ -68,12 +92,17 @@ class ProcessDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
+        # Klik w nagłówek sortuje; na start po CPU malejąco, jak `ps --sort=-pcpu`.
+        self.table.horizontalHeader().setSortIndicator(2, Qt.DescendingOrder)
         layout.addWidget(self.table)
 
         row = QHBoxLayout()
         kill = QPushButton(t("processes_kill"))
-        kill.clicked.connect(self._kill)
+        kill.clicked.connect(lambda: self._kill(False))
         row.addWidget(kill)
+        force = QPushButton(t("processes_kill_force"))
+        force.clicked.connect(lambda: self._kill(True))
+        row.addWidget(force)
         refresh = QPushButton(t("services_refresh"))
         refresh.clicked.connect(self.refresh)
         row.addWidget(refresh)
@@ -107,9 +136,11 @@ class ProcessDialog(QDialog):
             r = self.table.rowCount()
             self.table.insertRow(r)
             for col, value in enumerate(values):
-                self.table.setItem(r, col, QTableWidgetItem(str(value)))
+                self.table.setItem(r, col, _SortItem(str(value)))
+        # Włączenie sortowania układa wiersze wg bieżącego wskaźnika w nagłówku.
+        self.table.setSortingEnabled(True)
 
-    def _kill(self):
+    def _kill(self, force=False):
         r = self.table.currentRow()
         if r < 0 or not self.variant:
             return
@@ -118,7 +149,7 @@ class ProcessDialog(QDialog):
             self, t("processes_title"), t("processes_kill_confirm", name, pid)
         ) != QMessageBox.Yes:
             return
-        if _try_command(self.client, kill_command(self.variant, pid)) is None:
+        if _try_command(self.client, kill_command(self.variant, pid, force)) is None:
             QMessageBox.warning(self, t("processes_title"), t("processes_kill_failed"))
         self.refresh()
 
@@ -133,6 +164,12 @@ def selftest():
         (4, "", "12.3 s", "140 MB", "System"),
     ]
     assert kill_command("linux", "4242") == "kill 4242"
+    assert kill_command("linux", 4242, force=True) == "kill -9 4242"
+    assert "Stop-Process -Id 4 -Force" in kill_command("windows", 4, force=True)
+    # Sortowanie po wartości: 9% przed 10%, liczby przed tekstem.
+    cells = ["10.0%", "9.5%", "140 MB", "nginx", "2"]
+    assert sorted(cells, key=sort_key) == ["2", "9.5%", "10.0%", "140 MB", "nginx"], \
+        sorted(cells, key=sort_key)
     assert "Stop-Process -Id 4 -Force" in kill_command("windows", 4)
     try:
         kill_command("linux", "1; rm -rf /")

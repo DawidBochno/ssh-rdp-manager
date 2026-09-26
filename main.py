@@ -3,6 +3,7 @@
 Lewa strona: drzewo katalogów z grupami i połączeniami.
 Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
+import copy
 import hashlib
 import json
 import re
@@ -152,6 +153,16 @@ def apply_dark_mode(on):
 
 CONNECTION_TYPE = QTreeWidgetItem.UserType + 1
 CONNECTION_DATA = Qt.UserRole + 1
+
+
+class ConnectionData(dict):
+    """Słownik połączenia trzymany w elemencie drzewa.
+
+    Zwykły `dict` PySide6 zamienia w `setData` na QVariantMap i każde `data()`
+    oddaje **nową kopię** — `conn["last_used"] = ...`, zakładki SFTP i tunele
+    zmieniały kopię i przepadały, a `origin is conn` przy dwukliku nigdy nie
+    trafiało. Podklasę dict PySide trzyma jako obiekt Pythona i oddaje ten sam.
+    """
 COLOR_DATA = Qt.UserRole + 3
 GROUP_ICON = "📁"
 
@@ -572,6 +583,8 @@ class ConnectionDialog(QDialog):
 class ConnectionTree(QTreeWidget):
     """Drzewo grup i połączeń z menu kontekstowym do zarządzania nimi."""
 
+    saved = Signal()  # po każdym zapisie — Home odświeża listę (np. przypięcie)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderHidden(False)
@@ -639,6 +652,7 @@ class ConnectionTree(QTreeWidget):
             QMessageBox.warning(
                 self, t("err_save_title"), t("err_save_body", error)
             )
+        self.saved.emit()
 
     def _build(self, parent, node):
         name = str(node.get("name", t("unnamed")))
@@ -769,6 +783,8 @@ class ConnectionTree(QTreeWidget):
             if item.type() == CONNECTION_TYPE:
                 menu.addAction(t("menu_edit_connection"), lambda: self._edit_connection(item))
                 menu.addAction(t("menu_duplicate"), lambda: self._duplicate(item))
+                pinned = item.data(0, CONNECTION_DATA).get("pinned")
+                menu.addAction(t("menu_unpin" if pinned else "menu_pin"), lambda: self._toggle_pin(item))
             else:
                 menu.addAction(t("menu_rename"), lambda: self._rename_group(item))
             menu.addAction(t("menu_icon"), lambda: self._pick_icon(item))
@@ -781,6 +797,8 @@ class ConnectionTree(QTreeWidget):
 
     def _apply_connection(self, item, data):
         """Wpisuje dane połączenia do elementu drzewa (etykieta, tooltip, dane)."""
+        if isinstance(data, dict) and not isinstance(data, ConnectionData):
+            data = ConnectionData(data)  # inaczej data() oddawałoby kopie, patrz wyżej
         item.setData(0, CONNECTION_DATA, data)
         cred = credentials.find(self.credentials, data.get("credential"))
         user = cred.get("username", "") if cred else data.get("username", "")
@@ -804,15 +822,24 @@ class ConnectionTree(QTreeWidget):
 
     def _duplicate(self, item):
         """Kopia połączenia obok oryginału — szybsze niż przeklikanie formularza."""
-        data = dict(item.data(0, CONNECTION_DATA))
+        # Głęboka kopia: płytka dzieliła z oryginałem listy `bookmarks`/`tunnels`.
+        data = copy.deepcopy(item.data(0, CONNECTION_DATA))
         data["name"] = t("copy_suffix", data.get("name", ""))
-        copy = QTreeWidgetItem(item.parent(), [], CONNECTION_TYPE)
-        copy.setData(0, ICON_DATA, item.data(0, ICON_DATA))
-        self._apply_connection(copy, data)
+        data.pop("pinned", None)  # kopia nie wskakuje sama na Home
+        clone = QTreeWidgetItem(item.parent(), [], CONNECTION_TYPE)
+        clone.setData(0, ICON_DATA, item.data(0, ICON_DATA))
+        self._apply_connection(clone, data)
         if item.data(0, COLOR_DATA):
-            self.set_color(copy, item.data(0, COLOR_DATA))
+            self.set_color(clone, item.data(0, COLOR_DATA))
         self.save()
-        return copy
+        return clone
+
+    def _toggle_pin(self, item):
+        """Przypięte połączenia stoją na górze listy Home, przed ostatnio używanymi."""
+        data = item.data(0, CONNECTION_DATA)
+        if data.pop("pinned", False) is False:
+            data["pinned"] = True
+        self.save()
 
     def filter(self, query):
         """Chowa wpisy, które nie pasują; grupa zostaje, gdy coś w niej pasuje."""
@@ -970,6 +997,23 @@ class ConnectionTree(QTreeWidget):
             it += 1
 
 
+def tree_connections(tree):
+    """Wszystkie zapisane połączenia z drzewa, płasko (żywe słowniki)."""
+    found = []
+    it = QTreeWidgetItemIterator(tree)
+    while it.value():
+        item = it.value()
+        if item.type() == CONNECTION_TYPE:
+            found.append(item.data(0, CONNECTION_DATA) or {})
+        it += 1
+    return found
+
+
+def home_order(connections):
+    """Przypięte na górze, potem ostatnio używane; nigdy nieotwierane w kolejności drzewa."""
+    return sorted(connections, key=lambda d: (not d.get("pinned"), -d.get("last_used", 0)))
+
+
 class HomeTab(QWidget):
     """Pulpit startowy — pierwsza, niezamykalna zakładka (wzorem MobaXterm)."""
 
@@ -1013,6 +1057,7 @@ class HomeTab(QWidget):
         self.results.itemActivated.connect(self._open_item)
         layout.addWidget(self.results)
         layout.addStretch()
+        main_window.tree.saved.connect(self.refresh)
         self.refresh()
 
     def showEvent(self, event):
@@ -1021,15 +1066,7 @@ class HomeTab(QWidget):
         self.refresh()
 
     def connections(self):
-        """Wszystkie zapisane połączenia z drzewa, płasko."""
-        found = []
-        it = QTreeWidgetItemIterator(self.main_window.tree)
-        while it.value():
-            item = it.value()
-            if item.type() == CONNECTION_TYPE:
-                found.append(item.data(0, CONNECTION_DATA) or {})
-            it += 1
-        return found
+        return tree_connections(self.main_window.tree)
 
     @staticmethod
     def matches(data, query):
@@ -1040,12 +1077,12 @@ class HomeTab(QWidget):
 
     def refresh(self):
         self.results.clear()
-        # Ostatnio używane na górze; nigdy nieotwierane dalej, w kolejności drzewa.
-        found = sorted(self.connections(), key=lambda d: -d.get("last_used", 0))
-        for data in found:
+        for data in home_order(self.connections()):
             if not self.matches(data, self.search.text()):
                 continue
             label = f"{data.get('name', '')} — {data.get('username', '')}@{data.get('host', '')}"
+            if data.get("pinned"):
+                label = "📌 " + label
             if data.get("last_used"):
                 used = time.strftime("%Y-%m-%d %H:%M", time.localtime(data["last_used"]))
                 label += "   " + t("home_last_used", used)
@@ -1059,6 +1096,89 @@ class HomeTab(QWidget):
     def _open_first(self):
         if self.results.count():
             self._open_item(self.results.item(0))
+
+
+def menu_entries(menu_bar, skip=()):
+    """Akcje z paska menu jako („Menu › Akcja”, akcja) — dla palety poleceń.
+
+    Z podmenu rekurencyjnie; separatory, podmenu same w sobie i akcje
+    wyłączone pomijane. `skip` = teksty akcji do pominięcia (sama paleta).
+    """
+    found = []
+
+    def walk(menu, prefix):
+        for action in menu.actions():
+            if action.isSeparator() or not action.isEnabled():
+                continue
+            text = action.text().replace("&", "").rstrip("…").strip()
+            if action.menu():
+                walk(action.menu(), f"{prefix}{text} › ")
+            elif action.text() not in skip:
+                found.append((prefix + text, action))
+
+    for top in menu_bar.actions():
+        if top.menu():
+            walk(top.menu(), top.text().replace("&", "") + " › ")
+    return found
+
+
+def palette_matches(haystack, query):
+    """Każde słowo zapytania musi wystąpić gdzieś w tekście (kolejność dowolna)."""
+    haystack = haystack.lower()
+    return all(word in haystack for word in query.lower().split())
+
+
+class CommandPalette(QDialog):
+    """Ctrl+Shift+P: jedno pole po połączeniach, akcjach menu i skryptach.
+
+    Skrypty i Programy to zwykłe akcje z paska menu, więc nie ma osobnej
+    listy do utrzymywania — nowy wpis w menu sam trafia do palety.
+    Wybrana akcja odpala się dopiero po zamknięciu okna (`chosen`), żeby jej
+    własne dialogi nie wisiały pod paletą.
+    """
+
+    def __init__(self, parent, entries):
+        super().__init__(parent)
+        self.entries = entries  # [(etykieta, tekst do szukania, funkcja)]
+        self.chosen = None
+        self.setWindowTitle(t("menu_command_palette").rstrip("…"))
+        self.resize(560, 380)
+        layout = QVBoxLayout(self)
+        self.query = QLineEdit()
+        self.query.setPlaceholderText(t("palette_placeholder"))
+        self.query.textChanged.connect(self.refresh)
+        self.query.returnPressed.connect(self._choose_current)
+        layout.addWidget(self.query)
+        self.results = QListWidget()
+        self.results.itemActivated.connect(self._choose)
+        layout.addWidget(self.results)
+        self.refresh()
+
+    def refresh(self):
+        self.results.clear()
+        for label, haystack, run in self.entries:
+            if palette_matches(haystack, self.query.text()):
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, run)
+                self.results.addItem(item)
+        self.results.setCurrentRow(0)
+
+    def keyPressEvent(self, event):
+        # Strzałki z pola tekstowego przesuwają wybór na liście pod nim.
+        if event.key() in (Qt.Key_Up, Qt.Key_Down) and self.results.count():
+            step = -1 if event.key() == Qt.Key_Up else 1
+            row = max(0, min(self.results.count() - 1, self.results.currentRow() + step))
+            self.results.setCurrentRow(row)
+            return
+        super().keyPressEvent(event)
+
+    def _choose_current(self):
+        if self.results.currentItem():
+            self._choose(self.results.currentItem())
+
+    def _choose(self, item):
+        self.chosen = item.data(Qt.UserRole)
+        self.accept()
 
 
 STATS_SEPARATOR = "   |   "  # tak `format_stats` skleja części paska
@@ -1356,6 +1476,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         # Ustawienia w jednym oknie zamiast kilkunastu pozycji tutaj.
         view_menu.addAction(t("menu_settings"), self._open_settings, QKeySequence("Ctrl+Shift+S"))
+        view_menu.addAction(t("menu_command_palette"), self._open_palette, QKeySequence("Ctrl+Shift+P"))
 
         # „Serwery wbudowane" — daemony po naszej stronie, wzorem MobaXterm.
         servers_menu = menu.addMenu(t("menu_servers"))
@@ -1384,6 +1505,21 @@ class MainWindow(QMainWindow):
         help_menu = menu.addMenu(t("menu_help"))
         help_menu.addAction(t("menu_shortcuts"), self._show_shortcuts)
         help_menu.addAction(t("menu_about"), self._show_about)
+
+    def palette_entries(self):
+        """Połączenia (po nazwie, hoście, loginie, #tagu) + wszystkie akcje menu."""
+        entries = []
+        for data in home_order(tree_connections(self.tree)):
+            label = f"🖥 {data.get('name', '')} — {data.get('username', '')}@{data.get('host', '')}"
+            entries.append((label, search_text(data), lambda d=data: self._open_connection_tab(d)))
+        for label, action in menu_entries(self.menuBar(), skip={t("menu_command_palette")}):
+            entries.append((label, label, action.trigger))
+        return entries
+
+    def _open_palette(self):
+        palette = CommandPalette(self, self.palette_entries())
+        if palette.exec() and palette.chosen:
+            palette.chosen()
 
     def _export_connections(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -2157,7 +2293,13 @@ def selftest():
     group = QTreeWidgetItem(root, ["Produkcja"])
     data = {"name": "srv-01", "host": "10.0.0.1", "port": 22, "username": "admin"}
     conn = QTreeWidgetItem(group, [data["name"]], CONNECTION_TYPE)
-    conn.setData(0, CONNECTION_DATA, data)
+    window.tree._apply_connection(conn, data)
+    data = conn.data(0, CONNECTION_DATA)
+    # Żywy słownik: dwa odczyty to ten sam obiekt, zmiana zostaje w drzewie.
+    assert conn.data(0, CONNECTION_DATA) is data, "drzewo oddaje kopię zamiast słownika"
+    data["last_used"] = 1
+    assert conn.data(0, CONNECTION_DATA)["last_used"] == 1, "zmiana w danych połączenia przepadła"
+    del data["last_used"]
 
     assert conn.type() == CONNECTION_TYPE
     assert group.type() != CONNECTION_TYPE
@@ -2193,7 +2335,7 @@ def selftest():
     # Istniejąca zakładka o tej nazwie musi zostać wybrana, zanim padnie
     # pytanie o hasło — inaczej dwuklik łączyłby się drugi raz.
     window._add_tab(QWidget(), "srv-01", data)
-    window._open_connection_tab(data)
+    window._on_item_activated(conn, 0)  # prawdziwa droga dwukliku, przez item.data()
     assert window.tabs.count() == 3, "ponowne otwarcie nie może duplikować zakładki"
     assert window.tabs.widget(window.tabs.count() - 1) is window._plus_tab, "+ musi zostać ostatnie"
 
@@ -2214,6 +2356,30 @@ def selftest():
     window._close_other_tabs(first)
     assert window.tabs.count() == 3 and window.tabs.widget(1) is first, "zamknij pozostałe"
     assert window.tabs.widget(2) is window._plus_tab, "+ musi zostać ostatnie"
+
+    # Paleta poleceń: połączenia z drzewa i akcje z menu (także Programy
+    # i skrypty), bez samej palety; słowa zapytania w dowolnej kolejności.
+    labels = [label for label, _, _ in window.palette_entries()]
+    assert any("srv-01" in label for label in labels), labels
+    assert any(label.endswith(t("menu_settings").rstrip("…")) for label in labels), labels
+    assert any(t("menu_tools") in label for label in labels), "brak menu Programy w palecie"
+    assert not any(t("menu_command_palette").rstrip("…") in label for label in labels), \
+        "paleta nie może podpowiadać samej siebie"
+    assert palette_matches("Programy › Skaner sieci", "skan prog")
+    assert not palette_matches("Programy › Skaner sieci", "dyski")
+    ran = []
+    palette = CommandPalette(window, [("A", "alfa", lambda: ran.append("a")),
+                                      ("B", "beta", lambda: ran.append("b"))])
+    palette.query.setText("bet")
+    assert palette.results.count() == 1
+    palette._choose_current()
+    palette.chosen()
+    assert ran == ["b"], ran
+
+    # Home: przypięte na górze, potem ostatnio używane.
+    order = home_order([{"name": "a", "last_used": 5}, {"name": "b", "pinned": True},
+                        {"name": "c", "last_used": 9}, {"name": "d"}])
+    assert [d["name"] for d in order] == ["b", "c", "a", "d"], order
 
     # Dashboard: tekst paska -> komórki; inny tekst w całości w drugiej kolumnie.
     row = dashboard_row("web", STATS_SEPARATOR.join([
@@ -2464,11 +2630,19 @@ def selftest():
             window._lock_timer.stop()
 
     # Duplikat: kopia obok oryginalu, z tymi samymi danymi i inna nazwa.
-    copy = window.tree._duplicate(conn)
-    assert copy.parent() is conn.parent()
-    assert copy.data(0, CONNECTION_DATA)["host"] == data["host"]
-    assert copy.data(0, CONNECTION_DATA)["name"] != data["name"], "kopia musi sie odroznic"
-    copy.parent().removeChild(copy)
+    window.tree._toggle_pin(conn)
+    assert conn.data(0, CONNECTION_DATA)["pinned"] is True, "przypięcie"
+    clone = window.tree._duplicate(conn)
+    assert clone.parent() is conn.parent()
+    assert clone.data(0, CONNECTION_DATA)["host"] == data["host"]
+    assert clone.data(0, CONNECTION_DATA)["name"] != data["name"], "kopia musi sie odroznic"
+    assert "pinned" not in clone.data(0, CONNECTION_DATA), "kopia nie może być przypięta"
+    data.setdefault("bookmarks", []).append("/tylko-oryginal")
+    assert "/tylko-oryginal" not in clone.data(0, CONNECTION_DATA).get("bookmarks", []),         "kopia dzieli listę zakładek z oryginałem"
+    data["bookmarks"].remove("/tylko-oryginal")
+    clone.parent().removeChild(clone)
+    window.tree._toggle_pin(conn)
+    assert "pinned" not in conn.data(0, CONNECTION_DATA), "odpięcie"
 
     # Filtr drzewa: grupa zostaje widoczna, gdy pasuje cokolwiek w srodku.
     window.tree.filter("srv-01")
