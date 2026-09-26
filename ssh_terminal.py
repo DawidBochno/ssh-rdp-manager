@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import base64
+import codecs
 import hashlib
 from pathlib import Path
 
@@ -1247,14 +1248,20 @@ class _Reader(QThread):
         self.channel = channel
 
     def run(self):
+        # Dekoder przyrostowy: znak UTF-8 (np. „ą”) przecięty granicą odczytu
+        # czeka na resztę bajtów zamiast zamieniać się w dwa „�”.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         while True:
             try:
-                data = self.channel.recv(4096)
+                # Większy kawałek = mniej sygnałów i przerysowań przy `cat` dużego pliku.
+                data = self.channel.recv(32768)
             except Exception:
                 break
             if not data:
                 break
-            self.received.emit(data.decode("utf-8", errors="replace"))
+            text = decoder.decode(data)
+            if text:
+                self.received.emit(text)
         self.finished_session.emit()
 
 
@@ -1459,7 +1466,9 @@ class SshTerminal(QPlainTextEdit):
         if event.matches(QKeySequence.Find):
             self.find_bar.show_bar()  # Ctrl+F zostaje u nas, nie leci do powłoki
             return
-        if event.matches(QKeySequence.Copy):
+        # Ctrl+C kopiuje tylko przy zaznaczeniu — bez niego ma polecieć do
+        # powłoki jako ^C (przerwanie), inaczej nie da się zatrzymać `ping`/`top`.
+        if event.matches(QKeySequence.Copy) and self.textCursor().hasSelection():
             super().keyPressEvent(event)
             return
         # Bez tego Ctrl+V szedł do powłoki jako ^V zamiast wkleić schowek.
@@ -2258,6 +2267,19 @@ def selftest():
     assert key_to_bytes(Qt.Key_Return, Qt.NoModifier, "\r") == "\r"
     assert key_to_bytes(Qt.Key_Up, Qt.NoModifier, "") == "\x1b[A"
     assert key_to_bytes(Qt.Key_C, Qt.ControlModifier, "") == "\x03"
+
+    # „ą” (c4 85) przecięte granicą odczytu nie może się zamienić w „��”.
+    class _SplitChannel:
+        chunks = [b"za\xc4", b"\x85x", b""]
+
+        def recv(self, _size):
+            return self.chunks.pop(0)
+
+    reader = _Reader(_SplitChannel())
+    got = []
+    reader.received.connect(got.append)
+    reader.run()  # wprost, bez wątku — sygnał idzie od razu
+    assert "".join(got) == "zaąx", got
     assert key_to_bytes(Qt.Key_A, Qt.NoModifier, "a") == "a"
     assert key_to_bytes(Qt.Key_Shift, Qt.NoModifier, "") is None
 

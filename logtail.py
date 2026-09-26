@@ -56,6 +56,7 @@ class LogTab(QWidget):
 
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
+        self.output.setMaximumBlockCount(scrollback())
         self.output.setFont(terminal_font())
         install_find(self.output)
         layout.addWidget(self.output)
@@ -79,8 +80,17 @@ class LogTab(QWidget):
         complete, self._tail = pending_lines(self._tail, strip_ansi(text))
         if not complete:
             return
-        self.lines.extend(complete.split("\n"))
-        self._render()
+        new = complete.split("\n")
+        self.lines.extend(new)
+        # Tylko nowe linie na koniec — pełne przerysowanie (`_render`) przy każdym
+        # kawałku to O(cały bufor) na każdą linię ruchliwego logu.
+        shown = filter_lines(new, self.filter_edit.text().strip())
+        if shown:
+            scrollbar = self.output.verticalScrollBar()
+            at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
+            self.output.appendPlainText("\n".join(shown))
+            if at_bottom:
+                scrollbar.setValue(scrollbar.maximum())
 
     def _render(self):
         shown = filter_lines(list(self.lines), self.filter_edit.text().strip())

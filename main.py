@@ -15,7 +15,6 @@ import paramiko
 from PySide6.QtCore import QEvent, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
-    QActionGroup,
     QBrush,
     QCloseEvent,
     QColor,
@@ -34,7 +33,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QFontDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -69,6 +67,7 @@ import notify
 import processes
 import scanner
 import services
+import settings
 import transfers
 import tunnels
 import update
@@ -901,16 +900,32 @@ class ConnectionTree(QTreeWidget):
         parent = item.parent()
         if parent is None:
             return
-        if item.childCount() and QMessageBox.question(
-            self,
-            t("confirm_delete_group_title"),
-            t("confirm_delete_group_body", self.item_name(item), item.childCount()),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+        body = (
+            t("confirm_delete_group_body", self.item_name(item), item.childCount())
+            if item.childCount() else t("confirm_delete_body", self.item_name(item))
+        )
+        if QMessageBox.question(
+            self, t("confirm_delete_group_title"), body,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         ) != QMessageBox.Yes:
             return
         parent.removeChild(item)
         self.save()
+
+    def keyPressEvent(self, event):
+        """Delete usuwa, F2 edytuje połączenie / zmienia nazwę grupy."""
+        item = self.currentItem()
+        if item is not None and item.parent() is not None:
+            if event.key() == Qt.Key_Delete:
+                self._remove_item(item)
+                return
+            if event.key() == Qt.Key_F2:
+                if item.type() == CONNECTION_TYPE:
+                    self._edit_connection(item)
+                else:
+                    self._rename_group(item)
+                return
+        super().keyPressEvent(event)
 
     # --- kropka statusu (żywy/martwy serwer) --------------------------------
 
@@ -989,8 +1004,9 @@ class HomeTab(QWidget):
         layout.addWidget(self.search)
 
         self.results = QListWidget()
+        # Samo itemActivated — na Windows dwuklik też je emituje, a podpięte
+        # dodatkowo itemDoubleClicked otwierało połączenie (i pytanie o hasło) dwa razy.
         self.results.itemActivated.connect(self._open_item)
-        self.results.itemDoubleClicked.connect(self._open_item)
         layout.addWidget(self.results)
         layout.addStretch()
         self.refresh()
@@ -1093,7 +1109,8 @@ class MainWindow(QMainWindow):
         self.resize(1000, 650)
 
         self.tree = ConnectionTree()
-        self.tree.itemDoubleClicked.connect(self._on_item_activated)
+        # itemActivated = dwuklik ORAZ Enter (dwuklik sam w sobie pomijał klawiaturę).
+        self.tree.itemActivated.connect(self._on_item_activated)
 
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -1136,6 +1153,8 @@ class MainWindow(QMainWindow):
         self._servers = {}  # uruchomione serwery wbudowane: etykieta -> obiekt
         self._build_menu()
         self._build_sidebar()
+        TerminalHighlighter.enabled = i18n.settings().value("highlighting", True, type=bool)
+        SshTerminal.timestamps = i18n.settings().value("timestamps", False, type=bool)
         self._build_shortcuts()
         # Dolny pasek: statystyki serwera z aktywnej zakładki.
         self.statusBar().showMessage(t("status_idle"))
@@ -1195,26 +1214,6 @@ class MainWindow(QMainWindow):
             self._status_check.wait()  # inaczej Qt wywala proces przy zamykaniu
             self._status_check = None
 
-    def _toggle_status_polling(self, on):
-        i18n.settings().setValue("tree_status_enabled", on)
-        if on:
-            self._start_status_timer()
-        else:
-            self._stop_status_timer()
-
-    def _pick_status_interval(self):
-        interval, ok = QInputDialog.getInt(
-            self, t("menu_tree_status_interval"), t("tree_status_prompt"),
-            int(i18n.settings().value("tree_status_interval", STATUS_INTERVAL_DEFAULT)),
-            10, 3600, 10,
-        )
-        if not ok:
-            return
-        i18n.settings().setValue("tree_status_interval", interval)
-        if self._status_timer:
-            self._stop_status_timer()
-            self._start_status_timer()
-
     # --- blokada okna po bezczynności --------------------------------------
 
     def start_lock_watch(self):
@@ -1257,26 +1256,14 @@ class MainWindow(QMainWindow):
             if not ok or len(pin) < 4:
                 if ok:
                     QMessageBox.warning(self, t("lock_set_pin_title"), t("lock_pin_too_short"))
-                self._lock_action.setChecked(False)
-                return
+                return False
             i18n.settings().setValue("lock_pin_hash", _hash_pin(pin))
         i18n.settings().setValue("lock_enabled", on)
         if on:
             self._arm_lock_timer()
         elif self._lock_timer:
             self._lock_timer.stop()
-
-    def _pick_lock_timeout(self):
-        minutes, ok = QInputDialog.getInt(
-            self, t("menu_lock_timeout"), t("lock_timeout_prompt"),
-            int(i18n.settings().value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
-            1, 240, 1,
-        )
-        if not ok:
-            return
-        i18n.settings().setValue("lock_timeout", minutes)
-        if self._lock_timer and self._lock_timer.isActive():
-            self._arm_lock_timer()
+        return True
 
     # --- układ okna między uruchomieniami ---------------------------------
 
@@ -1314,66 +1301,10 @@ class MainWindow(QMainWindow):
         self.toggle_tree_action = QAction(t("menu_connection_list"), self, checkable=True, checked=True)
         self.toggle_tree_action.toggled.connect(self.tree_panel.setVisible)
         view_menu.addAction(self.toggle_tree_action)
-        highlight_action = QAction(
-            t("menu_highlighting"), self, checkable=True, checked=TerminalHighlighter.enabled
-        )
-        highlight_action.toggled.connect(self._toggle_highlighting)
-        view_menu.addAction(highlight_action)
-
-        timestamps_action = QAction(
-            t("menu_timestamps"), self, checkable=True, checked=SshTerminal.timestamps
-        )
-        timestamps_action.toggled.connect(self._toggle_timestamps)
-        view_menu.addAction(timestamps_action)
-        view_menu.addAction(t("menu_font"), self._pick_font)
-        view_menu.addAction(t("menu_scrollback"), self._pick_scrollback)
-        view_menu.addAction(t("menu_triggers"), self._edit_triggers)
         view_menu.addAction(t("menu_save_log"), self._save_session_log)
-
-        status_action = QAction(
-            t("menu_tree_status"), self, checkable=True,
-            checked=bool(i18n.settings().value("tree_status_enabled", True, type=bool)),
-        )
-        status_action.toggled.connect(self._toggle_status_polling)
-        view_menu.addAction(status_action)
-        view_menu.addAction(t("menu_tree_status_interval"), self._pick_status_interval)
-
-        alerts_action = QAction(t("menu_alerts"), self, checkable=True, checked=alerts_enabled())
-        alerts_action.toggled.connect(set_alerts_enabled)
-        view_menu.addAction(alerts_action)
-        view_menu.addAction(t("menu_alerts_threshold"), self._pick_alert_threshold)
-
-        self._lock_action = QAction(
-            t("menu_lock"), self, checkable=True,
-            checked=bool(i18n.settings().value("lock_enabled", False, type=bool)),
-        )
-        self._lock_action.toggled.connect(self._toggle_lock)
-        view_menu.addAction(self._lock_action)
-        view_menu.addAction(t("menu_lock_timeout"), self._pick_lock_timeout)
-
-        theme_menu = view_menu.addMenu(t("menu_theme"))
-        theme_group = QActionGroup(self)
-        for name in TERMINAL_THEMES:
-            action = QAction(name, self, checkable=True, checked=name == terminal_theme())
-            action.triggered.connect(lambda _checked, n=name: self._set_terminal_theme(n))
-            theme_group.addAction(action)
-            theme_menu.addAction(action)
-
-        dark_mode_action = QAction(
-            t("menu_dark_mode"), self, checkable=True,
-            checked=bool(i18n.settings().value("dark_mode", False, type=bool)),
-        )
-        dark_mode_action.toggled.connect(apply_dark_mode)
-        view_menu.addAction(dark_mode_action)
-
-        # Wybór języka: zapis idzie do QSettings, okno czyta go przy starcie.
-        language_menu = view_menu.addMenu(t("menu_language"))
-        language_group = QActionGroup(self)  # kropka przy jednym języku, nie przy obu
-        for code, name in i18n.LANGUAGES.items():
-            action = QAction(name, self, checkable=True, checked=code == i18n.language())
-            action.triggered.connect(lambda _checked, c=code: self._set_language(c))
-            language_group.addAction(action)
-            language_menu.addAction(action)
+        view_menu.addSeparator()
+        # Ustawienia w jednym oknie zamiast kilkunastu pozycji tutaj.
+        view_menu.addAction(t("menu_settings"), self._open_settings, QKeySequence("Ctrl+Shift+S"))
 
         # „Serwery wbudowane" — daemony po naszej stronie, wzorem MobaXterm.
         servers_menu = menu.addMenu(t("menu_servers"))
@@ -1400,12 +1331,8 @@ class MainWindow(QMainWindow):
             tools_menu.addAction(t(label), getattr(self, handler))
 
         help_menu = menu.addMenu(t("menu_help"))
+        help_menu.addAction(t("menu_shortcuts"), self._show_shortcuts)
         help_menu.addAction(t("menu_about"), self._show_about)
-
-    def _set_language(self, code):
-        """Zapisuje wybór; przebudowa całego okna zabiłaby otwarte sesje SSH."""
-        i18n.save(code)
-        QMessageBox.information(self, t("menu_language"), t("lang_restart"))
 
     def _export_connections(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1443,6 +1370,91 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, t("import_short"), t("err_import", error))
             return
         QMessageBox.information(self, t("import_short"), t("import_done", count))
+
+    # --- okno Ustawień -----------------------------------------------------
+
+    def current_settings(self):
+        stored = i18n.settings()
+        return {
+            "highlighting": TerminalHighlighter.enabled,
+            "timestamps": SshTerminal.timestamps,
+            "font": terminal_font(),
+            "scrollback": scrollback(),
+            "triggers": triggers_text(),
+            "theme": terminal_theme(),
+            "dark_mode": stored.value("dark_mode", False, type=bool),
+            "language": i18n.language(),
+            "tree_status": stored.value("tree_status_enabled", True, type=bool),
+            "tree_status_interval": int(
+                stored.value("tree_status_interval", STATUS_INTERVAL_DEFAULT)
+            ),
+            "alerts": alerts_enabled(),
+            "alert_threshold": alert_threshold(),
+            "lock": stored.value("lock_enabled", False, type=bool),
+            "lock_timeout": int(stored.value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
+            "pin_set": bool(stored.value("lock_pin_hash")),
+        }
+
+    def _open_settings(self):
+        dialog = settings.SettingsDialog(
+            self, self.current_settings(), TERMINAL_THEMES, i18n.LANGUAGES
+        )
+        if dialog.exec() == QDialog.Accepted:
+            self.apply_settings(dialog.values())
+
+    def apply_settings(self, new):
+        """Stosuje tylko to, co się zmieniło — np. restart odpytywania statusu
+        albo przerysowanie wszystkich terminali tylko wtedy, gdy trzeba."""
+        old = self.current_settings()
+        stored = i18n.settings()
+        changed = {key for key in new if new[key] != old.get(key)}
+        sessions = [
+            self.tabs.widget(i) for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), SessionTab)
+        ]
+
+        if "highlighting" in changed:
+            self._toggle_highlighting(new["highlighting"])
+        SshTerminal.timestamps = new["timestamps"]
+        stored.setValue("highlighting", new["highlighting"])
+        stored.setValue("timestamps", new["timestamps"])
+        if "font" in changed:
+            set_terminal_font(new["font"])
+            for session in sessions:
+                session.terminal.setFont(new["font"])
+        if "scrollback" in changed:
+            set_scrollback(new["scrollback"])
+            for session in sessions:
+                session.terminal.document().setMaximumBlockCount(new["scrollback"])
+        if "triggers" in changed:
+            set_triggers(new["triggers"])
+        if "theme" in changed:
+            set_terminal_theme(new["theme"])
+            for session in sessions:
+                apply_terminal_theme(session.terminal)
+        if "dark_mode" in changed:
+            apply_dark_mode(new["dark_mode"])
+
+        set_alerts_enabled(new["alerts"])
+        set_alert_threshold(new["alert_threshold"])
+
+        stored.setValue("tree_status_interval", new["tree_status_interval"])
+        stored.setValue("tree_status_enabled", new["tree_status"])
+        if changed & {"tree_status", "tree_status_interval"}:
+            self._stop_status_timer()
+            if new["tree_status"]:
+                self._start_status_timer()
+
+        if new.get("new_pin"):
+            stored.setValue("lock_pin_hash", _hash_pin(new["new_pin"]))
+        stored.setValue("lock_timeout", new["lock_timeout"])
+        if changed & {"lock", "lock_timeout"}:
+            self._toggle_lock(new["lock"])
+
+        if "language" in changed:
+            # Przebudowa całego okna zabiłaby otwarte sesje SSH — stąd restart.
+            i18n.save(new["language"])
+            QMessageBox.information(self, t("menu_language"), t("lang_restart"))
 
     def _toggle_highlighting(self, on):
         """Kolorowanie tekstu w terminalu — wspólne dla wszystkich zakładek."""
@@ -1547,11 +1559,26 @@ class MainWindow(QMainWindow):
         """
         for keys, step in (("Ctrl+Tab", 1), ("Ctrl+Shift+Tab", -1)):
             QShortcut(QKeySequence(keys), self, activated=lambda s=step: self._cycle_tab(s))
+        # Ctrl+Shift, nie samo Ctrl — Ctrl+N/W/F/T powłoka używa sama
+        # (historia, kasowanie słowa, wyszukiwanie w terminalu).
+        for keys, handler in (
+            ("Ctrl+Shift+N", lambda: self.tree._add_connection(self.tree.currentItem())),
+            ("Ctrl+Shift+T", self._quick_connect),
+            ("Ctrl+Shift+W", lambda: self._close_tab(self.tabs.currentIndex())),
+            ("Ctrl+Shift+F", self._focus_filter),
+        ):
+            QShortcut(QKeySequence(keys), self, activated=handler)
         for number in range(1, 10):
             QShortcut(
                 QKeySequence(f"Ctrl+{number}"), self,
                 activated=lambda n=number: self._go_to_tab(n - 1),
             )
+
+    def _focus_filter(self):
+        self.tree_panel.setVisible(True)
+        self.toggle_tree_action.setChecked(True)
+        self.tree_filter.setFocus()
+        self.tree_filter.selectAll()
 
     def tab_order(self):
         """Zakładki, po których wolno chodzić — bez „+" na końcu."""
@@ -1580,6 +1607,9 @@ class MainWindow(QMainWindow):
         sidebar.addAction(self.toggle_tree_action)
         self.addToolBar(Qt.LeftToolBarArea, sidebar)
 
+    def _show_shortcuts(self):
+        QMessageBox.information(self, t("menu_shortcuts"), t("shortcuts_body"))
+
     def _show_about(self):
         QMessageBox.information(
             self, t("about_title"), t("about_body")
@@ -1600,9 +1630,10 @@ class MainWindow(QMainWindow):
         self._open_connection_tab(item.data(0, CONNECTION_DATA))
 
     def _open_connection_tab(self, conn):
-        name = conn["name"]
+        # Po samym słowniku połączenia, nie po nazwie — dwa „web01” w różnych
+        # grupach to dwa różne serwery, a nie jedna zakładka.
         for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == name:
+            if getattr(self.tabs.widget(i), "origin", None) is conn:
                 self.tabs.setCurrentIndex(i)
                 return
 
@@ -1617,7 +1648,7 @@ class MainWindow(QMainWindow):
 
         # RDP nie pyta nas o hasło: bez zapisanego kontrolka poprosi sama.
         if conn.get("protocol", "ssh") == "rdp":
-            self._open_rdp_tab({**conn, "username": auth["username"]}, password)
+            self._open_rdp_tab({**conn, "username": auth["username"]}, password, origin=conn)
             return
 
         # Zapisane hasło odszyfrowujemy, w przeciwnym razie pytamy.
@@ -1657,48 +1688,6 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, t("menu_import_ssh_config"), message)
 
     # --- widok terminala ---------------------------------------------------
-
-    def _toggle_timestamps(self, on):
-        """Znacznik czasu dotyczy wszystkich zakładek, także otwartych później."""
-        SshTerminal.timestamps = on
-
-    def _pick_font(self):
-        font, ok = QFontDialog.getFont(terminal_font(), self, t("menu_font"))
-        if not ok:
-            return
-        set_terminal_font(font)
-        for i in range(self.tabs.count()):
-            widget = self.tabs.widget(i)
-            if isinstance(widget, SessionTab):
-                widget.terminal.setFont(font)
-
-    def _pick_scrollback(self):
-        """Ile linii trzyma terminal — więcej pamięci, ale dłuższa historia."""
-        lines, ok = QInputDialog.getInt(
-            self, t("menu_scrollback"), t("scrollback_prompt"), scrollback(), 100, 200000, 500
-        )
-        if not ok:
-            return
-        set_scrollback(lines)
-        for i in range(self.tabs.count()):
-            widget = self.tabs.widget(i)
-            if isinstance(widget, SessionTab):
-                widget.terminal.document().setMaximumBlockCount(lines)
-
-    def _pick_alert_threshold(self):
-        value, ok = QInputDialog.getInt(
-            self, t("menu_alerts_threshold"), t("alerts_threshold_prompt"), alert_threshold(), 1, 100
-        )
-        if ok:
-            set_alert_threshold(value)
-
-    def _set_terminal_theme(self, name):
-        """Schemat kolorów terminala — wspólny dla wszystkich zakładek."""
-        set_terminal_theme(name)
-        for i in range(self.tabs.count()):
-            widget = self.tabs.widget(i)
-            if isinstance(widget, SessionTab):
-                apply_terminal_theme(widget.terminal)
 
     def _open_dashboard(self):
         StatsDashboard(self, self).exec()
@@ -1758,14 +1747,6 @@ class MainWindow(QMainWindow):
         client = session.terminal.client if isinstance(session, SessionTab) else None
         keygen.KeyGenDialog(self, client).exec()
 
-    def _edit_triggers(self):
-        """Regexy, na które ma reagować powiadomienie — jeden na linię."""
-        text, ok = QInputDialog.getMultiLineText(
-            self, t("triggers_title"), t("triggers_hint"), triggers_text()
-        )
-        if ok:
-            set_triggers(text)
-
     def _save_session_log(self):
         """Zapis tego, co widać w terminalu aktywnej zakładki.
 
@@ -1806,13 +1787,13 @@ class MainWindow(QMainWindow):
             return
         self._connect_and_add_tab(conn, password, dialog.passphrase.text() or None)
 
-    def _open_rdp_tab(self, conn, password):
+    def _open_rdp_tab(self, conn, password, origin=None):
         """None = sesja poszła do osobnego mstsc albo się nie udała."""
         tab = open_rdp(self, conn, password)
         if tab is None:
             return
         tab.session_ended.connect(lambda text, w=tab: self._show_stats(w, text))
-        self._add_tab(tab, conn["name"])
+        self._add_tab(tab, conn["name"], origin)
 
     def _connect_and_add_tab(self, conn, password, passphrase=None, auth=None):
         # `auth` osobno, nie wmieszane w `conn` — `conn` to żywy słownik z drzewa
@@ -1841,7 +1822,7 @@ class MainWindow(QMainWindow):
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
         )
-        self._add_tab(session, conn["name"])
+        self._add_tab(session, conn["name"], conn)
         self._restore_tunnels(session, conn)
         session.terminal.send_startup(conn.get("startup"))
         session.terminal.setFocus()
@@ -1875,9 +1856,18 @@ class MainWindow(QMainWindow):
         conn["tunnels"] = [tunnels.format_tunnel(spec) for spec in session.tunnels]
         self.tree.save()
 
-    def _add_tab(self, widget, name):
-        """Nowa karta wchodzi PRZED "+", żeby "+" zawsze zostawało ostatnie."""
+    def _add_tab(self, widget, name, origin=None):
+        """Nowa karta wchodzi PRZED "+", żeby "+" zawsze zostawało ostatnie.
+
+        `origin` = słownik połączenia z drzewa — po nim `_open_connection_tab`
+        poznaje, że zakładka już jest otwarta.
+        """
+        widget.origin = origin
         index = self.tabs.insertTab(self.tabs.count() - 1, widget, name)
+        if origin:
+            self.tabs.setTabToolTip(
+                index, f"{origin.get('username', '')}@{origin.get('host', '')}:{origin.get('port', '')}"
+            )
         self.tabs.setCurrentIndex(index)
         return index
 
@@ -2090,7 +2080,7 @@ def selftest():
 
     # Istniejąca zakładka o tej nazwie musi zostać wybrana, zanim padnie
     # pytanie o hasło — inaczej dwuklik łączyłby się drugi raz.
-    window.tabs.insertTab(window.tabs.count() - 1, QWidget(), "srv-01")
+    window._add_tab(QWidget(), "srv-01", data)
     window._open_connection_tab(data)
     assert window.tabs.count() == 3, "ponowne otwarcie nie może duplikować zakładki"
     assert window.tabs.widget(window.tabs.count() - 1) is window._plus_tab, "+ musi zostać ostatnie"
@@ -2241,9 +2231,23 @@ def selftest():
     assert HomeTab.matches({"name": "x", "tags": ["klient-a"]}, "#klient")
     assert not HomeTab.matches({"name": "x"}, "#klient")
 
-    # Alerty progowe: wynik czysto funkcyjny, patrz ssh_terminal.selftest();
-    # tutaj tylko sprawdzamy, że menu Widok je wystawia.
-    assert any(a.text() == t("menu_alerts") for a in window.findChildren(QAction))
+    # Okno Ustawień: bieżące wartości wchodzą, te same wychodzą; PIN pilnowany.
+    assert any(a.text() == t("menu_settings") for a in window.findChildren(QAction))
+    current = window.current_settings()
+    dialog = settings.SettingsDialog(window, current, TERMINAL_THEMES, i18n.LANGUAGES)
+    values = dialog.values()
+    for key, value in values.items():
+        if key != "new_pin":
+            assert value == current[key], (key, value, current[key])
+    dialog.new_pin.setText("12")
+    assert dialog.pin_error() == t("lock_pin_too_short")
+    dialog.new_pin.setText("")
+    dialog._pin_set = False
+    dialog.lock.setChecked(True)
+    assert dialog.pin_error() == t("settings_pin_required"), "blokada bez PIN-u"
+    dialog.lock.setChecked(False)
+    assert dialog.pin_error() is None
+    dialog.deleteLater()
 
     # Notatki i polecenia startowe: startowe tylko dla SSH, notatki dla obu.
     extra = ConnectionDialog(
