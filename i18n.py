@@ -73,6 +73,7 @@ TEXTS = {
             "Ctrl+Shift+T — quick connect\n"
             "Ctrl+Shift+W — close tab\n"
             "Ctrl+Shift+F — filter connection list\n"
+            "Ctrl+Shift+P — command palette (connections, menu actions, scripts)\n"
             "Ctrl+Tab / Ctrl+Shift+Tab — next / previous tab\n"
             "Ctrl+1..9 — go to tab\n\n"
             "Connection list: Enter — connect, F2 — edit, Delete — remove\n"
@@ -360,6 +361,11 @@ TEXTS = {
         "processes_col_mem": "Memory",
         "processes_col_name": "Name",
         "processes_kill": "Kill process",
+        "processes_kill_force": "Kill (-9)",
+        "menu_command_palette": "Command palette…",
+        "palette_placeholder": "Type a connection, menu action or script…",
+        "menu_pin": "Pin to Home",
+        "menu_unpin": "Unpin from Home",
         "processes_kill_confirm": "Kill process {0} (PID {1})?",
         "processes_kill_failed": "Could not kill the process (no permission?).",
         "processes_failed": "Could not read the process list.",
@@ -510,6 +516,7 @@ TEXTS = {
             "Ctrl+Shift+T — szybkie połączenie\n"
             "Ctrl+Shift+W — zamknij zakładkę\n"
             "Ctrl+Shift+F — filtr listy połączeń\n"
+            "Ctrl+Shift+P — paleta poleceń (połączenia, akcje menu, skrypty)\n"
             "Ctrl+Tab / Ctrl+Shift+Tab — następna / poprzednia zakładka\n"
             "Ctrl+1..9 — przejdź do zakładki\n\n"
             "Lista połączeń: Enter — połącz, F2 — edytuj, Delete — usuń\n"
@@ -797,6 +804,11 @@ TEXTS = {
         "processes_col_mem": "Pamięć",
         "processes_col_name": "Nazwa",
         "processes_kill": "Zabij proces",
+        "processes_kill_force": "Zabij (-9)",
+        "menu_command_palette": "Paleta poleceń…",
+        "palette_placeholder": "Wpisz połączenie, akcję z menu albo skrypt…",
+        "menu_pin": "Przypnij na Start",
+        "menu_unpin": "Odepnij ze Startu",
         "processes_kill_confirm": "Zabić proces {0} (PID {1})?",
         "processes_kill_failed": "Nie udało się zabić procesu (brak uprawnień?).",
         "processes_failed": "Nie udało się odczytać listy procesów.",
