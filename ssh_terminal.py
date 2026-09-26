@@ -1275,6 +1275,7 @@ class SshTerminal(QPlainTextEdit):
     stats_changed = Signal(str)
     disk_changed = Signal(object)  # dict z disk_free/disk_pct albo None — dla panelu SFTP
     session_lost = Signal()  # zerwane łącze — nie `exit` w powłoce ani zamknięcie zakładki
+    activity = Signal()  # przyszło wyjście — okno znaczy nieaktywną zakładkę
 
     # Atrybuty klasy, nie instancji — przełącznik z menu ma łapać także zakładki
     # otwarte później, dokładnie jak `TerminalHighlighter.enabled`.
@@ -1374,6 +1375,7 @@ class SshTerminal(QPlainTextEdit):
                 self.alt_view.raise_()
 
     def _append(self, text):
+        self.activity.emit()
         was_alt = self._alt_screen.alt_active
         self._alt_stream.feed(text)
         now_alt = self._alt_screen.alt_active
