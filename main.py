@@ -70,6 +70,7 @@ import notify
 import processes
 import scanner
 import services
+import sftp
 import settings
 import transfers
 import tunnels
@@ -2535,6 +2536,7 @@ def selftest():
     processes.selftest()
     multirun.selftest()
     transfers.selftest()
+    sftp.selftest()
     credentials.selftest()
     del app
     print("main selftest OK")

@@ -10,10 +10,8 @@ adresowaniem kursora — patrz sekcja „emulacja VT100" niżej.
 potrafi wisieć kilkanaście sekund — na wątku GUI zamroziłoby to całe okno.
 """
 import json
-import os
 import re
 import socket
-import stat
 import tempfile
 import threading
 import time
@@ -27,19 +25,15 @@ import pyte
 from PySide6.QtCore import (
     QEvent,
     QEventLoop,
-    QFileSystemWatcher,
-    QMimeData,
     QObject,
     Qt,
     QThread,
     QTimer,
-    QUrl,
     Signal,
     Slot,
 )
 from PySide6.QtGui import (
     QColor,
-    QDrag,
     QFont,
     QKeySequence,
     QPainter,
@@ -57,11 +51,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressDialog,
@@ -74,7 +64,7 @@ from PySide6.QtWidgets import (
 import i18n
 import notify
 import tunnels
-from transfers import TransferQueue, run_transfer
+from sftp import SftpPanel
 from i18n import t
 
 CONNECT_TIMEOUT = 15  # sekundy
@@ -1506,379 +1496,6 @@ class SshTerminal(QPlainTextEdit):
         self.stats.wait(3000)
 
 
-# --- graficzna przeglądarka plików (SFTP) -----------------------------------
-
-
-# ponytail: listdir/rename/mkdir wołane wprost na wątku GUI — dla admina po
-# LAN/VPN to milisekundy. Transfery plików idą w tle (`transfers.py`).
-class _SftpListWidget(QListWidget):
-    """Lista plików SFTP z drag-out: przeciągnięcie pliku do Eksploratora.
-
-    Qt nie umie "pobrać w trakcie przeciągania", więc plik idzie na dysk
-    (blokująco, jak przy edycji zdalnego pliku) *przed* startem `QDrag` —
-    inaczej Eksplorator dostałby ścieżkę do niczego.
-    """
-
-    def __init__(self, panel, parent=None):
-        super().__init__(parent)
-        self.panel = panel
-        self.setDragEnabled(True)
-
-    def startDrag(self, supportedActions):
-        item = self.currentItem()
-        if item is None or not self.panel.sftp:
-            return
-        name, is_dir = item.data(Qt.UserRole)
-        if is_dir:
-            return  # foldery pomijamy — bez rekurencji, jak przy uploadzie
-        local_path = Path(tempfile.mkdtemp(prefix="sshrdp_drag_")) / name
-        error = run_transfer(
-            self.panel, self.panel.sftp, "get",
-            self.panel._child_path(name), str(local_path),
-            t("transfer_download", name),
-        )
-        if error:
-            QMessageBox.warning(self.panel, t("err_download"), error)
-            return
-        mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(str(local_path))])
-        drag = QDrag(self)
-        drag.setMimeData(mime)
-        drag.exec(Qt.CopyAction)
-
-
-class SftpPanel(QWidget):
-    """Panel plików po lewej stronie zakładki sesji — wzorem MobaXterm."""
-
-    def __init__(self, client, parent=None, bookmarks=None, on_change=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.sftp = None
-        self.path = "/"
-        # Obserwatorzy plików otwartych do edycji — referencja musi przeżyć,
-        # inaczej Python sprzątnie `QFileSystemWatcher` i sygnał nigdy nie przyjdzie.
-        self._editors = []
-        # Lista zakładek jest tą samą listą, co w danych połączenia — dopisanie
-        # tutaj wystarczy, żeby `on_change` zrzuciło ją do connections.json.
-        self.bookmarks = bookmarks if bookmarks is not None else []
-        self.on_change = on_change
-        self.client = client
-        try:
-            self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
-            self.path = self.sftp.normalize(".")
-        except Exception:
-            self.sftp = None
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-
-        # Historia jak w przeglądarce: gdzie byliśmy (back) i dokąd cofnęliśmy (forward).
-        self._back, self._forward = [], []
-
-        toolbar = QHBoxLayout()
-        for text, tooltip, handler in (
-            ("◀", t("sftp_back"), self._go_back),
-            ("▶", t("sftp_forward"), self._go_forward),
-            ("⬆", t("sftp_up"), self._go_up),
-            ("🔄", t("sftp_refresh"), self.refresh),
-            ("📁+", t("sftp_new_folder"), self._new_folder),
-            ("📤", t("sftp_upload"), self._upload),
-        ):
-            button = QToolButton()
-            button.setText(text)
-            button.setToolTip(tooltip)
-            button.clicked.connect(handler)
-            toolbar.addWidget(button)
-
-        # Zakładki katalogów: /var/log, /etc/nginx — per połączenie.
-        self.bookmark_button = QToolButton()
-        self.bookmark_button.setText("⭐")
-        self.bookmark_button.setToolTip(t("sftp_bookmarks"))
-        self.bookmark_button.clicked.connect(self._bookmark_menu)
-        toolbar.addWidget(self.bookmark_button)
-        layout.addLayout(toolbar)
-
-        self.path_edit = QLineEdit(self.path)
-        self.path_edit.returnPressed.connect(self._go_to_typed_path)
-        layout.addWidget(self.path_edit)
-
-        self.list = _SftpListWidget(self)
-        self.list.itemDoubleClicked.connect(self._open_item)
-        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list.customContextMenuRequested.connect(self._context_menu)
-        layout.addWidget(self.list)
-
-        # Wolne miejsce na dysku — dane liczy już _StatsPoller (dolny pasek),
-        # panel tylko je wyświetla, żadnego własnego odpytywania.
-        self.disk_label = QLabel("")
-        layout.addWidget(self.disk_label)
-
-        # Kolejka pobierania/wysyłania — `self.client` czytany w chwili otwarcia,
-        # więc po ponownym połączeniu bierze już nowy transport.
-        self.queue = TransferQueue(
-            lambda: paramiko.SFTPClient.from_transport(self.client.get_transport()), self
-        )
-        self.queue.upload_finished.connect(self.refresh)
-        layout.addWidget(self.queue)
-
-        if self.sftp is None:
-            self.path_edit.setEnabled(False)
-            self.list.addItem(t("sftp_unavailable"))
-            self.list.setEnabled(False)
-        else:
-            self.refresh()
-
-    def set_client(self, client):
-        """Nowy kanał SFTP po ponownym połączeniu — ścieżka zostaje ta sama."""
-        self.client = client
-        self.queue.reset_sftp()
-        try:
-            self.sftp = paramiko.SFTPClient.from_transport(client.get_transport())
-        except Exception:
-            self.sftp = None
-        enabled = self.sftp is not None
-        self.path_edit.setEnabled(enabled)
-        self.list.setEnabled(enabled)
-        self.refresh()
-
-    def set_disk_stats(self, current):
-        """Wpięte pod `SshTerminal.disk_changed` — None dopóki nie ma pierwszej próbki."""
-        if current is None:
-            self.disk_label.setText("")
-        else:
-            self.disk_label.setText(
-                t("sftp_free_space", human_bytes(current["disk_free"]), f"{current['disk_pct']:.0f}")
-            )
-
-    # --- nawigacja ------------------------------------------------------
-
-    def refresh(self):
-        self.list.clear()
-        if not self.sftp:
-            return
-        try:
-            entries = self.sftp.listdir_attr(self.path)
-        except Exception as error:
-            self.list.addItem(t("err_prefix", error))
-            return
-        entries.sort(key=lambda e: (not stat.S_ISDIR(e.st_mode), e.filename.lower()))
-        for entry in entries:
-            is_dir = stat.S_ISDIR(entry.st_mode)
-            item = QListWidgetItem(f"{'📁' if is_dir else '📄'} {entry.filename}")
-            item.setData(Qt.UserRole, (entry.filename, is_dir))
-            self.list.addItem(item)
-        self.path_edit.setText(self.path)
-
-    def _child_path(self, name):
-        return self.path.rstrip("/") + "/" + name
-
-    def _navigate(self, path):
-        if (path or "/") != self.path:
-            self._back.append(self.path)
-            self._forward.clear()
-        self.path = path or "/"
-        self.refresh()
-
-    def _go_back(self):
-        if self._back:
-            self._forward.append(self.path)
-            self.path = self._back.pop()
-            self.refresh()
-
-    def _go_forward(self):
-        if self._forward:
-            self._back.append(self.path)
-            self.path = self._forward.pop()
-            self.refresh()
-
-    def _go_up(self):
-        if self.sftp:
-            self._navigate(self.path.rsplit("/", 1)[0] or "/")
-
-    def _go_to_typed_path(self):
-        self._navigate(self.path_edit.text().strip())
-
-    # --- zakładki katalogów ------------------------------------------------
-
-    def _bookmark_menu(self):
-        menu = QMenu(self)
-        for path in self.bookmarks:
-            menu.addAction(path, lambda p=path: self._navigate(p))
-        if not self.bookmarks:
-            menu.addAction(t("sftp_no_bookmarks")).setEnabled(False)
-        menu.addSeparator()
-        if self.path in self.bookmarks:
-            menu.addAction(t("sftp_del_bookmark"), self._remove_bookmark)
-        else:
-            menu.addAction(t("sftp_add_bookmark"), self._add_bookmark)
-        button = self.bookmark_button
-        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
-
-    def _add_bookmark(self):
-        if self.path not in self.bookmarks:
-            self.bookmarks.append(self.path)
-            if self.on_change:
-                self.on_change()
-
-    def _remove_bookmark(self):
-        if self.path in self.bookmarks:
-            self.bookmarks.remove(self.path)
-            if self.on_change:
-                self.on_change()
-
-    def _open_item(self, item):
-        name, is_dir = item.data(Qt.UserRole)
-        if is_dir:
-            self._navigate(self._child_path(name))
-        else:
-            self._download(self._child_path(name), name)
-
-    # --- przeciąganie plików z Eksploratora (upload) -----------------------
-
-    def dragEnterEvent(self, event):
-        if self.sftp and event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dragMoveEvent(self, event):
-        if self.sftp and event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        if not self.sftp:
-            return
-        for url in event.mimeData().urls():
-            local_path = url.toLocalFile()
-            if not local_path or not Path(local_path).is_file():
-                continue  # foldery przeciągnięte całością pomijamy — bez rekurencji
-            self.queue.add("put", self._child_path(Path(local_path).name), local_path)
-        event.acceptProposedAction()
-
-    # --- edycja pliku w lokalnym edytorze -----------------------------------
-
-    def _edit(self, remote_path, name):
-        """Pobiera plik do temp, otwiera domyślnym programem i odsyła po zapisie."""
-        if not self.sftp:
-            return
-        local_path = Path(tempfile.mkdtemp(prefix="sshrdp_edit_")) / name
-        error = run_transfer(
-            self, self.sftp, "get", remote_path, str(local_path), t("transfer_download", name)
-        )
-        if error:
-            QMessageBox.warning(self, t("err_download"), error)
-            return
-        try:
-            os.startfile(str(local_path))  # ponytail: Windows-only, jak reszta aplikacji
-        except OSError as error:
-            QMessageBox.warning(self, t("err_generic"), str(error))
-            return
-        watcher = QFileSystemWatcher([str(local_path)], self)
-        watcher.fileChanged.connect(
-            lambda path, r=remote_path, l=local_path, w=watcher: self._upload_edited(r, l, w)
-        )
-        self._editors.append(watcher)
-
-    def _upload_edited(self, remote_path, local_path, watcher):
-        error = run_transfer(
-            self, self.sftp, "put", remote_path, str(local_path),
-            t("transfer_upload", local_path.name),
-        )
-        if error:
-            QMessageBox.warning(self, t("err_upload"), error)
-        # Niektóre edytory zapisują przez podmianę pliku — ścieżka wypada
-        # z obserwacji, trzeba ją dodać ponownie.
-        if str(local_path) not in watcher.files():
-            watcher.addPath(str(local_path))
-
-    # --- akcje na plikach -------------------------------------------------
-
-    def _download(self, remote_path, name):
-        local_path, _ = QFileDialog.getSaveFileName(self, t("sftp_download_title"), name)
-        if local_path:
-            self.queue.add("get", remote_path, local_path)
-
-    def _upload(self):
-        if not self.sftp:
-            return
-        # Kilka plików naraz — i tak idą do kolejki po jednym.
-        paths, _ = QFileDialog.getOpenFileNames(self, t("sftp_upload"))
-        for local_path in paths:
-            self.queue.add("put", self._child_path(Path(local_path).name), local_path)
-
-    def _new_folder(self):
-        if not self.sftp:
-            return
-        name, ok = QInputDialog.getText(self, t("sftp_new_folder"), t("lbl_name"))
-        if not ok or not name:
-            return
-        try:
-            self.sftp.mkdir(self._child_path(name))
-        except Exception as error:
-            QMessageBox.warning(self, t("err_generic"), str(error))
-        self.refresh()
-
-    def _context_menu(self, pos):
-        item = self.list.itemAt(pos)
-        if item is None or not self.sftp:
-            return
-        name, is_dir = item.data(Qt.UserRole)
-        menu = QMenu(self)
-        if not is_dir:
-            menu.addAction(t("sftp_download"), lambda: self._download(self._child_path(name), name))
-            menu.addAction(t("sftp_edit"), lambda: self._edit(self._child_path(name), name))
-        menu.addAction(t("sftp_rename"), lambda: self._rename(name))
-        menu.addAction(t("sftp_chmod"), lambda: self._chmod(name))
-        menu.addAction(t("menu_delete"), lambda: self._delete(name, is_dir))
-        menu.exec(self.list.viewport().mapToGlobal(pos))
-
-    def _rename(self, name):
-        new_name, ok = QInputDialog.getText(self, t("sftp_rename"), t("sftp_rename_prompt"), text=name)
-        if not ok or not new_name or new_name == name:
-            return
-        try:
-            self.sftp.rename(self._child_path(name), self._child_path(new_name))
-        except Exception as error:
-            QMessageBox.warning(self, t("err_rename"), str(error))
-        self.refresh()
-
-    def _chmod(self, name):
-        mode_text, ok = QInputDialog.getText(self, t("sftp_chmod"), t("sftp_chmod_prompt"))
-        if not ok or not mode_text:
-            return
-        try:
-            mode = int(mode_text, 8)
-            if not (0 <= mode <= 0o7777):
-                raise ValueError
-        except ValueError:
-            QMessageBox.warning(self, t("err_chmod"), t("err_chmod_bad"))
-            return
-        try:
-            self.sftp.chmod(self._child_path(name), mode)
-        except Exception as error:
-            QMessageBox.warning(self, t("err_chmod"), str(error))
-        self.refresh()
-
-    def _delete(self, name, is_dir):
-        if QMessageBox.question(
-            self,
-            t("confirm_delete_title"),
-            t("confirm_delete_body", name),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        ) != QMessageBox.Yes:
-            return
-        try:
-            (self.sftp.rmdir if is_dir else self.sftp.remove)(self._child_path(name))
-        except Exception as error:
-            QMessageBox.warning(self, t("err_delete"), str(error))
-        self.refresh()
-
-    def closeEvent(self, event):
-        self.queue.cancel_all()  # przerwany plik sprzątnięty, zanim kanał zniknie
-        if self.sftp:
-            self.sftp.close()
-        super().closeEvent(event)
-
-
 class SessionTab(QWidget):
     """Zawartość zakładki sesji: SFTP po lewej, terminal po prawej — wzorem MobaXterm."""
 
@@ -2399,47 +2016,8 @@ def selftest():
 
     # Transfery plików: patrz transfers.selftest().
 
-    # Panel SFTP: gdy transport nie daje kanału SFTP (obcy serwer, brak
-    # uprawnień), panel ma się wyłączyć, a nie wywalić.
-    class _NoSftpClient:
-        def get_transport(self):
-            raise OSError("brak transportu")
+    # Panel SFTP: patrz sftp.selftest().
 
-    panel = SftpPanel(_NoSftpClient())
-    assert panel.sftp is None, "atrapa bez transportu nie mogła dać działającego SFTP"
-    assert not panel.list.isEnabled(), "panel bez SFTP musi być wyłączony"
-
-    # Zakładki katalogów: dopisują się do listy z danych połączenia i wołają
-    # zapis, żeby przeżyły restart.
-    saved = []
-    marks = ["/var/log"]
-    marked = SftpPanel(_NoSftpClient(), None, marks, lambda: saved.append(True))
-    marked.path = "/etc/nginx"
-    marked._add_bookmark()
-    assert marks == ["/var/log", "/etc/nginx"], marks
-    assert saved == [True], "dodanie zakladki ma wolac zapis"
-    marked._add_bookmark()
-    assert marks.count("/etc/nginx") == 1, "ta sama sciezka nie moze wejsc dwa razy"
-    marked._remove_bookmark()
-    assert marks == ["/var/log"], marks
-    marked.deleteLater()
-
-    # Historia katalogów: wstecz/do przodu jak w przeglądarce.
-    panel.path = "/"
-    panel._navigate("/etc")
-    panel._navigate("/etc/ssh")
-    panel._go_back()
-    assert panel.path == "/etc", panel.path
-    panel._go_back()
-    assert panel.path == "/"
-    panel._go_back()
-    assert panel.path == "/", "pusta historia nie może cofać dalej"
-    panel._go_forward()
-    assert panel.path == "/etc", panel.path
-    panel._navigate("/var")
-    panel._go_forward()
-    assert panel.path == "/var", "nowa ścieżka kasuje gałąź do przodu"
-    panel.deleteLater()
     del app
 
     # Podświetlanie składni: słowa kluczowe, IP, ścieżka, data.
