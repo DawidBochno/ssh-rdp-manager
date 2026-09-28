@@ -278,7 +278,7 @@ def selftest():
             self.removed = []
 
         def get(self, remote, local, callback=None):
-            Path(local).write_text("połowa")
+            Path(local).write_text("połowa", encoding="utf-8")
             for step in range(1, 51):
                 time.sleep(0.01)
                 callback(step, 50)
