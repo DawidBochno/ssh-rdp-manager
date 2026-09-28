@@ -362,6 +362,31 @@ def set_triggers(text):
     _triggers = compile_triggers(text)
 
 
+def parse_macros(text):
+    """„Nazwa = polecenie” na linię -> [(nazwa, polecenie)].
+
+    Pierwszy „=” dzieli, więc polecenie z własnym „=” (`export A=1`) musi
+    mieć nazwę przed sobą; linia bez „=” to polecenie, które jest swoją nazwą.
+    """
+    macros = []
+    for line in text.splitlines():
+        label, sep, command = line.partition("=")
+        label, command = label.strip(), command.strip()
+        if not sep:
+            label = command = line.strip()
+        if label and command:
+            macros.append((label, command))
+    return macros
+
+
+def macros_text():
+    return i18n.settings().value("macros", "") or ""
+
+
+def set_macros(text):
+    i18n.settings().setValue("macros", text)
+
+
 def pending_lines(tail, text):
     """Dzieli wyjście na linie kompletne i ogon czekający na resztę.
 
@@ -1431,6 +1456,18 @@ class SshTerminal(QPlainTextEdit):
         except Exception:
             pass  # zerwana sesja — czytelnik i tak zaraz to zgłosi
 
+    # Tylko do odczytu (menu zakładki): nic od użytkownika nie idzie do serwera —
+    # klawisze, wklejanie, makra. Wyjście dalej płynie, Ctrl+C z zaznaczeniem
+    # i Ctrl+F działają, bo to operacje lokalne.
+    read_only = False
+
+    def send_text(self, data):
+        """Jedyna droga od użytkownika do powłoki — tu pilnuje tryb tylko do odczytu."""
+        if self.read_only or not self.channel or self.channel.closed:
+            return False
+        self.channel.send(data)
+        return True
+
     def send_startup(self, commands):
         """Wysyła polecenia startowe (jedno na linię) tuż po zalogowaniu."""
         if not commands or not self.channel or self.channel.closed:
@@ -1440,11 +1477,9 @@ class SshTerminal(QPlainTextEdit):
                 self.channel.send(line.strip() + "\r")
 
     def _paste(self):
-        if not self.channel or self.channel.closed:
-            return
         text = QApplication.clipboard().text()
         if text:
-            self.channel.send(paste_bytes(text))
+            self.send_text(paste_bytes(text))
 
     def mousePressEvent(self, event):
         # Wklejanie środkowym klawiszem myszy — zwyczaj uniksowych terminali.
@@ -1472,11 +1507,9 @@ class SshTerminal(QPlainTextEdit):
         ):
             self._paste()
             return
-        if not self.channel or self.channel.closed:
-            return
         data = key_to_bytes(event.key(), event.modifiers(), event.text())
         if data:
-            self.channel.send(data)
+            self.send_text(data)
 
     def close_session(self):
         """Zamyka kanał i połączenie; bezpieczne do wielokrotnego wywołania."""
@@ -1529,7 +1562,30 @@ class SessionTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        # Makra: pasek przycisków nad terminalem, schowany, gdy nie ma żadnego.
+        self.macro_bar = QWidget(self)
+        self._macro_layout = QHBoxLayout(self.macro_bar)
+        self._macro_layout.setContentsMargins(2, 2, 2, 0)
+        layout.addWidget(self.macro_bar)
         layout.addWidget(splitter)
+        self.set_macros(parse_macros(macros_text()))
+
+    def set_macros(self, macros):
+        """Przebudowuje pasek makr — przy starcie i po zmianie w Ustawieniach."""
+        while self._macro_layout.count():
+            self._macro_layout.takeAt(0).widget().deleteLater()
+        for label, command in macros:
+            button = QToolButton(self.macro_bar)
+            button.setText(label)
+            button.setToolTip(command)
+            button.clicked.connect(lambda _=False, c=command: self.send_macro(c))
+            self._macro_layout.addWidget(button)
+        self._macro_layout.addStretch()
+        self.macro_bar.setVisible(bool(macros))
+
+    def send_macro(self, command):
+        if self.terminal.send_text(command + "\r"):
+            self.terminal.setFocus()
 
     @property
     def last_stats(self):
@@ -2015,6 +2071,27 @@ def selftest():
     assert "Could not run" in _run_commands(_FakeClient({}), "linux", None)
 
     # Transfery plików: patrz transfers.selftest().
+
+    # Makra: pierwszy „=” dzieli, linia bez „=” jest swoją nazwą, puste odpadają.
+    macros = parse_macros("Root = sudo -i\n\nuptime\n Env = export B=2 \n=\n")
+    assert macros == [("Root", "sudo -i"), ("uptime", "uptime"), ("Env", "export B=2")], macros
+
+    # Tylko do odczytu: klawisze, wklejanie i makra nie mogą dojść do kanału.
+    class _Channel:
+        closed = False
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, data):
+            self.sent.append(data)
+
+    guarded = SshTerminal.__new__(SshTerminal)  # bez wątków i sieci — sama logika
+    guarded.channel = _Channel()
+    assert guarded.send_text("ls\r") and guarded.channel.sent == ["ls\r"]
+    guarded.read_only = True
+    assert not guarded.send_text("rm -rf /\r"), "tryb tylko do odczytu przepuścił tekst"
+    assert guarded.channel.sent == ["ls\r"], guarded.channel.sent
 
     # Panel SFTP: patrz sftp.selftest().
 

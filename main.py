@@ -100,9 +100,12 @@ from ssh_terminal import (
     set_scrollback,
     set_terminal_font,
     set_terminal_theme,
+    set_macros,
     set_triggers,
     terminal_font,
     terminal_theme,
+    macros_text,
+    parse_macros,
     triggers_text,
     wait_for_pending,
 )
@@ -1568,6 +1571,7 @@ class MainWindow(QMainWindow):
             "font": terminal_font(),
             "scrollback": scrollback(),
             "triggers": triggers_text(),
+            "macros": macros_text(),
             "theme": terminal_theme(),
             "dark_mode": stored.value("dark_mode", False, type=bool),
             "language": i18n.language(),
@@ -1615,6 +1619,10 @@ class MainWindow(QMainWindow):
                 session.terminal.document().setMaximumBlockCount(new["scrollback"])
         if "triggers" in changed:
             set_triggers(new["triggers"])
+        if "macros" in changed:
+            set_macros(new["macros"])
+            for session in sessions:
+                session.set_macros(parse_macros(new["macros"]))
         if "theme" in changed:
             set_terminal_theme(new["theme"])
             for session in sessions:
@@ -2075,6 +2083,9 @@ class MainWindow(QMainWindow):
         index = self.tabs.indexOf(widget)
         if index >= 0:
             mark = "● " if widget.has_activity else ""
+            terminal = getattr(widget, "terminal", None)
+            if terminal is not None and terminal.read_only:
+                mark += "🔒 "
             self.tabs.setTabText(index, mark + widget.tab_name)
 
     def _mark_activity(self, widget):
@@ -2106,7 +2117,16 @@ class MainWindow(QMainWindow):
         duplicate.setEnabled(origin is not None)  # szybkie połączenie nie ma wpisu w drzewie
         if isinstance(widget, SessionTab):
             menu.addAction(t("tab_open_log"), lambda: self._open_log_from(widget))
+            read_only = menu.addAction(t("tab_read_only"))
+            read_only.setCheckable(True)
+            read_only.setChecked(widget.terminal.read_only)
+            read_only.toggled.connect(lambda on: self._set_read_only(widget, on))
         menu.exec(bar.mapToGlobal(pos))
+
+    def _set_read_only(self, session, on):
+        session.terminal.read_only = on
+        self._update_tab_text(session)
+        self.statusBar().showMessage(t("read_only_on" if on else "read_only_off"), 5000)
 
     def _open_log_from(self, session):
         self.tabs.setCurrentWidget(session)  # `_open_log_tail` bierze aktywną zakładkę
@@ -2353,6 +2373,12 @@ def selftest():
     second.tab_name = "nowa"
     window._update_tab_text(second)
     assert window.tabs.tabText(window.tabs.indexOf(second)) == "● nowa", "zmiana nazwy zgubiła znacznik"
+    second.terminal = SshTerminal.__new__(SshTerminal)  # atrapa: sama flaga
+    window._set_read_only(second, True)
+    assert window.tabs.tabText(window.tabs.indexOf(second)) == "● 🔒 nowa", "brak kłódki"
+    window._set_read_only(second, False)
+    assert window.tabs.tabText(window.tabs.indexOf(second)) == "● nowa"
+    window._show_current_stats()  # komunikat o trybie zasłoniłby test paska niżej
     window._close_other_tabs(first)
     assert window.tabs.count() == 3 and window.tabs.widget(1) is first, "zamknij pozostałe"
     assert window.tabs.widget(2) is window._plus_tab, "+ musi zostać ostatnie"
