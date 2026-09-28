@@ -1,0 +1,71 @@
+# Automatyczny przeglad PR przez Claude: czyta zmiany i zostawia komentarz
+# po polsku z werdyktem (mozna scalac / poprawic przed scaleniem).
+#
+# Wymaga sekretu ANTHROPIC_API_KEY w ustawieniach repozytorium
+# (Settings -> Secrets and variables -> Actions). Bez niego przeglad jest
+# pomijany z informacja w logu, zamiast czerwonego krzyzyka.
+name: Przeglad Claude
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - name: Brak klucza API
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::Brak sekretu ANTHROPIC_API_KEY - przeglad Claude pominiety."
+
+      - uses: actions/checkout@v6
+        if: env.HAS_KEY == 'true'
+        with:
+          fetch-depth: 1
+
+      - name: Przeglad
+        if: env.HAS_KEY == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Przejrzyj zmiany w tym PR. Projekt: desktopowy menedzer polaczen
+            SSH/RDP w Pythonie (PySide6 + Paramiko), tylko Windows.
+            Wlasciciel NIE jest programista - pisz po polsku, prosto.
+
+            Szukaj przede wszystkim:
+            1. Bledow, ktore realnie cos zepsuja (logika, wyjatki, utrata danych
+               w connections.json/credentials.json).
+            2. Bezpieczenstwa: hasla tylko przez DPAPI (credentials.py), nigdy
+               jawnym tekstem w plikach/logach; nie zamieniac pytania o klucz
+               hosta na AutoAddPolicy (ochrona przed MITM); tekst od uzytkownika
+               wklejany do polecen powloki musi byc cytowany albo odrzucany.
+            3. Watkow Qt: widgety tylko z watku GUI; operacje sieciowe
+               (Paramiko, SFTP) nie moga blokowac watku GUI.
+            4. Konwencji: napisy przez i18n.t() i w OBU slownikach (PL i EN);
+               nietrywialna logika ma asercje w selftest(); komentarze po polsku;
+               najprostsze rozwiazanie, bez abstrakcji na zapas.
+
+            Konkretne problemy zglaszaj komentarzami przy liniach. Drobiazgi
+            stylistyczne pomijaj.
+
+            Na koncu JEDEN komentarz podsumowujacy (gh pr comment), zaczynajacy
+            sie od jednej z linii:
+            - "✅ Mozna scalac" - brak powaznych problemow,
+            - "⚠️ Mozna scalac, ale warto poprawic" - drobne ryzyka,
+            - "❌ Nie scalac" - blad albo luka bezpieczenstwa.
+            Potem 2-5 punktow prostym jezykiem: co zmienia PR i co ewentualnie
+            poprawic.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

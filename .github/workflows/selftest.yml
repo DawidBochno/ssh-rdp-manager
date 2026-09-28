@@ -1,0 +1,26 @@
+# Automatyczne testy: przy kazdym PR i kazdym wypchnieciu na main uruchamia
+# `py main.py --selftest` na Windows (tak jak na komputerze uzytkownika).
+# Czerwony krzyzyk przy PR = cos sie zepsulo, nie scalac.
+name: Selftest
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  selftest:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen   # bez prawdziwego ekranu
+      PYTHONIOENCODING: utf-8      # polskie znaki w wyjsciu testow
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Zaleznosci
+        run: python -m pip install -r requirements.txt
+      - name: Selftest
+        run: python main.py --selftest
