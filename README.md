@@ -198,6 +198,26 @@ Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zys
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
 zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 
+## Automatyczne sprawdzanie zmian (PR)
+
+Każda zmiana trafia na `main` przez **pull request** (PR) — propozycję zmian,
+którą GitHub sprawdza, zanim zostanie scalona. Przy każdym PR same uruchamiają się:
+
+| Sprawdzenie | Co robi | Plik |
+|---|---|---|
+| **Selftest** | uruchamia `py main.py --selftest` na Windows | `.github/workflows/selftest.yml` |
+| **Przegląd Claude** | czyta zmiany i pisze po polsku komentarz z werdyktem: ✅ można scalać / ⚠️ warto poprawić / ❌ nie scalać | `.github/workflows/claude-review.yml` |
+
+Jak z tego korzystać bez znajomości kodu: otwórz PR na GitHubie (zakładka
+**Pull requests**), sprawdź, że przy **Selftest** jest zielony ✓, i przeczytaj
+komentarz przeglądu. Zielone + „✅ Można scalać” → przycisk **Merge pull request**.
+
+**Jednorazowa konfiguracja przeglądu Claude** (bez tego przegląd jest pomijany,
+Selftest działa i tak): w repozytorium **Settings → Secrets and variables →
+Actions → New repository secret**, nazwa `ANTHROPIC_API_KEY`, wartość — klucz
+z [console.anthropic.com](https://console.anthropic.com/) (przegląd zużywa
+płatne tokeny API, zwykle grosze za PR).
+
 ## Struktura
 
 | Plik | Zawartość |
