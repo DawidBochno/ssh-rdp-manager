@@ -7,9 +7,12 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QInputDialog,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -45,16 +48,35 @@ def parse_processes(variant, text):
     return rows
 
 
-def kill_command(variant, pid, force=False):
+# `-n`: bez hasła albo od razu błąd (zamiast wiszącego pytania, którego przez
+# `exec_command` nikt nie zobaczy); `-S -p ''`: hasło ze stdin, bez zachęty.
+SUDO_NO_PASSWORD = "sudo -n "
+SUDO_STDIN = "sudo -S -p '' "
+
+
+def run_with_password(client, command, password):
+    """Polecenie z `sudo -S` — hasło idzie przez stdin, nie w linii poleceń
+    (tam widziałby je każdy przez `ps`). Zwraca True, gdy się udało."""
+    try:
+        stdin, stdout, _ = client.exec_command(command, timeout=15)
+        stdin.write(password + "\n")
+        stdin.flush()
+        return stdout.channel.recv_exit_status() == 0
+    except Exception:
+        return False
+
+
+def kill_command(variant, pid, force=False, sudo=""):
     """PID to liczba (int()), więc nie ma czego cytować.
 
     `force` = SIGKILL na Linuksie; `Stop-Process -Force` na Windows i tak
     nie pyta procesu o zgodę, więc tam oba warianty są jednym poleceniem.
+    `sudo` = przedrostek z `SUDO_*` (tylko Linux; Windows nie ma sudo).
     """
     pid = int(pid)
     if variant == "windows":
         return f"powershell -NoProfile -NonInteractive -Command \"Stop-Process -Id {pid} -Force\""
-    return f"kill -9 {pid}" if force else f"kill {pid}"
+    return f"{sudo}kill -9 {pid}" if force else f"{sudo}kill {pid}"
 
 
 def sort_key(text):
@@ -103,6 +125,8 @@ class ProcessDialog(QDialog):
         force = QPushButton(t("processes_kill_force"))
         force.clicked.connect(lambda: self._kill(True))
         row.addWidget(force)
+        self.sudo = QCheckBox(t("processes_sudo"))
+        row.addWidget(self.sudo)
         refresh = QPushButton(t("services_refresh"))
         refresh.clicked.connect(self.refresh)
         row.addWidget(refresh)
@@ -149,9 +173,23 @@ class ProcessDialog(QDialog):
             self, t("processes_title"), t("processes_kill_confirm", name, pid)
         ) != QMessageBox.Yes:
             return
-        if _try_command(self.client, kill_command(self.variant, pid, force)) is None:
+        if not self._run_kill(pid, force):
             QMessageBox.warning(self, t("processes_title"), t("processes_kill_failed"))
         self.refresh()
+
+    def _run_kill(self, pid, force):
+        if not (self.sudo.isChecked() and self.variant == "linux"):
+            return _try_command(self.client, kill_command(self.variant, pid, force)) is not None
+        # Najpierw bez hasła (NOPASSWD w sudoers), dopiero potem pytamy.
+        if _try_command(self.client, kill_command("linux", pid, force, SUDO_NO_PASSWORD)) is not None:
+            return True
+        user = self.client.get_transport().get_username() or ""
+        password, ok = QInputDialog.getText(
+            self, t("processes_title"), t("processes_sudo_prompt", user), QLineEdit.Password
+        )
+        if not ok:
+            return True  # anulowane — bez komunikatu o błędzie
+        return run_with_password(self.client, kill_command("linux", pid, force, SUDO_STDIN), password)
 
 
 def selftest():
@@ -166,6 +204,37 @@ def selftest():
     assert kill_command("linux", "4242") == "kill 4242"
     assert kill_command("linux", 4242, force=True) == "kill -9 4242"
     assert "Stop-Process -Id 4 -Force" in kill_command("windows", 4, force=True)
+    assert kill_command("linux", 7, True, SUDO_NO_PASSWORD) == "sudo -n kill -9 7"
+    assert kill_command("linux", 7, False, SUDO_STDIN) == "sudo -S -p '' kill 7"
+
+    class _Stream:
+        def __init__(self):
+            self.written = ""
+            self.channel = self
+
+        def write(self, text):
+            self.written += text
+
+        def flush(self):
+            pass
+
+        def recv_exit_status(self):
+            return 0 if self.written == "tajne\n" else 1
+
+    class _Client:
+        def __init__(self):
+            self.stream = _Stream()
+            self.commands = []
+
+        def exec_command(self, command, timeout=None):
+            self.commands.append(command)
+            return self.stream, self.stream, None
+
+    client = _Client()
+    assert run_with_password(client, "sudo -S -p '' kill 7", "tajne")
+    assert "tajne" not in client.commands[0], "hasło nie może iść w linii poleceń"
+    assert not run_with_password(_Client(), "x", "zle"), "złe hasło = porażka"
+
     # Sortowanie po wartości: 9% przed 10%, liczby przed tekstem.
     cells = ["10.0%", "9.5%", "140 MB", "nginx", "2"]
     assert sorted(cells, key=sort_key) == ["2", "9.5%", "10.0%", "140 MB", "nginx"], \

@@ -64,6 +64,11 @@ class SettingsDialog(QDialog):
         form.addRow(t("settings_font"), self.font_button)
         form.addRow(t("settings_scrollback"), self.scrollback)
         form.addRow(t("settings_triggers"), self.triggers)
+        self.macros = QPlainTextEdit(current["macros"])
+        self.macros.setPlaceholderText("Root = sudo -i\nNginx = systemctl status nginx")
+        self.macros.setToolTip(t("macros_hint"))
+        form.addRow(t("settings_macros"), self.macros)
+        form.addRow(QLabel(t("macros_hint")))
 
         # --- Wygląd ---
         self.theme = QComboBox()
@@ -161,6 +166,7 @@ class SettingsDialog(QDialog):
             "font": self._font,
             "scrollback": self.scrollback.value(),
             "triggers": self.triggers.toPlainText(),
+            "macros": self.macros.toPlainText(),
             "theme": self.theme.currentText(),
             "dark_mode": self.dark_mode.isChecked(),
             "language": self.language.currentData(),

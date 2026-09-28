@@ -33,7 +33,12 @@ py main.py --selftest
 - **Przypinanie na Start** (prawy klik w drzewie): przypięte połączenia na górze
   listy Start, pod nimi ostatnio używane.
 - **Menu zakładki** (prawy klik): zamknij pozostałe, zmień nazwę, duplikuj sesję,
-  podgląd logu. Zakładka w tle z nowym wyjściem dostaje znacznik „● ”.
+  podgląd logu, **tylko do odczytu** (🔒 na zakładce: klawisze, wklejanie i makra
+  nie idą do serwera — do prezentacji). Zakładka w tle z nowym wyjściem dostaje
+  znacznik „● ”.
+- **Makra**: przyciski nad terminalem wysyłające gotowe polecenie z Enterem.
+  Definiuje się je w **Ustawienia → Terminal → Makra**, jedno na linię:
+  `Nazwa = polecenie` (np. `Root = sudo -i`).
 - Drzewo grup i połączeń: przeciąganie myszą, ikony (emoji), kolory dziedziczone
   w grupie, zmiana nazwy i edycja wpisu.
 - Zapis do `connections.json` obok programu; eksport i import tego samego formatu.
@@ -192,8 +197,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
 1. **Wykresy CPU/RAM w czasie** (sparkline pod paskiem statusu).
-2. **Tryb tylko do odczytu zakładki**, makra/przyciski wysyłające tekst.
-3. `sudo` przy zabijaniu procesów.
+2. Makra na skrót klawiszowy, edytor `scripts.json` w oknie.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
 zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
@@ -237,7 +241,7 @@ płatne tokeny API, zwykle grosze za PR).
 | `credentials.py` | Szyfrowanie haseł (DPAPI) i konta współdzielone |
 | `logtail.py` | Podgląd logu na żywo (`tail -f`) |
 | `disks.py` | Panel dysków i inode'ów |
-| `processes.py` | Lista procesów z zabijaniem |
+| `processes.py` | Lista procesów z sortowaniem i zabijaniem (także przez `sudo`) |
 | `settings.py` | Okno Ustawień |
 | `multirun.py` | Polecenie/skrypt na wielu serwerach naraz |
 | `keygen.py` | Generator kluczy SSH |
