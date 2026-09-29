@@ -17,6 +17,7 @@ import threading
 import time
 import base64
 import codecs
+from collections import deque
 import hashlib
 from pathlib import Path
 
@@ -833,6 +834,7 @@ def connect_with_progress(parent, host, port, username, password, key_file=None,
 # --- statystyki serwera na dolnym pasku ------------------------------------
 
 STATS_INTERVAL = 3  # sekundy między odpytaniami serwera
+HISTORY_SAMPLES = 100  # 5 minut próbek dla wykresu w pasku statusu (graphs.py)
 
 # Jedno polecenie na jedno odpytanie: czytamy /proc, więc nie potrzebujemy
 # ani `top`, ani `vmstat`. Sekcje rozdziela linia z `@`, bo tak najprościej
@@ -1323,6 +1325,10 @@ class SshTerminal(QPlainTextEdit):
         self._closing = False
         self.last_stats = ""
         self.last_disk = None
+        # (cpu %, ram %) z każdego odpytania — wykres w pasku statusu; przeżywa
+        # ponowne połączenie, bo to ten sam serwer.
+        self.history = deque(maxlen=HISTORY_SAMPLES)
+        self._previous_stats = None
         self._start_io(client, channel)
 
     def _start_io(self, client, channel):
@@ -1364,6 +1370,11 @@ class SshTerminal(QPlainTextEdit):
     def _on_stats(self, text, current):
         self.last_stats = text
         self.last_disk = current
+        if current is not None:
+            self.history.append(
+                (cpu_percent(current, self._previous_stats), mem_percent(current))
+            )
+        self._previous_stats = current
         self.stats_changed.emit(text)
         self.disk_changed.emit(current)
 
@@ -1590,6 +1601,10 @@ class SessionTab(QWidget):
     @property
     def last_stats(self):
         return self.terminal.last_stats
+
+    @property
+    def history(self):
+        return self.terminal.history
 
     # --- tunele -----------------------------------------------------------
 
