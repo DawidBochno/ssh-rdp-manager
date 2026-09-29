@@ -102,7 +102,9 @@ py main.py --selftest
 - **Ustawienia → Terminal → Historia przewijania** ustawia, ile linii trzyma terminal
   (domyślnie 5000) — tyle też trafia do zapisu sesji.
 - Dolny pasek ze statystykami serwera: CPU, RAM, dysk, ruch sieciowy, uptime,
-  liczba zalogowanych — osobno dla Linuksa i Windows Servera.
+  liczba zalogowanych — osobno dla Linuksa i Windows Servera. Z prawej **wykres
+  CPU (niebieski) i RAM (zielony) z ostatnich 5 minut**; najechanie myszą
+  pokazuje bieżące wartości.
 - **Zbiorczy dashboard** (Programy → Panel statystyk…): statystyki wszystkich
   otwartych zakładek SSH i RDP na jednym ekranie, odświeżane co 2 sekundy.
 - **Motywy kolorów terminala** (Ustawienia → Wygląd): Dark, Solarized Dark,
@@ -196,8 +198,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 
 Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
 
-1. **Wykresy CPU/RAM w czasie** (sparkline pod paskiem statusu).
-2. Makra na skrót klawiszowy, edytor `scripts.json` w oknie.
+1. Makra na skrót klawiszowy, edytor `scripts.json` w oknie.
 
 Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
 zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
@@ -228,6 +229,7 @@ płatne tokeny API, zwykle grosze za PR).
 |---|---|
 | `main.py` | Okno, drzewo połączeń, zakładki, formularz połączenia, menu |
 | `ssh_terminal.py` | Sesja SSH (Paramiko), statystyki, skrypty |
+| `graphs.py` | Wykres CPU/RAM z ostatnich 5 minut w pasku statusu |
 | `sftp.py` | Panel SFTP (operacje w wątku w tle) |
 | `transfers.py` | Transfery SFTP: kolejka w tle, anulowanie |
 | `rdp.py` | Sesja RDP (kontrolka ActiveX Microsoftu) jako widget zakładki |

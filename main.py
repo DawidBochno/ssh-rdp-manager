@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 
 import credentials
 import disks
+import graphs
 import i18n
 import keygen
 import logtail
@@ -1330,8 +1331,10 @@ class MainWindow(QMainWindow):
         TerminalHighlighter.enabled = i18n.settings().value("highlighting", True, type=bool)
         SshTerminal.timestamps = i18n.settings().value("timestamps", False, type=bool)
         self._build_shortcuts()
-        # Dolny pasek: statystyki serwera z aktywnej zakładki.
+        # Dolny pasek: statystyki serwera z aktywnej zakładki, wykres CPU/RAM z prawej.
         self.statusBar().showMessage(t("status_idle"))
+        self.stats_graph = graphs.StatsGraph()
+        self.statusBar().addPermanentWidget(self.stats_graph)
         self._restore_layout()
         self._update_check = None  # wątek startuje z main(), nie w testach
         self._status_timer = None  # tak samo — --selftest nie ma chodzić po sieci
@@ -1814,10 +1817,12 @@ class MainWindow(QMainWindow):
         """Pasek pokazuje tylko serwer, którego zakładka jest na wierzchu."""
         if widget is self.tabs.currentWidget():
             self.statusBar().showMessage(text)
+            self.stats_graph.set_history(getattr(widget, "history", None))
 
     def _show_current_stats(self, _index=None):
         widget = self.tabs.currentWidget()
         self.statusBar().showMessage(getattr(widget, "last_stats", "") or t("status_idle"))
+        self.stats_graph.set_history(getattr(widget, "history", None))
 
     def _on_item_activated(self, item, _column):
         if item.type() != CONNECTION_TYPE:
@@ -2464,6 +2469,12 @@ def selftest():
     window._show_current_stats()
     assert window.statusBar().currentMessage() == t("status_idle")
     window._show_stats(QWidget(), "statystyki obcej zakładki")
+    assert window.stats_graph.isHidden(), "wykres bez historii ma być schowany"
+    window.tabs.currentWidget().history = [(10.0, 20.0), (15.0, 22.0)]
+    window._show_current_stats()
+    assert not window.stats_graph.isHidden(), "wykres aktywnej zakładki się nie pokazał"
+    del window.tabs.currentWidget().history
+    window._show_current_stats()
     assert window.statusBar().currentMessage() == t("status_idle"), "pasek pokazał nie tę zakładkę"
 
     # Wybór języka: menu i napisy muszą realnie się przełączać.
@@ -2737,6 +2748,7 @@ def selftest():
     multirun.selftest()
     transfers.selftest()
     sftp.selftest()
+    graphs.selftest()
     credentials.selftest()
     del app
     print("main selftest OK")
