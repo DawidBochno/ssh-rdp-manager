@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import t
-from ssh_terminal import _try_command
+from ssh_terminal import SUDO_NO_PASSWORD, SUDO_STDIN, _try_command
 
 LINUX_CMD = "ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu --no-headers | head -300"
 # Windows nie ma % CPU chwilowego w Get-Process — pokazujemy sekundy CPU i MB pamięci.
@@ -46,24 +46,6 @@ def parse_processes(variant, text):
         if len(parts) == 5 and parts[0].isdigit():
             rows.append((int(parts[0]), parts[1], parts[2] + "%", parts[3] + "%", parts[4]))
     return rows
-
-
-# `-n`: bez hasła albo od razu błąd (zamiast wiszącego pytania, którego przez
-# `exec_command` nikt nie zobaczy); `-S -p ''`: hasło ze stdin, bez zachęty.
-SUDO_NO_PASSWORD = "sudo -n "
-SUDO_STDIN = "sudo -S -p '' "
-
-
-def run_with_password(client, command, password):
-    """Polecenie z `sudo -S` — hasło idzie przez stdin, nie w linii poleceń
-    (tam widziałby je każdy przez `ps`). Zwraca True, gdy się udało."""
-    try:
-        stdin, stdout, _ = client.exec_command(command, timeout=15)
-        stdin.write(password + "\n")
-        stdin.flush()
-        return stdout.channel.recv_exit_status() == 0
-    except Exception:
-        return False
 
 
 def kill_command(variant, pid, force=False, sudo=""):
@@ -185,11 +167,12 @@ class ProcessDialog(QDialog):
             return True
         user = self.client.get_transport().get_username() or ""
         password, ok = QInputDialog.getText(
-            self, t("processes_title"), t("processes_sudo_prompt", user), QLineEdit.Password
+            self, t("processes_title"), t("sudo_prompt", user), QLineEdit.Password
         )
         if not ok:
             return True  # anulowane — bez komunikatu o błędzie
-        return run_with_password(self.client, kill_command("linux", pid, force, SUDO_STDIN), password)
+        command = kill_command("linux", pid, force, SUDO_STDIN)
+        return _try_command(self.client, command, password + "\n") is not None
 
 
 def selftest():
@@ -206,34 +189,6 @@ def selftest():
     assert "Stop-Process -Id 4 -Force" in kill_command("windows", 4, force=True)
     assert kill_command("linux", 7, True, SUDO_NO_PASSWORD) == "sudo -n kill -9 7"
     assert kill_command("linux", 7, False, SUDO_STDIN) == "sudo -S -p '' kill 7"
-
-    class _Stream:
-        def __init__(self):
-            self.written = ""
-            self.channel = self
-
-        def write(self, text):
-            self.written += text
-
-        def flush(self):
-            pass
-
-        def recv_exit_status(self):
-            return 0 if self.written == "tajne\n" else 1
-
-    class _Client:
-        def __init__(self):
-            self.stream = _Stream()
-            self.commands = []
-
-        def exec_command(self, command, timeout=None):
-            self.commands.append(command)
-            return self.stream, self.stream, None
-
-    client = _Client()
-    assert run_with_password(client, "sudo -S -p '' kill 7", "tajne")
-    assert "tajne" not in client.commands[0], "hasło nie może iść w linii poleceń"
-    assert not run_with_password(_Client(), "x", "zle"), "złe hasło = porażka"
 
     # Sortowanie po wartości: 9% przed 10%, liczby przed tekstem.
     cells = ["10.0%", "9.5%", "140 MB", "nginx", "2"]

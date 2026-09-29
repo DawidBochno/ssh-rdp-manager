@@ -649,8 +649,8 @@ class ConnectionTree(QTreeWidget):
         """Zrzuca całe drzewo do JSON. Wołane po każdej zmianie."""
         nodes = self.nodes()
         try:
-            CONFIG_FILE.write_text(
-                json.dumps(nodes, indent=2, ensure_ascii=False), encoding="utf-8"
+            credentials.atomic_write_text(
+                CONFIG_FILE, json.dumps(nodes, indent=2, ensure_ascii=False)
             )
         except OSError as error:
             QMessageBox.warning(
@@ -704,8 +704,8 @@ class ConnectionTree(QTreeWidget):
 
     def export_to(self, path):
         """Ten sam format co connections.json — plik da się wprost podmienić."""
-        Path(path).write_text(
-            json.dumps(self.nodes(), indent=2, ensure_ascii=False), encoding="utf-8"
+        credentials.atomic_write_text(
+            path, json.dumps(self.nodes(), indent=2, ensure_ascii=False)
         )
 
     def import_from(self, path, replace):
@@ -821,7 +821,13 @@ class ConnectionTree(QTreeWidget):
         if dialog.exec() != QDialog.Accepted:
             return
         self.credentials = credentials.load()[0]
-        self._apply_connection(item, dialog.values())
+        # W miejscu, nie nowy słownik: otwarta zakładka trzyma ten sam obiekt
+        # (`origin`, `session.conn`) — nowy odciąłby ją od drzewa, a jej
+        # zakładki SFTP/tunele zapisywałyby się do słownika, którego nikt nie zapisze.
+        data = item.data(0, CONNECTION_DATA)
+        data.clear()
+        data.update(dialog.values())
+        self._apply_connection(item, data)
         self.save()
 
     def _duplicate(self, item):
@@ -2257,6 +2263,21 @@ def selftest():
         edited = after_edit.topLevelItem(0).child(0).child(0)
         assert edited.data(0, CONNECTION_DATA)["host"] == "10.0.0.9", "edycja nie zapisana"
         assert edited.text(0) == "srv-99"
+
+        # Edycja przez formularz zmienia dane w miejscu — otwarta zakładka
+        # (`origin`, `session.conn`) dalej wskazuje na słownik z drzewa.
+        live = edited.data(0, CONNECTION_DATA)
+        original_exec, original_values = ConnectionDialog.exec, ConnectionDialog.values
+        ConnectionDialog.exec = lambda self: QDialog.Accepted
+        ConnectionDialog.values = lambda self: {
+            "name": "srv-100", "host": "10.0.0.10", "port": 22, "username": "root",
+        }
+        try:
+            after_edit._edit_connection(edited)
+        finally:
+            ConnectionDialog.exec, ConnectionDialog.values = original_exec, original_values
+        assert edited.data(0, CONNECTION_DATA) is live, "edycja odcięła otwartą zakładkę od drzewa"
+        assert live["host"] == "10.0.0.10" and edited.text(0) == "srv-100"
 
         # Uszkodzony plik nie może wywalić aplikacji ani zniknąć bez śladu.
         CONFIG_FILE.write_text("{to nie jest json", encoding="utf-8")
