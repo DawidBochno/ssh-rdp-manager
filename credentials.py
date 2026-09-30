@@ -9,6 +9,7 @@ połączenia — wraca ono do własnych pól z formularza.
 import base64
 import ctypes
 import json
+import os
 import sys
 import uuid
 from ctypes import wintypes
@@ -95,10 +96,27 @@ def load(path=None):
     return creds, ""
 
 
+def atomic_write_text(path, text):
+    """Zapis przez plik tymczasowy obok + `os.replace` (podmiana w jednym kroku).
+
+    Zwykłe `write_text` najpierw ucina plik do zera — zgaśnięcie prądu albo
+    awaria w trakcie zostawiały pusty/ucięty `connections.json`, czyli utratę
+    wszystkich połączeń. Tu stary plik jest cały aż do chwili podmiany.
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())  # dane na dysku, zanim podmienimy plik
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)  # po udanym replace już go nie ma
+
+
 def save(creds, path=None):
-    Path(path or CREDENTIALS_FILE).write_text(
-        json.dumps(creds, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    atomic_write_text(path or CREDENTIALS_FILE, json.dumps(creds, indent=2, ensure_ascii=False))
 
 
 def find(creds, cred_id):
@@ -295,6 +313,17 @@ def selftest():
     # Usunięte konto: połączenie wraca do własnych pól.
     assert effective_auth(own, [])["password"] == "blob-jana"
     assert effective_auth({"username": "x"}, creds)["username"] == "x"
+
+    # Przerwany zapis (tu: błąd w połowie write) nie może uciąć istniejącego pliku.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "credentials.json"
+        save(creds, path)
+        try:
+            atomic_write_text(path, None)  # write(None) -> TypeError w trakcie zapisu
+        except TypeError:
+            pass
+        assert load(path)[0] == creds, "przerwany zapis zepsuł plik"
+        assert not path.with_name(path.name + ".tmp").exists(), "został plik .tmp"
 
     nodes = [
         {"name": "g", "children": [

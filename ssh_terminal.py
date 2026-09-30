@@ -10,6 +10,7 @@ adresowaniem kursora — patrz sekcja „emulacja VT100" niżej.
 potrafi wisieć kilkanaście sekund — na wątku GUI zamroziłoby to całe okno.
 """
 import json
+import os
 import re
 import socket
 import tempfile
@@ -628,7 +629,10 @@ def remember_host_key(hostname, key, path=None):
         if path.exists():
             keys.load(str(path))
         keys.add(hostname, key.get_name(), key)
-        keys.save(str(path))
+        # Obok i podmiana — przerwany zapis nie może zgubić zapamiętanych kluczy.
+        tmp = path.with_name(path.name + ".tmp")
+        keys.save(str(tmp))
+        os.replace(tmp, path)
 
 
 class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -1799,10 +1803,29 @@ def script_label(script):
     return script["label"] if script.get("user") else t(script["label"])
 
 
-def _try_command(client, command):
-    """Uruchamia polecenie, zwraca tekst albo None (błąd/obcy shell)."""
+# `-n`: bez hasła albo od razu błąd (zamiast pytania, którego przez
+# `exec_command` nikt nie zobaczy); `-S -p ''`: hasło ze stdin, bez zachęty.
+SUDO_NO_PASSWORD = "sudo -n "
+SUDO_STDIN = "sudo -S -p '' "
+_SUDO_RE = re.compile(r"\bsudo\s+")
+
+
+def with_sudo(command, prefix):
+    """Każde „sudo ” w poleceniu -> `prefix` (SUDO_NO_PASSWORD albo SUDO_STDIN)."""
+    return _SUDO_RE.sub(prefix, command)
+
+
+def _try_command(client, command, stdin_text=None):
+    """Uruchamia polecenie, zwraca tekst albo None (błąd/obcy shell).
+
+    `stdin_text` = hasło dla `sudo -S` — przez stdin, nigdy w linii poleceń
+    (tam widziałby je każdy przez `ps`).
+    """
     try:
-        _, stdout, stderr = client.exec_command(command, timeout=15)
+        stdin, stdout, stderr = client.exec_command(command, timeout=15)
+        if stdin_text is not None:
+            stdin.write(stdin_text)
+            stdin.flush()
         out = stdout.read().decode("utf-8", errors="replace")
         err = stderr.read().decode("utf-8", errors="replace")
         status = stdout.channel.recv_exit_status()
@@ -1872,6 +1895,29 @@ def script_commands(script, param=None):
     return unix_cmd, windows_cmd
 
 
+def _run_sudo_script(parent, client, label, unix_cmd, windows_cmd):
+    """Skrypt z `sudo`: bez hasła -> wariant Windows -> pytanie o hasło.
+
+    Zwykłe `sudo` przez `exec_command` nie ma terminala, żeby zapytać o hasło,
+    więc padało od razu, a użytkownik widział ogólne „nie udało się”.
+    Wariant Windows przed pytaniem — na Windows Server nie ma sudo, pytanie
+    o hasło byłoby tam bez sensu. None = anulowane pytanie o hasło.
+    """
+    text = _try_command(client, with_sudo(unix_cmd, SUDO_NO_PASSWORD))
+    if text is None and windows_cmd:
+        text = _try_command(client, windows_cmd)
+    if text is not None:
+        return text
+    user = client.get_transport().get_username() or ""
+    password, ok = QInputDialog.getText(
+        parent, label, t("sudo_prompt", user), QLineEdit.Password
+    )
+    if not ok:
+        return None
+    text = _try_command(client, with_sudo(unix_cmd, SUDO_STDIN), password + "\n")
+    return text if text is not None else t("script_sudo_failed")
+
+
 def run_script(parent, client, script):
     """Pyta o parametr (jeśli skrypt go wymaga), uruchamia i pokazuje wynik."""
     param = None
@@ -1887,7 +1933,13 @@ def run_script(parent, client, script):
             QMessageBox.warning(parent, label, t("script_param_unsafe"))
             return
 
-    text = _run_commands(client, *script_commands(script, param))
+    unix_cmd, windows_cmd = script_commands(script, param)
+    if _SUDO_RE.search(unix_cmd):
+        text = _run_sudo_script(parent, client, label, unix_cmd, windows_cmd)
+        if text is None:
+            return  # anulowane pytanie o hasło
+    else:
+        text = _run_commands(client, unix_cmd, windows_cmd)
     notify.notify(t("notify_title"), t("notify_script_done", label))
     _show_script_output(parent, label, text)
 
@@ -2083,6 +2135,65 @@ def selftest():
     # Linux nie odpowiada (obcy shell) -> pada próba Windows.
     fallback_client = _FakeClient({"win": ("wynik win", 0)})
     assert _run_commands(fallback_client, "linux", "win") == "wynik win"
+
+    # sudo w skryptach: -n bez hasła, -S z hasłem przez stdin (nie w poleceniu).
+    assert with_sudo("sudo systemctl restart x && systemctl status x", SUDO_NO_PASSWORD) \
+        == "sudo -n systemctl restart x && systemctl status x"
+    assert with_sudo("sudo lastb || sudo journalctl", SUDO_STDIN) \
+        == "sudo -S -p '' lastb || sudo -S -p '' journalctl"
+    assert with_sudo("pseudosudo x", SUDO_STDIN) == "pseudosudo x", "tylko całe słowo sudo"
+
+    class _SudoStream:
+        def __init__(self, client):
+            self.client, self.channel = client, self
+
+        def write(self, text):
+            self.client.stdin += text
+
+        def flush(self):
+            pass
+
+        def read(self):
+            ok = self.client.stdin == "tajne\n" and self is self.client.out
+            return b"zrestartowano" if ok else b""
+
+        def recv_exit_status(self):
+            return 0 if self.client.stdin == "tajne\n" else 1
+
+    class _SudoClient:
+        """Serwer z sudo wymagającym hasła: -n pada, -S z dobrym hasłem przechodzi."""
+
+        def __init__(self):
+            self.stdin, self.commands = "", []
+            self.out = _SudoStream(self)
+
+        def exec_command(self, command, timeout=None):
+            self.commands.append(command)
+            self.stdin = ""
+            return _SudoStream(self), self.out, _SudoStream(self)
+
+        def get_transport(self):
+            return self
+
+        def get_username(self):
+            return "admin"
+
+    sudo_client = _SudoClient()
+    original_get_text = QInputDialog.getText
+    QInputDialog.getText = staticmethod(lambda *args, **kwargs: ("tajne", True))
+    try:
+        result = _run_sudo_script(None, sudo_client, "restart", "sudo systemctl restart x", None)
+    finally:
+        QInputDialog.getText = original_get_text
+    assert result == "zrestartowano", result
+    assert sudo_client.commands == ["sudo -n systemctl restart x", "sudo -S -p '' systemctl restart x"], \
+        sudo_client.commands
+    assert all("tajne" not in c for c in sudo_client.commands), "hasło w linii poleceń"
+    QInputDialog.getText = staticmethod(lambda *args, **kwargs: ("", False))
+    try:
+        assert _run_sudo_script(None, _SudoClient(), "x", "sudo ls", None) is None, "anulowanie"
+    finally:
+        QInputDialog.getText = original_get_text
     assert "Could not run" in _run_commands(_FakeClient({}), "linux", None)
 
     # Transfery plików: patrz transfers.selftest().
