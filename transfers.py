@@ -8,7 +8,6 @@ po drugiej stronie jest kasowany — połówka pliku jest gorsza niż jego brak
 import threading
 from pathlib import Path
 
-import paramiko
 from PySide6.QtCore import QEventLoop, Qt, QThread, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (

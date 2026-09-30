@@ -196,12 +196,28 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 
 ## Plany
 
-Kolejność, w jakiej warto rozbudowywać program (od najtańszych z realnym zyskiem):
+Do poprawienia (z przeglądu programu): okna Usługi, Dyski, Procesy, Skrypty
+i Generator kluczy wykonują polecenia na serwerze na wątku okna — na wolnym
+serwerze program potrafi nie reagować do 15 s.
 
-1. Makra na skrót klawiszowy, edytor `scripts.json` w oknie.
+Duże kierunki rozwoju, od największego zysku w codziennej pracy:
 
-Większe kierunki: hasło główne do pliku połączeń, RDP (wiele monitorów, brama,
-zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
+1. **Monitoring wszystkich serwerów w tle** — odpytywanie zapisanych serwerów
+   bez otwierania sesji, historia CPU/RAM/dysku z dni i tygodni, kafelki
+   zielony/żółty/czerwony na Starcie, alerty (dysk, brak odpowiedzi, wygasający
+   certyfikat TLS).
+2. **Podział ekranu** — kilka sesji obok siebie i pisanie do wszystkich naraz.
+3. **Scenariusze na grupie serwerów** — kilka kroków po kolei (kopia → aktualizacja
+   → restart → sprawdzenie), raport per serwer, opcjonalnie według harmonogramu.
+4. **Asystent AI w terminalu** — wyjaśnienie błędu lub logu, podpowiedź polecenia;
+   nic nie trafia do serwera bez kliknięcia.
+5. **Hasło główne i przenośny sejf połączeń** — te same połączenia na każdym
+   komputerze.
+6. **Instalator `.exe`** i aktualizacje bez gita.
+7. **Nagrywanie sesji i dziennik audytu.**
+
+Mniejsze: makra na skrót klawiszowy, edytor `scripts.json` w oknie, RDP (wiele
+monitorów, brama, zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
 
 ## Automatyczne sprawdzanie zmian (PR)
 

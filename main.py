@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QEvent, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
