@@ -203,7 +203,6 @@ TEXTS = {
         "reconnected": "[reconnected]",
         "decimal_sep": ".",
         # --- RDP ---
-        "rdp_connecting": "Connecting to {0}…",
         "rdp_disconnected": "RDP session ended (code {0}).",
         "rdp_needs_windows": "RDP works on Windows only.",
         "rdp_no_control": "The built-in RDP control could not be started, so the session"
@@ -677,7 +676,6 @@ TEXTS = {
         "reconnected": "[połączono ponownie]",
         "decimal_sep": ",",
         # --- RDP ---
-        "rdp_connecting": "Łączenie z {0}…",
         "rdp_disconnected": "Sesja RDP zakończona (kod {0}).",
         "rdp_needs_windows": "RDP działa tylko na Windows.",
         "rdp_no_control": "Nie udało się uruchomić wbudowanej kontrolki RDP, więc sesja"
