@@ -93,9 +93,11 @@ class SettingsDialog(QDialog):
         self.alerts = QCheckBox(t("menu_alerts"))
         self.alerts.setChecked(current["alerts"])
         self.alert_threshold = _spin(current["alert_threshold"], 1, 100, 1, " %")
+        self.monitor_interval = _spin(current["monitor_interval"], 60, 3600, 60, " s")
         form = self._tab(tabs, t("settings_tab_notifications"))
         form.addRow(self.tree_status)
         form.addRow(t("settings_status_interval"), self.tree_status_interval)
+        form.addRow(t("settings_monitor_interval"), self.monitor_interval)
         form.addRow(self.alerts)
         form.addRow(t("settings_alert_threshold"), self.alert_threshold)
         self.tree_status.toggled.connect(self.tree_status_interval.setEnabled)
@@ -174,6 +176,7 @@ class SettingsDialog(QDialog):
             "tree_status_interval": self.tree_status_interval.value(),
             "alerts": self.alerts.isChecked(),
             "alert_threshold": self.alert_threshold.value(),
+            "monitor_interval": self.monitor_interval.value(),
             "lock": self.lock.isChecked(),
             "lock_timeout": self.lock_timeout.value(),
             "new_pin": self.new_pin.text(),

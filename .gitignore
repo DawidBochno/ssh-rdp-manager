@@ -24,3 +24,6 @@ known_hosts
 
 # Ustawienia i skille Claude Code — lokalne, jak CLAUDE.md.
 .claude/
+
+# Historia monitoringu w tle (SQLite) — lokalna, nie repo.
+monitor.db

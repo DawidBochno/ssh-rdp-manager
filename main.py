@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -67,6 +67,7 @@ import graphs
 import i18n
 import keygen
 import logtail
+import monitor
 import multirun
 import notify
 import processes
@@ -325,7 +326,7 @@ class ConnectionDialog(QDialog):
     _FORM_KEYS = {
         "name", "host", "port", "username", "protocol", "key_file",
         "jump_host", "startup", "notes", "redirect_drives", "tags",
-        "password", "passphrase", "credential",
+        "password", "passphrase", "credential", "monitor",
     }
 
     def __init__(self, parent=None, data=None):
@@ -382,6 +383,10 @@ class ConnectionDialog(QDialog):
         self.redirect_drives = QCheckBox(t("chk_redirect_drives"))
         self.redirect_drives.setChecked(bool(data.get("redirect_drives")))
 
+        self.monitor = QCheckBox(t("chk_monitor"))
+        self.monitor.setChecked(bool(data.get("monitor")))
+        self.monitor.setToolTip(t("tip_monitor"))
+
         self.save_password = QCheckBox(t("chk_save_password"))
         self.save_password.setChecked(bool(stored or stored_passphrase))
         self.save_password.setEnabled(CAN_STORE_PASSWORDS)
@@ -434,6 +439,7 @@ class ConnectionDialog(QDialog):
         self._redirect_drives_row = form.rowCount()
         form.addRow("", self.redirect_drives)
         form.addRow("", self.save_password)
+        form.addRow("", self.monitor)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         test = buttons.addButton(t("btn_test_connection"), QDialogButtonBox.ActionRole)
@@ -572,6 +578,8 @@ class ConnectionDialog(QDialog):
             data["notes"] = self.notes.toPlainText().strip()
         if protocol == "rdp" and self.redirect_drives.isChecked():
             data["redirect_drives"] = True
+        if self.monitor.isChecked():
+            data["monitor"] = True
         if self.credential.currentData():
             # Hasła są na koncie — własnych nie trzymamy, żeby nie zostały
             # stare, zapomniane kopie obok.
@@ -1053,6 +1061,22 @@ class HomeTab(QWidget):
         buttons.addStretch()
         layout.addLayout(buttons)
 
+        # Kafelki monitoringu w tle (monitor.py) — zwykła lista w trybie ikon,
+        # bez własnego widżetu; schowane, gdy nic nie jest monitorowane.
+        self.tiles_title = QLabel(t("home_monitor_title"))
+        self.tiles_title.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.tiles_title)
+        self.tiles = QListWidget()
+        self.tiles.setViewMode(QListWidget.IconMode)
+        self.tiles.setResizeMode(QListWidget.Adjust)
+        self.tiles.setMovement(QListWidget.Static)
+        self.tiles.setGridSize(QSize(220, 64))
+        self.tiles.setWordWrap(True)
+        self.tiles.setSpacing(4)
+        self.tiles.setMaximumHeight(160)
+        self.tiles.itemActivated.connect(self._open_item)
+        layout.addWidget(self.tiles)
+
         # Wyszukiwarka zapisanych połączeń — po nazwie, hoście i użytkowniku.
         self.search = QLineEdit()
         self.search.setPlaceholderText(t("home_search_placeholder"))
@@ -1068,12 +1092,15 @@ class HomeTab(QWidget):
         layout.addWidget(self.results)
         layout.addStretch()
         main_window.tree.saved.connect(self.refresh)
+        main_window.tree.saved.connect(self.refresh_tiles)
         self.refresh()
+        self.refresh_tiles()
 
     def showEvent(self, event):
         # Lista mogła się zmienić, gdy Home był schowany.
         super().showEvent(event)
         self.refresh()
+        self.refresh_tiles()
 
     def connections(self):
         return tree_connections(self.main_window.tree)
@@ -1099,6 +1126,33 @@ class HomeTab(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, data)
             self.results.addItem(item)
+
+    def refresh_tiles(self):
+        """Kafelek na każde monitorowane połączenie, kolor wg ostatniego wyniku."""
+        self.tiles.clear()
+        results = self.main_window.monitor_results
+        threshold = alert_threshold()
+        for data in self.connections():
+            if not data.get("monitor"):
+                continue
+            key = monitor.target_key(data)
+            result = results.get(key)
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, data)
+            if result is None:
+                item.setText(f"{data.get('name', '')}\n{t('monitor_waiting')}")
+            else:
+                state = monitor.status(result, threshold)
+                item.setText(f"{data.get('name', '')}\n{monitor.summary(result)}")
+                color = QColor(monitor.COLORS[state])
+                color.setAlpha(110)  # półprzezroczysty — czytelny w obu motywach
+                item.setBackground(QBrush(color))
+                tip = [result.get("error", ""), monitor.history_text(key)]
+                item.setToolTip("\n".join(line for line in tip if line))
+            self.tiles.addItem(item)
+        visible = self.tiles.count() > 0
+        self.tiles.setVisible(visible)
+        self.tiles_title.setVisible(visible)
 
     def _open_item(self, item):
         self.main_window._open_connection_tab(item.data(Qt.UserRole))
@@ -1299,6 +1353,12 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
 
+        # Monitoring w tle (monitor.py): ostatni wynik i stan per host:port.
+        self.monitor_results = {}
+        self._monitor_states = {}
+        self._monitor_timer = None  # startuje z main(), jak status drzewa
+        self._monitor_round = None
+
         # "Home": pulpit startowy, zawsze pierwsza zakładka, bez przycisku zamknięcia.
         home_index = self.tabs.addTab(HomeTab(self), t("tab_home"))
         self.tabs.tabBar().setTabButton(home_index, QTabBar.RightSide, None)
@@ -1396,6 +1456,75 @@ class MainWindow(QMainWindow):
         if self._status_check:
             self._status_check.wait()  # inaczej Qt wywala proces przy zamykaniu
             self._status_check = None
+
+    # --- monitoring serwerów w tle (monitor.py) -----------------------------
+
+    def start_monitoring(self):
+        """Wołane z `main()`, nie z `__init__` — `--selftest` nie ma chodzić po sieci."""
+        interval = int(i18n.settings().value("monitor_interval", monitor.INTERVAL_DEFAULT))
+        self._monitor_timer = QTimer(self)
+        self._monitor_timer.timeout.connect(self._monitor_once)
+        self._monitor_timer.start(interval * 1000)
+        # Nowo zaznaczony serwer ma dostać kafelek od razu, nie po 5 minutach.
+        self.tree.saved.connect(self._monitor_new)
+        self._monitor_once()  # od razu, nie czekaj na pierwszy odstęp
+
+    def _monitor_targets(self):
+        """Cele z odszyfrowanymi hasłami — zbierane na wątku GUI (odczyt drzewa)."""
+        targets = {}
+        for conn in tree_connections(self.tree):
+            if not conn.get("monitor") or not conn.get("host"):
+                continue
+            auth = credentials.effective_auth(conn)
+            protocol = conn.get("protocol", "ssh")
+            targets[monitor.target_key(conn)] = {
+                "name": conn.get("name", conn["host"]),
+                "protocol": protocol,
+                "host": conn["host"],
+                "port": int(conn.get("port") or (RDP_PORT if protocol == "rdp" else SSH_PORT)),
+                "jump_host": conn.get("jump_host"),
+                "username": auth["username"],
+                "key_file": auth["key_file"],
+                "password": decrypt_password(auth["password"]) if auth["password"] else "",
+                "passphrase": decrypt_password(auth["passphrase"]) if auth["passphrase"] else "",
+            }
+        return targets
+
+    def _monitor_once(self):
+        if self._monitor_round and self._monitor_round.isRunning():
+            return  # poprzednia runda jeszcze trwa — nie dokładamy drugiej
+        targets = self._monitor_targets()
+        if not targets:
+            return
+        self._monitor_names = {key: target["name"] for key, target in targets.items()}
+        self._monitor_round = monitor.MonitorRound(targets)
+        self._monitor_round.done.connect(self._on_monitor_done)
+        self._monitor_round.start()
+
+    def _monitor_new(self):
+        if any(key not in self.monitor_results for key in self._monitor_targets()):
+            self._monitor_once()
+
+    def _on_monitor_done(self, results):
+        threshold = alert_threshold()
+        for key, result in results.items():
+            state = monitor.status(result, threshold)
+            text = monitor.alert_text(
+                self._monitor_names.get(key, key), self._monitor_states.get(key), state, result
+            )
+            if text:
+                notify.notify(t("monitor_title"), text)
+            self._monitor_states[key] = state
+        self.monitor_results.update(results)
+        self.tabs.widget(0).refresh_tiles()
+
+    def _stop_monitoring(self):
+        if self._monitor_timer:
+            self._monitor_timer.stop()
+        if self._monitor_round:
+            # ponytail: czeka na koniec rundy (do CHECK_TIMEOUT), przerywanie
+            # połączeń w locie dopiero, gdy zamykanie okna zacznie przeszkadzać
+            self._monitor_round.wait()
 
     # --- blokada okna po bezczynności --------------------------------------
 
@@ -1590,6 +1719,7 @@ class MainWindow(QMainWindow):
             ),
             "alerts": alerts_enabled(),
             "alert_threshold": alert_threshold(),
+            "monitor_interval": int(stored.value("monitor_interval", monitor.INTERVAL_DEFAULT)),
             "lock": stored.value("lock_enabled", False, type=bool),
             "lock_timeout": int(stored.value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
             "pin_set": bool(stored.value("lock_pin_hash")),
@@ -1641,6 +1771,9 @@ class MainWindow(QMainWindow):
 
         set_alerts_enabled(new["alerts"])
         set_alert_threshold(new["alert_threshold"])
+        stored.setValue("monitor_interval", new["monitor_interval"])
+        if "monitor_interval" in changed and self._monitor_timer:
+            self._monitor_timer.start(new["monitor_interval"] * 1000)
 
         stored.setValue("tree_status_interval", new["tree_status_interval"])
         stored.setValue("tree_status_enabled", new["tree_status"])
@@ -2171,6 +2304,7 @@ class MainWindow(QMainWindow):
         if self._update_check:
             self._update_check.wait()  # inaczej Qt wywala proces przy zamykaniu
         self._stop_status_timer()
+        self._stop_monitoring()
         if self._lock_timer:
             self._lock_timer.stop()
         for i in range(self.tabs.count()):
@@ -2358,6 +2492,34 @@ def selftest():
     assert HomeTab.matches(probe, "10.0.0"), "brak dopasowania po hoście"
     assert HomeTab.matches(probe, "ADMIN"), "wyszukiwanie ma ignorować wielkość liter"
     assert not HomeTab.matches(probe, "baza"), "fałszywe dopasowanie"
+
+    # Kafelki monitoringu: tylko połączenia z "monitor", kolor wg wyniku.
+    # Baza historii w temp — selftest nie zostawia monitor.db w katalogu.
+    import tempfile
+    real_db, monitor.DB_FILE = monitor.DB_FILE, Path(tempfile.mkdtemp()) / "m.db"
+    try:
+        home = window.tabs.widget(0)
+        home.refresh_tiles()
+        assert home.tiles.count() == 0, "bez monitorowanych połączeń kafelków nie ma"
+        data["monitor"] = True
+        home.refresh_tiles()
+        assert home.tiles.count() == 1 and "srv-01" in home.tiles.item(0).text()
+        assert t("monitor_waiting") in home.tiles.item(0).text(), "przed pierwszą rundą"
+        assert "10.0.0.1:22" in window._monitor_targets()
+        window._monitor_names = {"10.0.0.1:22": "srv-01"}
+        window._on_monitor_done({"10.0.0.1:22": {"ok": True, "cpu": 5, "mem": 10, "disk": 20}})
+        assert "CPU 5%" in home.tiles.item(0).text(), home.tiles.item(0).text()
+        assert window._monitor_states["10.0.0.1:22"] == monitor.GREEN
+        assert home.tiles.item(0).data(Qt.UserRole) is data, "dwuklik kafelka = to połączenie"
+        dialog = ConnectionDialog(None, data)
+        assert dialog.monitor.isChecked() and dialog.values().get("monitor") is True
+        dialog.monitor.setChecked(False)
+        assert "monitor" not in dialog.values(), "odznaczenie ma zdjąć monitoring"
+    finally:
+        monitor.DB_FILE = real_db
+        data.pop("monitor", None)
+        window.monitor_results.clear()
+        window._monitor_states.clear()
 
     # "Home" (pierwsza) i "+" (ostatnia) to stałe zakładki bez przycisku zamknięcia.
     assert window.tabs.count() == 2, "startowe zakładki: Home i +"
@@ -2771,6 +2933,7 @@ def selftest():
     sftp.selftest()
     graphs.selftest()
     credentials.selftest()
+    monitor.selftest()
     del app
     print("main selftest OK")
 
@@ -2784,6 +2947,7 @@ def main():
     window.show()
     window.check_updates()
     window.start_status_polling()
+    window.start_monitoring()
     window.start_lock_watch()
     sys.exit(app.exec())
 
