@@ -74,6 +74,7 @@ import scanner
 import services
 import sftp
 import settings
+import split
 import transfers
 import tunnels
 import update
@@ -124,6 +125,7 @@ TOOLS = (
     ("menu_disks", "_open_disks"),
     ("menu_processes", "_open_processes"),
     ("menu_multirun", "_open_multirun"),
+    ("menu_split", "_open_split"),
     ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
 )
@@ -1690,7 +1692,7 @@ class MainWindow(QMainWindow):
 
         # Katalog jest widoczny dla calej sieci lokalnej, dopoki nie ograniczymy
         # go do konkretnego adresu — podpowiadamy host biezacej sesji SSH/RDP.
-        current = self.tabs.currentWidget()
+        current = self._current_session()
         suggested_ip = getattr(getattr(current, "terminal", None), "host", "") or ""
         allowed_ip, ok = QInputDialog.getText(
             self, t(spec["label"]), t("srv_allowed_ip_prompt"), text=suggested_ip
@@ -1749,7 +1751,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(t("srv_all_stopped"), 5000)
 
     def _run_script(self, script):
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("scripts_short"), t("scripts_need_session"))
             return
@@ -1785,8 +1787,11 @@ class MainWindow(QMainWindow):
         self.tree_filter.selectAll()
 
     def tab_order(self):
-        """Zakładki, po których wolno chodzić — bez „+" na końcu."""
-        return [i for i in range(self.tabs.count()) if self.tabs.widget(i) is not self._plus_tab]
+        """Zakładki, po których wolno chodzić — bez „+" na końcu i bez schowanych w siatce."""
+        return [
+            i for i in range(self.tabs.count())
+            if self.tabs.widget(i) is not self._plus_tab and self.tabs.isTabVisible(i)
+        ]
 
     def _cycle_tab(self, step):
         order = self.tab_order()
@@ -1819,14 +1824,21 @@ class MainWindow(QMainWindow):
             self, t("about_title"), t("about_body")
         )
 
+    def _current_session(self):
+        """Zakładka na wierzchu, a w siatce — sesja ostatnio klikniętego terminala."""
+        widget = self.tabs.currentWidget()
+        if isinstance(widget, split.SplitTab):
+            return widget.focused_session()
+        return widget
+
     def _show_stats(self, widget, text):
         """Pasek pokazuje tylko serwer, którego zakładka jest na wierzchu."""
-        if widget is self.tabs.currentWidget():
+        if widget is self._current_session():
             self.statusBar().showMessage(text)
             self.stats_graph.set_history(getattr(widget, "history", None))
 
     def _show_current_stats(self, _index=None):
-        widget = self.tabs.currentWidget()
+        widget = self._current_session()
         self.statusBar().showMessage(getattr(widget, "last_stats", "") or t("status_idle"))
         self.stats_graph.set_history(getattr(widget, "history", None))
 
@@ -1840,8 +1852,10 @@ class MainWindow(QMainWindow):
         # grupach to dwa różne serwery, a nie jedna zakładka. `duplicate` =
         # „Duplikuj sesję” z menu zakładki: świadomie drugi raz to samo.
         for i in range(0 if duplicate else self.tabs.count()):
-            if getattr(self.tabs.widget(i), "origin", None) is conn:
-                self.tabs.setCurrentIndex(i)
+            widget = self.tabs.widget(i)
+            if getattr(widget, "origin", None) is conn:
+                # Sesja w siatce ma schowaną zakładkę — pokazujemy siatkę.
+                self.tabs.setCurrentWidget(getattr(widget, "split", None) or widget)
                 return
 
         # `conn` to żywy słownik z drzewa — znacznik trafia do connections.json.
@@ -1900,7 +1914,7 @@ class MainWindow(QMainWindow):
         StatsDashboard(self, self).exec()
 
     def _open_log_tail(self):
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("logtail_title"), t("tunnels_need_session"))
             return
@@ -1912,21 +1926,21 @@ class MainWindow(QMainWindow):
         self._add_tab(tab, t("log_tab_title", Path(path).name))
 
     def _manage_services(self):
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("services_title"), t("tunnels_need_session"))
             return
         services.ServiceDialog(self, session.terminal.client).exec()
 
     def _open_disks(self):
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("disks_title"), t("tunnels_need_session"))
             return
         disks.DiskDialog(self, session.terminal.client).exec()
 
     def _open_processes(self):
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("processes_title"), t("tunnels_need_session"))
             return
@@ -1947,10 +1961,39 @@ class MainWindow(QMainWindow):
             return
         multirun.MultiRunDialog(self, targets).exec()
 
+    def _open_split(self):
+        """Siatka 2–4 terminali (split.py); ich zakładki chowają się na ten czas."""
+        sessions = [
+            self.tabs.widget(i) for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), SessionTab) and self.tabs.widget(i).split is None
+        ]
+        if len(sessions) < 2:
+            QMessageBox.information(self, t("split_title"), t("split_need_sessions"))
+            return
+        picker = split.SplitPicker(self, sessions, self._current_session())
+        if picker.exec() != QDialog.Accepted:
+            return
+        chosen = picker.chosen()
+        grid = split.SplitTab(chosen, self._on_split_released)
+        grid.focus_changed.connect(self._show_current_stats)
+        for session in chosen:
+            self.tabs.setTabVisible(self.tabs.indexOf(session), False)
+        self._add_tab(grid, t("split_tab", len(chosen)))
+        chosen[0].terminal.setFocus()
+
+    def _on_split_released(self, grid, sessions):
+        for session in sessions:
+            self.tabs.setTabVisible(self.tabs.indexOf(session), True)
+        index = self.tabs.indexOf(grid)
+        if index >= 0:
+            self.tabs.removeTab(index)
+        grid.deleteLater()
+        self.tabs.setCurrentWidget(sessions[0])
+
     def _open_keygen(self):
         # Wgranie do authorized_keys wymaga sesji, ale generowanie i zapis — nie;
         # bez otwartej zakładki przycisk wgrania jest tylko wyszarzony.
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         client = session.terminal.client if isinstance(session, SessionTab) else None
         keygen.KeyGenDialog(self, client).exec()
 
@@ -1961,7 +2004,7 @@ class MainWindow(QMainWindow):
         a nie strumień od początku sesji. Log pełny wymagałby pisania do pliku
         na bieżąco — dołożyć wtedy, gdy komuś zabraknie tych 5000 linii.
         """
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("menu_save_log"), t("log_need_session"))
             return
@@ -2051,7 +2094,7 @@ class MainWindow(QMainWindow):
             )
 
     def _manage_tunnels(self):
-        session = self.tabs.currentWidget()
+        session = self._current_session()
         if not isinstance(session, SessionTab):
             QMessageBox.information(self, t("tunnel_title"), t("tunnels_need_session"))
             return
@@ -2161,6 +2204,12 @@ class MainWindow(QMainWindow):
         widget = self.tabs.widget(index)
         if index == 0 or widget is self._plus_tab:
             return  # "Home" i "+" nie mają przycisku zamknięcia, ale na wszelki wypadek
+        if isinstance(widget, split.SplitTab):
+            widget.release()  # zamknięcie siatki = „Rozdziel”, sesje zostają
+            return
+        if getattr(widget, "split", None):
+            widget.split.release()  # terminal musi wrócić, zanim sesja zniknie
+            index = self.tabs.indexOf(widget)
         self.tabs.removeTab(index)
         if hasattr(widget, "close_session"):  # SessionTab albo RdpTab
             widget.close_session()
@@ -2753,6 +2802,30 @@ def selftest():
         assert entries["www"]["username"] == "domyslny", "Host * ma dawac wartosci domyslne"
         assert fresh.import_ssh_config(config.with_name("brak")) is None, "brak pliku = None"
 
+    # Podział ekranu: zakładki sesji chowają się, Ctrl+Tab je omija, a
+    # zamknięcie siatki to „Rozdziel” — sesje wracają, nic się nie rozłącza.
+    fakes = []
+    for name in ("s1", "s2"):
+        fake = QWidget()
+        fake.split, fake.terminal = None, ssh_terminal.OfflineTerminal()
+        fake.splitter = QSplitter(fake)
+        fake.splitter.addWidget(QWidget())
+        fake.splitter.addWidget(fake.terminal)
+        window._add_tab(fake, name)
+        fakes.append(fake)
+    grid = split.SplitTab(fakes, window._on_split_released)
+    for fake in fakes:
+        window.tabs.setTabVisible(window.tabs.indexOf(fake), False)
+    window._add_tab(grid, "grid")
+    assert window._current_session() is fakes[0], "w siatce narzędzia biorą sesję z siatki"
+    order = window.tab_order()
+    assert all(window.tabs.indexOf(f) not in order for f in fakes), "schowane w Ctrl+Tab"
+    window._close_tab(window.tabs.indexOf(grid))
+    assert window.tabs.indexOf(grid) == -1 and fakes[0].split is None
+    assert all(window.tabs.isTabVisible(window.tabs.indexOf(f)) for f in fakes)
+    for fake in fakes:
+        window._close_tab(window.tabs.indexOf(fake))
+
     i18n.selftest()
 
     ssh_terminal.selftest()
@@ -2771,6 +2844,7 @@ def selftest():
     sftp.selftest()
     graphs.selftest()
     credentials.selftest()
+    split.selftest()
     del app
     print("main selftest OK")
 
