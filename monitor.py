@@ -16,7 +16,6 @@ połączyć się ręcznie, żeby klucz trafił do `known_hosts`.
 
 import sqlite3
 import socket
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -220,7 +219,10 @@ def history(key, hours=24, path=None, now=None):
 
 
 def history_text(key):
-    stats = history(key)
+    try:
+        stats = history(key)
+    except sqlite3.Error:
+        return ""  # baza akurat zablokowana zapisem rundy — podpowiedź to tylko dodatek
     if stats is None:
         return ""
     cells = [f"{v:.0f}%" if v is not None else "—" for v in stats]

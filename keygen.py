@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import t
-from ssh_terminal import _try_command
+from ssh_terminal import failed_text, in_background, run_command
 
 # Nazwa w menu -> funkcja generująca. Ed25519 jest krótszy i szybszy do
 # wygenerowania niż RSA, ale nie każdy stary serwer go rozumie — stąd oba.
@@ -127,9 +127,12 @@ class KeyGenDialog(QDialog):
     def _install(self):
         if not self.key or not self.client:
             return
-        text = _try_command(self.client, install_command(self.output.toPlainText().strip()))
+        command = install_command(self.output.toPlainText().strip())
+        text, error = in_background(self, lambda: run_command(self.client, command))
         if text is None:
-            QMessageBox.warning(self, t("keygen_title"), t("keygen_install_failed"))
+            QMessageBox.warning(
+                self, t("keygen_title"), failed_text(t("keygen_install_failed"), error)
+            )
         else:
             QMessageBox.information(self, t("keygen_title"), t("keygen_installed"))
 

@@ -137,6 +137,19 @@ py main.py --selftest
   osobno dla każdego serwera (OK/BŁĄD), z zapisem do pliku.
 - Menu **Programy → Generator kluczy SSH**: RSA albo Ed25519, opcjonalne hasło klucza,
   wgranie klucza publicznego do `authorized_keys` aktywnej sesji jednym kliknięciem.
+- **Monitoring w tle**: pole „Monitoruj w tle” w formularzu połączenia. Zaznaczone
+  serwery są sprawdzane co kilka minut bez otwierania zakładki (odstęp w
+  Ustawieniach → Powiadomienia). Na Starcie kafelki: zielony = OK, żółty = CPU/RAM/
+  dysk ponad próg, czerwony = brak odpowiedzi; podpowiedź pokazuje ostatnie 24 h,
+  dwuklik otwiera sesję. Zmiana stanu = dymek w zasobniku. Historia (30 dni)
+  w lokalnym `monitor.db`. Nieznany klucz serwera nie jest akceptowany w tle —
+  trzeba raz połączyć się ręcznie.
+- Menu **Programy → Podziel ekran**: 2–4 sesje SSH obok siebie w jednej zakładce;
+  **„Wpisuj do wszystkich”** wysyła to, co piszesz, do każdego terminala w siatce
+  (czerwone ramki; terminale tylko do odczytu pomijane). „Rozdziel” oddaje zakładki.
+- Okna narzędzi (Usługi, Dyski, Procesy, Skrypty, Generator kluczy, TLS) pracują
+  w tle — wolny serwer nie zamraża programu, a odmowa serwera pokazuje jego
+  komunikat (np. „Access denied”).
 - Menu **Serwery**: wbudowany serwer HTTP i TFTP po *naszej* stronie — zdalny host
   pobiera plik od nas, zamiast stawiać cokolwiek u siebie.
 - Sprawdzanie aktualizacji przy starcie: gdy gałąź `main` na GitHubie jest nowsza,
@@ -196,28 +209,12 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 
 ## Plany
 
-Do poprawienia (z przeglądu programu): okna Usługi, Dyski, Procesy, Skrypty
-i Generator kluczy wykonują polecenia na serwerze na wątku okna — na wolnym
-serwerze program potrafi nie reagować do 15 s.
+Pełna lista ponad 40 propozycji z porównaniem do MobaXterm, Termius, Royal TS,
+SecureCRT, mRemoteNG, Tabby, WindTerm i Xshell: **[ROADMAP.md](ROADMAP.md)**.
 
-Duże kierunki rozwoju, od największego zysku w codziennej pracy:
-
-1. **Monitoring wszystkich serwerów w tle** — odpytywanie zapisanych serwerów
-   bez otwierania sesji, historia CPU/RAM/dysku z dni i tygodni, kafelki
-   zielony/żółty/czerwony na Starcie, alerty (dysk, brak odpowiedzi, wygasający
-   certyfikat TLS).
-2. **Podział ekranu** — kilka sesji obok siebie i pisanie do wszystkich naraz.
-3. **Scenariusze na grupie serwerów** — kilka kroków po kolei (kopia → aktualizacja
-   → restart → sprawdzenie), raport per serwer, opcjonalnie według harmonogramu.
-4. **Asystent AI w terminalu** — wyjaśnienie błędu lub logu, podpowiedź polecenia;
-   nic nie trafia do serwera bez kliknięcia.
-5. **Hasło główne i przenośny sejf połączeń** — te same połączenia na każdym
-   komputerze.
-6. **Instalator `.exe`** i aktualizacje bez gita.
-7. **Nagrywanie sesji i dziennik audytu.**
-
-Mniejsze: makra na skrót klawiszowy, edytor `scripts.json` w oknie, RDP (wiele
-monitorów, brama, zmiana rozdzielczości w locie), Telnet i port szeregowy (COM).
+Najbliżej w kolejce: alert o wygasającym certyfikacie TLS i wykres historii
+w monitoringu, kolor środowiska produkcyjnego na zakładce, przywracanie sesji
+po starcie, dziedziczenie ustawień z grupy i import z innych programów.
 
 ## Automatyczne sprawdzanie zmian (PR)
 
@@ -263,6 +260,9 @@ płatne tokeny API, zwykle grosze za PR).
 | `settings.py` | Okno Ustawień |
 | `multirun.py` | Polecenie/skrypt na wielu serwerach naraz |
 | `keygen.py` | Generator kluczy SSH |
+| `monitor.py` | Monitoring serwerów w tle, historia w SQLite |
+| `split.py` | Podział ekranu i pisanie do wielu terminali |
+| `ROADMAP.md` | Porównanie z rynkiem i plan rozwoju |
 
 ## Licencja
 
