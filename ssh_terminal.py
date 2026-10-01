@@ -1297,6 +1297,7 @@ class SshTerminal(QPlainTextEdit):
     disk_changed = Signal(object)  # dict z disk_free/disk_pct albo None — dla panelu SFTP
     session_lost = Signal()  # zerwane łącze — nie `exit` w powłoce ani zamknięcie zakładki
     activity = Signal()  # przyszło wyjście — okno znaczy nieaktywną zakładkę
+    sent = Signal(object)  # dane, które `send_text()` wysłał do powłoki (str/bytes)
 
     # Atrybuty klasy, nie instancji — przełącznik z menu ma łapać także zakładki
     # otwarte później, dokładnie jak `TerminalHighlighter.enabled`.
@@ -1325,6 +1326,9 @@ class SshTerminal(QPlainTextEdit):
         self.alt_view.setFont(terminal_font())
         self.alt_view.setGeometry(self.viewport().rect())
         self.alt_view.set_colors(*_alt_colors(self))
+        # Jawnie: bez tego `_show_alt(False)` sprzed pokazania okna (isVisible()
+        # jeszcze False) nic nie robi i nakładka wyskakuje nad tekstem przy show().
+        self.alt_view.hide()
 
         self._closing = False
         self.last_stats = ""
@@ -1481,6 +1485,7 @@ class SshTerminal(QPlainTextEdit):
         if self.read_only or not self.channel or self.channel.closed:
             return False
         self.channel.send(data)
+        self.sent.emit(data)  # siatka (split.py) powiela to do pozostałych terminali
         return True
 
     def send_startup(self, commands):
@@ -1544,6 +1549,32 @@ class SshTerminal(QPlainTextEdit):
         self.stats.wait(3000)
 
 
+class FakeChannel:
+    """Kanał do testów: zapamiętuje wysłane dane."""
+
+    closed = False
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, data):
+        self.sent.append(data)
+
+    def resize_pty(self, **_):
+        pass
+
+
+class OfflineTerminal(SshTerminal):
+    """Terminal do testów: prawdziwy widżet, bez czytnika, statystyk i sieci."""
+
+    def __init__(self):
+        super().__init__(None, FakeChannel())
+
+    def _start_io(self, client, channel):
+        self.client, self.channel, self.host = client, channel, ""
+        self._pty_size = (0, 0)
+
+
 class SessionTab(QWidget):
     """Zawartość zakładki sesji: SFTP po lewej, terminal po prawej — wzorem MobaXterm."""
 
@@ -1574,6 +1605,8 @@ class SessionTab(QWidget):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([220, 780])
+        self.splitter = splitter  # siatka (split.py) zabiera stąd terminal i oddaje
+        self.split = None  # SplitTab, w którym terminal akurat jest
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2287,17 +2320,8 @@ def selftest():
     assert macros == [("Root", "sudo -i"), ("uptime", "uptime"), ("Env", "export B=2")], macros
 
     # Tylko do odczytu: klawisze, wklejanie i makra nie mogą dojść do kanału.
-    class _Channel:
-        closed = False
-
-        def __init__(self):
-            self.sent = []
-
-        def send(self, data):
-            self.sent.append(data)
-
-    guarded = SshTerminal.__new__(SshTerminal)  # bez wątków i sieci — sama logika
-    guarded.channel = _Channel()
+    guarded = OfflineTerminal()
+    guarded.channel = FakeChannel()
     assert guarded.send_text("ls\r") and guarded.channel.sent == ["ls\r"]
     guarded.read_only = True
     assert not guarded.send_text("rm -rf /\r"), "tryb tylko do odczytu przepuścił tekst"

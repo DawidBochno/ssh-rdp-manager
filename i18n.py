@@ -385,6 +385,15 @@ TEXTS = {
         "test_port_open": "Port {0} responds.",
         "test_port_closed": "Port {0} does not respond.",
         "home_last_used": "(last: {0})",
+        "menu_split": "Split screen…",
+        "split_title": "Split screen",
+        "split_pick": "Pick 2 to {0} open SSH sessions:",
+        "split_need_sessions": "Open at least two SSH sessions first.",
+        "split_tab": "⊞ Grid ({0})",
+        "split_broadcast": "Type into all",
+        "split_broadcast_tip": "Everything typed (keys, paste) goes to every terminal in the grid.\n"
+                               "Read-only terminals are skipped.",
+        "split_release": "Unsplit",
         "home_monitor_title": "Monitored servers",
         "chk_monitor": "Monitor in the background (tile on Home, alerts)",
         "tip_monitor": "Logs in every few minutes and reads CPU/RAM/disk (RDP: port only).\n"
@@ -850,6 +859,15 @@ TEXTS = {
         "test_port_open": "Port {0} odpowiada.",
         "test_port_closed": "Port {0} nie odpowiada.",
         "home_last_used": "(ostatnio: {0})",
+        "menu_split": "Podziel ekran…",
+        "split_title": "Podział ekranu",
+        "split_pick": "Wybierz od 2 do {0} otwartych sesji SSH:",
+        "split_need_sessions": "Najpierw otwórz co najmniej dwie sesje SSH.",
+        "split_tab": "⊞ Siatka ({0})",
+        "split_broadcast": "Wpisuj do wszystkich",
+        "split_broadcast_tip": "Wszystko, co wpiszesz (klawisze, wklejanie), trafia do każdego terminala w siatce.\n"
+                               "Terminale tylko do odczytu są pomijane.",
+        "split_release": "Rozdziel",
         "home_monitor_title": "Monitorowane serwery",
         "chk_monitor": "Monitoruj w tle (kafelek na Starcie, alerty)",
         "tip_monitor": "Co kilka minut loguje się i czyta CPU/RAM/dysk (RDP: tylko port).\n"
