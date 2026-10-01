@@ -1815,11 +1815,12 @@ def with_sudo(command, prefix):
     return _SUDO_RE.sub(prefix, command)
 
 
-def _try_command(client, command, stdin_text=None):
-    """Uruchamia polecenie, zwraca tekst albo None (błąd/obcy shell).
+def run_command(client, command, stdin_text=None):
+    """Uruchamia polecenie -> (tekst albo None, komunikat błędu z serwera).
 
     `stdin_text` = hasło dla `sudo -S` — przez stdin, nigdy w linii poleceń
-    (tam widziałby je każdy przez `ps`).
+    (tam widziałby je każdy przez `ps`). Blokuje do 15 s — z okien wołać
+    przez `in_background()`, nie wprost na wątku GUI.
     """
     try:
         stdin, stdout, stderr = client.exec_command(command, timeout=15)
@@ -1829,19 +1830,71 @@ def _try_command(client, command, stdin_text=None):
         out = stdout.read().decode("utf-8", errors="replace")
         err = stderr.read().decode("utf-8", errors="replace")
         status = stdout.channel.recv_exit_status()
-    except Exception:
-        return None
+    except Exception as error:
+        return None, str(error) or type(error).__name__
     if status != 0 and not out.strip():
-        return None
-    return out.strip() or err.strip() or t("script_no_output")
+        return None, err.strip() or f"exit {status}"
+    return out.strip() or err.strip() or t("script_no_output"), ""
+
+
+def _try_command(client, command, stdin_text=None):
+    """`run_command` bez komunikatu błędu: tekst albo None (błąd/obcy shell)."""
+    return run_command(client, command, stdin_text)[0]
+
+
+def failed_text(message, error):
+    """Ogólny komunikat + to, co odpowiedział serwer (jeśli cokolwiek)."""
+    return f"{message}\n\n{error}" if error else message
+
+
+class _Finished(QObject):
+    done = Signal()
+
+
+def in_background(parent, work):
+    """`work()` w osobnym wątku; okno w tym czasie żyje (lokalna pętla zdarzeń).
+
+    Kod wołający zostaje liniowy — jak `connect_with_progress`. `parent` jest
+    na ten czas wyszarzony: drugi klik w „Odśwież” nie zagnieździ drugiej
+    pętli, a okna nie da się zamknąć spod czekającego kodu.
+    """
+    result = {}
+    finished = _Finished()
+    loop = QEventLoop()
+    finished.done.connect(loop.quit)  # emit z wątku -> kolejka -> wątek GUI
+
+    def target():
+        try:
+            result["value"] = work()
+        except Exception as error:  # wyjątek wraca do wołającego, nie ginie w wątku
+            result["error"] = error
+        finished.done.emit()
+
+    if parent is not None:
+        parent.setEnabled(False)
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        threading.Thread(target=target, daemon=True).start()
+        loop.exec()
+    finally:
+        QApplication.restoreOverrideCursor()
+        if parent is not None:
+            parent.setEnabled(True)
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
 
 
 def _run_commands(client, unix_cmd, windows_cmd):
-    """Próbuje wariantu Linux, potem Windows. Zawsze zwraca tekst do pokazania."""
-    text = _try_command(client, unix_cmd)
+    """Próbuje wariantu Linux, potem Windows. Zawsze zwraca tekst do pokazania.
+
+    Przy porażce obu — błąd wariantu Linux (częstszy cel; błąd Windows na
+    serwerze linuksowym to zwykle tylko „powershell: not found”).
+    """
+    text, error = run_command(client, unix_cmd)
     if text is None and windows_cmd:
         text = _try_command(client, windows_cmd)
-    return text if text is not None else t("script_failed")
+    return text if text is not None else failed_text(t("script_failed"), error)
 
 
 def save_text(parent, text, default_name, title):
@@ -1903,9 +1956,13 @@ def _run_sudo_script(parent, client, label, unix_cmd, windows_cmd):
     Wariant Windows przed pytaniem — na Windows Server nie ma sudo, pytanie
     o hasło byłoby tam bez sensu. None = anulowane pytanie o hasło.
     """
-    text = _try_command(client, with_sudo(unix_cmd, SUDO_NO_PASSWORD))
-    if text is None and windows_cmd:
-        text = _try_command(client, windows_cmd)
+    def first_try():
+        text = _try_command(client, with_sudo(unix_cmd, SUDO_NO_PASSWORD))
+        if text is None and windows_cmd:
+            text = _try_command(client, windows_cmd)
+        return text
+
+    text = in_background(parent, first_try)
     if text is not None:
         return text
     user = client.get_transport().get_username() or ""
@@ -1914,8 +1971,10 @@ def _run_sudo_script(parent, client, label, unix_cmd, windows_cmd):
     )
     if not ok:
         return None
-    text = _try_command(client, with_sudo(unix_cmd, SUDO_STDIN), password + "\n")
-    return text if text is not None else t("script_sudo_failed")
+    text, error = in_background(
+        parent, lambda: run_command(client, with_sudo(unix_cmd, SUDO_STDIN), password + "\n")
+    )
+    return text if text is not None else failed_text(t("script_sudo_failed"), error)
 
 
 def run_script(parent, client, script):
@@ -1939,7 +1998,7 @@ def run_script(parent, client, script):
         if text is None:
             return  # anulowane pytanie o hasło
     else:
-        text = _run_commands(client, unix_cmd, windows_cmd)
+        text = in_background(parent, lambda: _run_commands(client, unix_cmd, windows_cmd))
     notify.notify(t("notify_title"), t("notify_script_done", label))
     _show_script_output(parent, label, text)
 
@@ -2195,6 +2254,31 @@ def selftest():
     finally:
         QInputDialog.getText = original_get_text
     assert "Could not run" in _run_commands(_FakeClient({}), "linux", None)
+
+    # Komunikat z serwera nie ginie: stderr przy porażce wraca jako błąd.
+    class _ErrClient(_FakeClient):
+        def exec_command(self, command, timeout=None):
+            return None, _FakeStdout("", 5), _FakeStream("Failed to restart x: Unit not found")
+
+    assert run_command(_ErrClient({}), "x") == (None, "Failed to restart x: Unit not found")
+    assert run_command(_FakeClient({}), "x") == (None, "exit 127")
+    assert "Unit not found" in _run_commands(_ErrClient({}), "linux", None)
+    assert failed_text("A", "") == "A" and failed_text("A", "b") == "A\n\nb"
+
+    # Praca w tle: wynik wraca, wyjątek też, a pętla zdarzeń GUI w tym czasie
+    # chodzi (timer odpala, zanim `work` skończy) — o to chodzi w poprawce.
+    ticks = []
+    ticker = QTimer()
+    ticker.timeout.connect(lambda: ticks.append(1))
+    ticker.start(10)
+    assert in_background(None, lambda: (time.sleep(0.3), "gotowe")[1]) == "gotowe"
+    ticker.stop()
+    assert ticks, "pętla GUI stała w miejscu w trakcie pracy w tle"
+    try:
+        in_background(None, lambda: 1 / 0)
+        raise AssertionError("wyjątek z wątku ma wrócić do wołającego")
+    except ZeroDivisionError:
+        pass
 
     # Transfery plików: patrz transfers.selftest().
 

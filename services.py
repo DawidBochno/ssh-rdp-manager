@@ -8,6 +8,7 @@ okna, więc kolejne odświeżenia i akcje nie próbują already-known złej stro
 """
 import shlex
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import t
-from ssh_terminal import _SCRIPT_PARAM_UNSAFE, _try_command
+from ssh_terminal import _SCRIPT_PARAM_UNSAFE, _try_command, failed_text, in_background, run_command
 
 LINUX_LIST_CMD = "systemctl list-units --type=service --all --no-legend --no-pager"
 WINDOWS_LIST_CMD = (
@@ -110,7 +111,9 @@ class ServiceDialog(QDialog):
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 
-        self.refresh()
+        # Po pokazaniu okna, nie w konstruktorze: czekanie w tle (in_background)
+        # ma iść przy oknie modalnym, a nie przy klikalnym oknie głównym.
+        QTimer.singleShot(0, self.refresh)
 
     def _list(self):
         variants = [("linux", LINUX_LIST_CMD), ("windows", WINDOWS_LIST_CMD)]
@@ -125,7 +128,7 @@ class ServiceDialog(QDialog):
         return None
 
     def refresh(self):
-        services = self._list()
+        services = in_background(self, self._list)
         self.table.setRowCount(0)
         if services is None:
             QMessageBox.warning(self, t("services_title"), t("services_failed"))
@@ -153,9 +156,11 @@ class ServiceDialog(QDialog):
             QMessageBox.warning(self, t("services_title"), t("script_param_unsafe"))
             return
         command = action_command(self.variant, action, name)
-        text = _try_command(self.client, command)
+        text, error = in_background(self, lambda: run_command(self.client, command))
         if text is None:
-            QMessageBox.warning(self, t("services_title"), t("services_action_failed"))
+            QMessageBox.warning(
+                self, t("services_title"), failed_text(t("services_action_failed"), error)
+            )
         self.refresh()
 
 

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 import notify
 from i18n import t
+from ssh_terminal import in_background
 
 # Port -> etykieta w kolumnie „usługi”. Lista jest krótka celowo: każdy port to
 # osobna próba połączenia, a te sumują się przez cały zakres.
@@ -471,7 +472,8 @@ def cert_dialog(parent):
         return
     try:
         host, port = split_host_port(text)
-        info = cert_info(host, port)
+        # Do 2×5 s sieci — w tle, inaczej okno stoi (jak okna z ssh_terminal).
+        info = in_background(parent, lambda: cert_info(host, port))
     except (OSError, ValueError, ssl.SSLError) as error:
         QMessageBox.warning(parent, t("tls_title"), t("tls_error", error))
         return

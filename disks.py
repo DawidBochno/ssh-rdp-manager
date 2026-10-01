@@ -4,6 +4,7 @@ Ten sam wzorzec „spróbuj obu" i ten sam `_try_command` co w `services.py` —
 przy pierwszym odświeżeniu próbujemy Linuksa, dopiero potem Windows.
 """
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import t
-from ssh_terminal import _try_command
+from ssh_terminal import _try_command, in_background
 
 WARN_PCT = 90
 
@@ -111,7 +112,7 @@ class DiskDialog(QDialog):
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 
-        self.refresh()
+        QTimer.singleShot(0, self.refresh)  # po pokazaniu okna, jak w services.py
 
     def _list(self):
         text = _try_command(self.client, LINUX_CMD)
@@ -122,7 +123,7 @@ class DiskDialog(QDialog):
         return parse_disks_windows(text) if text is not None else None
 
     def refresh(self):
-        rows = self._list()
+        rows = in_background(self, self._list)
         self.table.setRowCount(0)
         if not rows:
             QMessageBox.warning(self, t("disks_title"), t("disks_failed"))

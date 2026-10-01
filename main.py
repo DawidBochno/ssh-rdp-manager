@@ -92,6 +92,7 @@ from ssh_terminal import (
     alerts_enabled,
     apply_terminal_theme,
     connect_with_progress,
+    in_background,
     load_user_scripts,
     run_script,
     save_text,
@@ -1420,7 +1421,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(self, t("update_title"), t("update_body", revision))
         if answer != QMessageBox.Yes:
             return
-        error = update.pull()
+        error = in_background(self, update.pull)  # git pull: do 60 s, nie na wątku GUI
         if error:
             QMessageBox.warning(self, t("update_title"), t("update_failed", error))
         else:

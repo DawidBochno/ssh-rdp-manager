@@ -5,7 +5,7 @@ odświeżeniu Linux, dopiero potem Windows; wariant zapamiętany na czas okna.
 """
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -21,7 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import t
-from ssh_terminal import SUDO_NO_PASSWORD, SUDO_STDIN, _try_command
+from ssh_terminal import (
+    SUDO_NO_PASSWORD,
+    SUDO_STDIN,
+    _try_command,
+    failed_text,
+    in_background,
+    run_command,
+)
 
 LINUX_CMD = "ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu --no-headers | head -300"
 # Windows nie ma % CPU chwilowego w Get-Process — pokazujemy sekundy CPU i MB pamięci.
@@ -117,7 +124,7 @@ class ProcessDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.refresh()
+        QTimer.singleShot(0, self.refresh)  # po pokazaniu okna, jak w services.py
 
     def _list(self):
         variants = [("linux", LINUX_CMD), ("windows", WINDOWS_CMD)]
@@ -132,7 +139,7 @@ class ProcessDialog(QDialog):
         return None
 
     def refresh(self):
-        rows = self._list()
+        rows = in_background(self, self._list)
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         if rows is None:
@@ -155,24 +162,31 @@ class ProcessDialog(QDialog):
             self, t("processes_title"), t("processes_kill_confirm", name, pid)
         ) != QMessageBox.Yes:
             return
-        if not self._run_kill(pid, force):
-            QMessageBox.warning(self, t("processes_title"), t("processes_kill_failed"))
+        ok, error = self._run_kill(pid, force)
+        if not ok:
+            QMessageBox.warning(
+                self, t("processes_title"), failed_text(t("processes_kill_failed"), error)
+            )
         self.refresh()
+
+    def _command(self, command, stdin_text=None):
+        """-> (udało się, błąd z serwera); polecenie w tle, okno żyje."""
+        text, error = in_background(self, lambda: run_command(self.client, command, stdin_text))
+        return text is not None, error
 
     def _run_kill(self, pid, force):
         if not (self.sudo.isChecked() and self.variant == "linux"):
-            return _try_command(self.client, kill_command(self.variant, pid, force)) is not None
+            return self._command(kill_command(self.variant, pid, force))
         # Najpierw bez hasła (NOPASSWD w sudoers), dopiero potem pytamy.
-        if _try_command(self.client, kill_command("linux", pid, force, SUDO_NO_PASSWORD)) is not None:
-            return True
+        if self._command(kill_command("linux", pid, force, SUDO_NO_PASSWORD))[0]:
+            return True, ""
         user = self.client.get_transport().get_username() or ""
         password, ok = QInputDialog.getText(
             self, t("processes_title"), t("sudo_prompt", user), QLineEdit.Password
         )
         if not ok:
-            return True  # anulowane — bez komunikatu o błędzie
-        command = kill_command("linux", pid, force, SUDO_STDIN)
-        return _try_command(self.client, command, password + "\n") is not None
+            return True, ""  # anulowane — bez komunikatu o błędzie
+        return self._command(kill_command("linux", pid, force, SUDO_STDIN), password + "\n")
 
 
 def selftest():
