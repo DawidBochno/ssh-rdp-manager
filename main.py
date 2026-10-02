@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import socket
+import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -329,7 +330,7 @@ class ConnectionDialog(QDialog):
     _FORM_KEYS = {
         "name", "host", "port", "username", "protocol", "key_file",
         "jump_host", "startup", "notes", "redirect_drives", "tags",
-        "password", "passphrase", "credential", "monitor",
+        "password", "passphrase", "credential", "monitor", "tls_port",
     }
 
     def __init__(self, parent=None, data=None):
@@ -389,6 +390,12 @@ class ConnectionDialog(QDialog):
         self.monitor = QCheckBox(t("chk_monitor"))
         self.monitor.setChecked(bool(data.get("monitor")))
         self.monitor.setToolTip(t("tip_monitor"))
+        # Port certyfikatu TLS do pilnowania przez monitoring; 0 = nie sprawdzaj.
+        self.tls_port = QSpinBox()
+        self.tls_port.setRange(0, 65535)
+        self.tls_port.setSpecialValueText("—")
+        self.tls_port.setValue(int(data.get("tls_port") or 0))
+        self.tls_port.setToolTip(t("tip_tls_port"))
 
         self.save_password = QCheckBox(t("chk_save_password"))
         self.save_password.setChecked(bool(stored or stored_passphrase))
@@ -443,6 +450,7 @@ class ConnectionDialog(QDialog):
         form.addRow("", self.redirect_drives)
         form.addRow("", self.save_password)
         form.addRow("", self.monitor)
+        form.addRow(t("fld_tls_port"), self.tls_port)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         test = buttons.addButton(t("btn_test_connection"), QDialogButtonBox.ActionRole)
@@ -583,6 +591,8 @@ class ConnectionDialog(QDialog):
             data["redirect_drives"] = True
         if self.monitor.isChecked():
             data["monitor"] = True
+        if self.tls_port.value():
+            data["tls_port"] = self.tls_port.value()
         if self.credential.currentData():
             # Hasła są na koncie — własnych nie trzymamy, żeby nie zostały
             # stare, zapomniane kopie obok.
@@ -1078,6 +1088,8 @@ class HomeTab(QWidget):
         self.tiles.setSpacing(4)
         self.tiles.setMaximumHeight(160)
         self.tiles.itemActivated.connect(self._open_item)
+        self.tiles.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tiles.customContextMenuRequested.connect(self._tile_menu)
         layout.addWidget(self.tiles)
 
         # Wyszukiwarka zapisanych połączeń — po nazwie, hoście i użytkowniku.
@@ -1150,7 +1162,7 @@ class HomeTab(QWidget):
                 color = QColor(monitor.COLORS[state])
                 color.setAlpha(110)  # półprzezroczysty — czytelny w obu motywach
                 item.setBackground(QBrush(color))
-                tip = [result.get("error", ""), monitor.history_text(key)]
+                tip = [result.get("error", ""), result.get("cert_error", ""), monitor.history_text(key)]
                 item.setToolTip("\n".join(line for line in tip if line))
             self.tiles.addItem(item)
         visible = self.tiles.count() > 0
@@ -1159,6 +1171,38 @@ class HomeTab(QWidget):
 
     def _open_item(self, item):
         self.main_window._open_connection_tab(item.data(Qt.UserRole))
+
+    def _tile_menu(self, point):
+        item = self.tiles.itemAt(point)
+        if item is None:
+            return
+        menu = QMenu(self)
+        menu.addAction(t("monitor_history_menu"), lambda: self.history_dialog(item.data(Qt.UserRole)))
+        menu.exec(self.tiles.viewport().mapToGlobal(point))
+
+    def history_dialog(self, data, show=True):
+        """Duży wykres CPU/RAM z `monitor.db` — ten sam `StatsGraph` co w pasku statusu."""
+        key = monitor.target_key(data)
+        try:
+            points = monitor.samples(key)
+        except sqlite3.Error:
+            points = []  # baza zablokowana zapisem rundy — pokaż „brak pomiarów”
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("monitor_history_title", data.get("name", key)))
+        layout = QVBoxLayout(dialog)
+        if points:
+            graph = graphs.StatsGraph(dialog)
+            graph.setFixedSize(576, 200)  # 288 próbek = 24 h co 5 min, 2 px na próbkę
+            graph.step = max(1, graph.width() // len(points))
+            graph.set_history(points)
+            layout.addWidget(graph)
+            layout.addWidget(QLabel(t("monitor_history_legend", graphs.CPU_COLOR, graphs.RAM_COLOR)))
+            layout.addWidget(QLabel(monitor.history_text(key)))
+        else:
+            layout.addWidget(QLabel(t("monitor_history_empty")))
+        if show:
+            dialog.exec()
+        return dialog
 
     def _open_first(self):
         if self.results.count():
@@ -1490,6 +1534,7 @@ class MainWindow(QMainWindow):
                 "key_file": auth["key_file"],
                 "password": decrypt_password(auth["password"]) if auth["password"] else "",
                 "passphrase": decrypt_password(auth["passphrase"]) if auth["passphrase"] else "",
+                "tls_port": conn.get("tls_port"),
             }
         return targets
 
@@ -2565,9 +2610,23 @@ def selftest():
         assert dialog.monitor.isChecked() and dialog.values().get("monitor") is True
         dialog.monitor.setChecked(False)
         assert "monitor" not in dialog.values(), "odznaczenie ma zdjąć monitoring"
+        assert "tls_port" not in dialog.values(), "puste pole TLS = bez sprawdzania"
+        dialog.tls_port.setValue(443)
+        assert dialog.values()["tls_port"] == 443
+        data["tls_port"] = 443
+        assert window._monitor_targets()["10.0.0.1:22"]["tls_port"] == 443
+        reopened = ConnectionDialog(None, data)
+        assert reopened.tls_port.value() == 443, "port TLS wraca przy edycji"
+        # Historia kafelka: pusta baza -> komunikat, z próbkami -> wykres.
+        empty = home.history_dialog(data, show=False)
+        assert empty.findChild(graphs.StatsGraph) is None
+        monitor.record({"10.0.0.1:22": {"ok": True, "cpu": 5, "mem": 10}})
+        graph = home.history_dialog(data, show=False).findChild(graphs.StatsGraph)
+        assert graph is not None and graph.history == [(5, 10)], graph and graph.history
     finally:
         monitor.DB_FILE = real_db
         data.pop("monitor", None)
+        data.pop("tls_port", None)
         window.monitor_results.clear()
         window._monitor_states.clear()
 

@@ -71,8 +71,8 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 
 | # | Propozycja | Na wzór | Wielkość | Priorytet |
 |---|---|---|---|---|
-| 26 | **Wykres historii z monitoringu** po kliknięciu kafelka (dni/tygodnie) + eksport CSV | Zabbix (lekko) | S | ⭐⭐⭐ |
-| 27 | **Alert „certyfikat TLS wygasa”** w monitoringu | — | S | ⭐⭐⭐ |
+| 26 | ✅ **Wykres historii z monitoringu** po kliknięciu kafelka (dni/tygodnie) + eksport CSV | Zabbix (lekko) | S | ⭐⭐⭐ |
+| 27 | ✅ **Alert „certyfikat TLS wygasa”** w monitoringu | — | S | ⭐⭐⭐ |
 | 28 | **Alerty na zewnątrz** — e-mail, Teams, Slack, Telegram (webhook) | Uptime Kuma | M | ⭐⭐ |
 | 29 | **Panel Docker** — kontenery, logi, restart, zużycie | Portainer (lekko) | M | ⭐⭐⭐ |
 | 30 | **Panel aktualizacji** — ile pakietów czeka, „wymagany restart”, na całej grupie | — | M | ⭐⭐ |
@@ -101,7 +101,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 
 ## Rekomendowana kolejność (najpierw tanie i odczuwalne)
 
-1. #27 alert TLS + #26 wykres historii — domykają monitoring.
+1. ~~#27 alert TLS + #26 wykres historii~~ — zrobione 2026-10-02 (24 h; dni/tygodnie i CSV dalej otwarte).
 2. #19 kolor produkcji + pytanie przed wysłaniem — chroni przed pomyłką.
 3. #3 przywracanie sesji po starcie.
 4. #1 dziedziczenie ustawień z grupy + #2 import z innych programów.

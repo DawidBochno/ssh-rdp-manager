@@ -14,21 +14,22 @@ CPU_COLOR = "#3498db"
 RAM_COLOR = "#2ecc71"
 
 
-def graph_points(values, width, height):
+def graph_points(values, width, height, step=1):
     """Procenty (0–100, None = brak próbki) -> punkty linii wykresu.
 
     Najnowsza próbka przy prawej krawędzi, jedna próbka na piksel szerokości —
     starsze, które się nie mieszczą, odpadają. None (pierwsza próbka CPU, brak
     danych) nie daje punktu, więc linia zaczyna się od pierwszej prawdziwej.
+    `step` = pikseli na próbkę (duży wykres historii monitoringu).
     """
-    values = list(values)[-width:]
-    offset = width - len(values)
+    values = list(values)[-(width // step):]
+    offset = width // step - len(values)
     points = []
     for i, value in enumerate(values):
         if value is None:
             continue
         value = max(0.0, min(100.0, value))
-        points.append((offset + i, (height - 1) * (1 - value / 100)))
+        points.append(((offset + i) * step, (height - 1) * (1 - value / 100)))
     return points
 
 
@@ -39,6 +40,7 @@ class StatsGraph(QWidget):
         super().__init__(parent)
         self.setFixedSize(100, 18)  # 100 próbek = 5 min przy odpytywaniu co 3 s
         self.history = None
+        self.step = 1
         self.hide()
 
     def set_history(self, history):
@@ -46,9 +48,9 @@ class StatsGraph(QWidget):
         self.history = history
         self.setVisible(bool(history))
         if history:
-            cpu, ram = history[-1]
-            cpu_text = f"{cpu:.0f}%" if cpu is not None else "—"
-            self.setToolTip(t("graph_tooltip", cpu_text, f"{ram:.0f}%"))
+            # None też w RAM — w historii monitoringu nieudany pomiar nie ma żadnej wartości.
+            cpu, ram = (f"{v:.0f}%" if v is not None else "—" for v in history[-1])
+            self.setToolTip(t("graph_tooltip", cpu, ram))
         self.update()
 
     def paintEvent(self, event):
@@ -59,7 +61,7 @@ class StatsGraph(QWidget):
         painter.fillRect(self.rect(), QColor(128, 128, 128, 40))
         for index, color in ((1, RAM_COLOR), (0, CPU_COLOR)):  # CPU na wierzchu
             points = graph_points(
-                (sample[index] for sample in self.history), self.width(), self.height()
+                (sample[index] for sample in self.history), self.width(), self.height(), self.step
             )
             if len(points) > 1:
                 painter.setPen(QPen(QColor(color), 1.2))
@@ -79,6 +81,7 @@ def selftest():
     assert graph_points([None, 50], 4, 3) == [(3, 1.0)], "None nie daje punktu"
     assert len(graph_points(range(200), 100, 18)) == 100, "starsze niż szerokość odpadają"
     assert graph_points([150, -5], 2, 11) == [(0, 0.0), (1, 10.0)], "poza 0–100 przycięte"
+    assert graph_points([0, 100, 0], 4, 11, step=2) == [(0, 0.0), (2, 10.0)], "step: 2 px na próbkę"
 
     holder = QWidget()  # rodzic, żeby setVisible nie otwierał osobnego okienka
     graph = StatsGraph(holder)
@@ -87,6 +90,8 @@ def selftest():
     graph.set_history([(None, 40.0), (12.0, 41.0)])
     assert not graph.isHidden()
     assert "12%" in graph.toolTip() and "41%" in graph.toolTip(), graph.toolTip()
+    graph.set_history([(None, None)])
+    assert "—" in graph.toolTip(), "nieudany pomiar z historii nie może wywalić podpowiedzi"
     graph.set_history(None)
     assert graph.isHidden()
     print("graphs selftest OK")

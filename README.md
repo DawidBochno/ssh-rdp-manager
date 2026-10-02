@@ -78,7 +78,7 @@ py main.py --selftest
 - **Programy pełnoekranowe działają poprawnie** (`vim`, `htop`, `mc`, `less`, `top`):
   terminal wykrywa alternate screen i rysuje siatkę znaków z prawdziwym
   adresowaniem kursora i kolorami zamiast rozjeżdżać tekst.
-- Szukanie w terminalu (Ctrl+F), wklejanie (Ctrl+V i Ctrl+Shift+V), rozmiar PTY
+- Szukanie w terminalu (Ctrl+F), wklejanie (Ctrl+V, Ctrl+Shift+V, środkowy klawisz, prawy klik → Wklej), rozmiar PTY
   idący za rozmiarem okna. **Ctrl+C** kopiuje, gdy coś jest zaznaczone —
   bez zaznaczenia przerywa polecenie (`^C`), jak w każdym terminalu.
 - **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; dymek nad zakładką pokazuje
@@ -140,8 +140,9 @@ py main.py --selftest
 - **Monitoring w tle**: pole „Monitoruj w tle” w formularzu połączenia. Zaznaczone
   serwery są sprawdzane co kilka minut bez otwierania zakładki (odstęp w
   Ustawieniach → Powiadomienia). Na Starcie kafelki: zielony = OK, żółty = CPU/RAM/
-  dysk ponad próg, czerwony = brak odpowiedzi; podpowiedź pokazuje ostatnie 24 h,
-  dwuklik otwiera sesję. Zmiana stanu = dymek w zasobniku. Historia (30 dni)
+  dysk ponad próg albo certyfikat TLS ważny ≤ 14 dni (pole „Port TLS”, np. 443),
+  czerwony = brak odpowiedzi; podpowiedź pokazuje ostatnie 24 h, prawy klik →
+  „Historia (24 h)” rysuje wykres CPU/RAM, dwuklik otwiera sesję. Zmiana stanu = dymek w zasobniku. Historia (30 dni)
   w lokalnym `monitor.db`. Nieznany klucz serwera nie jest akceptowany w tle —
   trzeba raz połączyć się ręcznie.
 - Menu **Programy → Podziel ekran**: 2–4 sesje SSH obok siebie w jednej zakładce;
@@ -212,8 +213,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 Pełna lista ponad 40 propozycji z porównaniem do MobaXterm, Termius, Royal TS,
 SecureCRT, mRemoteNG, Tabby, WindTerm i Xshell: **[ROADMAP.md](ROADMAP.md)**.
 
-Najbliżej w kolejce: alert o wygasającym certyfikacie TLS i wykres historii
-w monitoringu, kolor środowiska produkcyjnego na zakładce, przywracanie sesji
+Najbliżej w kolejce: kolor środowiska produkcyjnego na zakładce, przywracanie sesji
 po starcie, dziedziczenie ustawień z grupy i import z innych programów.
 
 ## Automatyczne sprawdzanie zmian (PR)

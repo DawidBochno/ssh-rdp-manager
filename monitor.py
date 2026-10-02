@@ -3,7 +3,9 @@
 Co `monitor_interval` sekund (domyślnie 5 min) łączy się z połączeniami
 oznaczonymi „Monitoruj w tle” (`conn["monitor"]`), czyta te same statystyki
 co pasek statusu (`STATS_CMD`/`WINDOWS_STATS_CMD`) i rozłącza. RDP: tylko
-sprawdzenie portu. Wynik idzie na kafelki na Starcie, do historii w SQLite
+sprawdzenie portu. Z polem „Port TLS” (`conn["tls_port"]`) dodatkowo
+data ważności certyfikatu — kafelek żółknie `CERT_WARN_DAYS` przed końcem.
+Wynik idzie na kafelki na Starcie, do historii w SQLite
 (`monitor.db`, stdlib) i — przy zmianie stanu — do dymka w zasobniku.
 
 Opt-in per połączenie, nie „wszystkie serwery”: logowanie co 5 min to wpis
@@ -24,6 +26,7 @@ import paramiko
 from PySide6.QtCore import QThread, Signal
 
 from i18n import t
+from scanner import cert_info
 from ssh_terminal import (
     STATS_CMD,
     WINDOWS_STATS_CMD,
@@ -39,6 +42,7 @@ INTERVAL_DEFAULT = 300  # sekund
 CHECK_TIMEOUT = 10  # sekund na połączenie — runda ma się skończyć, zanim zamkniemy okno
 KEEP_DAYS = 30  # tyle historii trzymamy w bazie
 WORKERS = 8
+CERT_WARN_DAYS = 14
 
 GREEN, YELLOW, RED = "green", "yellow", "red"
 COLORS = {GREEN: "#2ecc71", YELLOW: "#f1c40f", RED: "#e74c3c"}
@@ -136,8 +140,22 @@ def check_port(target):
         return {"ok": False, "error": str(error)}
 
 
+def check_cert(target, result):
+    """Dopisuje do wyniku dni do końca certyfikatu TLS (albo błąd odczytu).
+
+    ponytail: czytane wprost z tego komputera, bez hosta pośredniego — serwer
+    osiągalny tylko przez bastion pokaże błąd w podpowiedzi kafelka.
+    """
+    try:
+        result["cert_days"] = cert_info(target["host"], target["tls_port"], CHECK_TIMEOUT)["days_left"]
+    except Exception as error:
+        result["cert_error"] = t("monitor_tls_error", str(error) or type(error).__name__)
+    return result
+
+
 def check(target):
-    return check_ssh(target) if target.get("protocol", "ssh") == "ssh" else check_port(target)
+    result = check_ssh(target) if target.get("protocol", "ssh") == "ssh" else check_port(target)
+    return check_cert(target, result) if target.get("tls_port") else result
 
 
 # --- ocena i alerty (czyste funkcje, stąd testy) ----------------------------
@@ -147,7 +165,10 @@ def status(result, threshold):
     if not result.get("ok"):
         return RED
     hot = [result.get(k) for k in ("cpu", "mem", "disk")]
-    return YELLOW if any(v is not None and v >= threshold for v in hot) else GREEN
+    if any(v is not None and v >= threshold for v in hot):
+        return YELLOW
+    cert = result.get("cert_days")
+    return YELLOW if cert is not None and cert <= CERT_WARN_DAYS else GREEN
 
 
 def summary(result):
@@ -158,6 +179,8 @@ def summary(result):
     for label, key in (("CPU", "cpu"), ("RAM", "mem"), (t("stats_disk"), "disk")):
         if result.get(key) is not None:
             parts.append(f"{label} {result[key]:.0f}%")
+    if result.get("cert_days") is not None:
+        parts.append(t("monitor_tls_days", result["cert_days"]))
     return " · ".join(parts) or t("status_online")
 
 
@@ -218,6 +241,19 @@ def history(key, hours=24, path=None, now=None):
     return (100 * row[1],) + tuple(row[2:])
 
 
+def samples(key, hours=24, path=None, now=None):
+    """-> [(cpu, ram), ...] od najstarszej — punkty dużego wykresu historii."""
+    since = int(now or time.time()) - hours * 3600
+    db = _db(path)
+    try:
+        return db.execute(
+            "SELECT cpu, mem FROM samples WHERE key = ? AND ts >= ? ORDER BY ts",
+            (key, since),
+        ).fetchall()
+    finally:
+        db.close()
+
+
 def history_text(key):
     try:
         stats = history(key)
@@ -274,6 +310,16 @@ def selftest():
     assert alert_text("web", RED, GREEN, {"ok": True})
     assert "95%" in alert_text("web", GREEN, YELLOW, {"ok": True, "disk": 95})
 
+    # Certyfikat TLS: żółty od CERT_WARN_DAYS w dół, wygasły też; dni w opisie.
+    assert status({"ok": True, "cert_days": CERT_WARN_DAYS}, 90) == YELLOW
+    assert status({"ok": True, "cert_days": -3}, 90) == YELLOW
+    assert status({"ok": True, "cert_days": CERT_WARN_DAYS + 1}, 90) == GREEN
+    assert "10" in summary({"ok": True, "cert_days": 10})
+    assert "10" in alert_text("web", GREEN, YELLOW, {"ok": True, "cert_days": 10})
+    failed = check({"protocol": "rdp", "host": "127.0.0.1", "port": 9, "tls_port": 9})
+    assert "cert_error" in failed and "cert_days" not in failed, "zamknięty port TLS = błąd, nie wyjątek"
+    assert "cert_error" not in check({"protocol": "rdp", "host": "127.0.0.1", "port": 9})
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "m.db"
         now = 1_000_000
@@ -283,6 +329,7 @@ def selftest():
         avail, cpu, mem, disk = history("a:22", 24, path, now)
         assert avail == 50 and cpu == 10 and mem == 20 and disk == 30, (avail, cpu, mem, disk)
         assert history("b:22", 24, path, now) is None
+        assert samples("a:22", 24, path, now) == [(10, 20), (None, None)], "od najstarszej, bez starszych niż 24 h"
         later = now + KEEP_DAYS * 86400 + 1
         record({}, path, later)  # sprząta wszystko starsze niż 30 dni
         assert history("a:22", 24 * 365, path, later) is None

@@ -99,7 +99,11 @@ def cert_info(host, port=443, timeout=5):
     decode = getattr(getattr(ssl, "_ssl", None), "_test_decode_cert", None)
     if decode is None:
         raise ValueError("brak dekodera certyfikatow w tej wersji Pythona")
-    cert = decode(_write_temp_pem(der))
+    path = _write_temp_pem(der)
+    try:
+        cert = decode(path)
+    finally:
+        Path(path).unlink(missing_ok=True)
     expires = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
     return {
         "subject": _name(cert.get("subject")),
@@ -110,10 +114,15 @@ def cert_info(host, port=443, timeout=5):
 
 
 def _write_temp_pem(der):
-    """`_test_decode_cert` czyta wyłącznie z pliku PEM — stąd plik tymczasowy."""
-    path = Path(tempfile.gettempdir()) / "ssh-rdp-manager-cert.pem"
-    path.write_text(ssl.DER_cert_to_PEM_cert(der), encoding="ascii")
-    return str(path)
+    """`_test_decode_cert` czyta wyłącznie z pliku PEM — stąd plik tymczasowy.
+
+    Osobny plik na każde wywołanie: monitoring czyta kilka certyfikatów naraz
+    z wątków, wspólna nazwa dawała jednemu serwerowi certyfikat drugiego.
+    """
+    handle, path = tempfile.mkstemp(suffix=".pem")
+    with open(handle, "w", encoding="ascii") as file:
+        file.write(ssl.DER_cert_to_PEM_cert(der))
+    return path
 
 
 def _name(fields):
