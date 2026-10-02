@@ -1423,6 +1423,11 @@ class SshTerminal(QPlainTextEdit):
             self.alt_view.update()
             return
         self._show_alt(False)
+        # `\r` na końcu kawałka czeka na następny: `\r` | `\n` w dwóch odczytach
+        # to koniec linii, a samotne `\r` (przerysowanie) skasowałoby całą linię.
+        text, self._held_cr = self._held_cr + text, ""
+        if text.endswith("\r"):
+            text, self._held_cr = text[:-1], "\r"
         text = strip_ansi(text)
         self._check_triggers(text)
         if self.timestamps:
@@ -1479,6 +1484,7 @@ class SshTerminal(QPlainTextEdit):
     # klawisze, wklejanie, makra. Wyjście dalej płynie, Ctrl+C z zaznaczeniem
     # i Ctrl+F działają, bo to operacje lokalne.
     read_only = False
+    _held_cr = ""
 
     def send_text(self, data):
         """Jedyna droga od użytkownika do powłoki — tu pilnuje tryb tylko do odczytu."""
@@ -1500,6 +1506,13 @@ class SshTerminal(QPlainTextEdit):
         text = QApplication.clipboard().text()
         if text:
             self.send_text(paste_bytes(text))
+
+    def insertFromMimeData(self, source):
+        # „Wklej” z menu pod prawym klikiem i upuszczony tekst: domyślnie Qt
+        # wstawia go do okna lokalnie — wyglądał jak wpisany, a do serwera nic
+        # nie szło (Enter wysyłał potem pustą linię).
+        if source.hasText():
+            self.send_text(paste_bytes(source.text()))
 
     def mousePressEvent(self, event):
         # Wklejanie środkowym klawiszem myszy — zwyczaj uniksowych terminali.
@@ -2326,6 +2339,21 @@ def selftest():
     guarded.read_only = True
     assert not guarded.send_text("rm -rf /\r"), "tryb tylko do odczytu przepuścił tekst"
     assert guarded.channel.sent == ["ls\r"], guarded.channel.sent
+
+    # „Wklej” z menu kontekstowego idzie do serwera, nie do okna.
+    from PySide6.QtCore import QMimeData
+    pasted = OfflineTerminal()
+    mime = QMimeData()
+    mime.setText("echo a\necho b\n")
+    pasted.insertFromMimeData(mime)
+    assert pasted.channel.sent == ["echo a\recho b\r"], pasted.channel.sent
+    assert "echo a" not in pasted.toPlainText(), "wklejony tekst nie może trafić tylko do okna"
+
+    # `\r` | `\n` rozcięte między odczytami nie kasuje wypisanej linii.
+    split = OfflineTerminal()
+    split._append("kod: 0\r")
+    split._append("\nroot@proxmox:~# ")
+    assert split.toPlainText() == "kod: 0\nroot@proxmox:~# ", repr(split.toPlainText())
 
     # Panel SFTP: patrz sftp.selftest().
 
