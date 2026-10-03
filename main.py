@@ -86,6 +86,7 @@ from rdp import RDP_PORT, open_rdp
 from servers import SERVERS, HttpShare, TftpShare, curl_command, wget_command
 from ssh_terminal import (
     SCRIPTS,
+    KnownHostsDialog,
     SessionTab,
     SshTerminal,
     TERMINAL_THEMES,
@@ -100,9 +101,11 @@ from ssh_terminal import (
     save_text,
     script_label,
     scrollback,
+    session_log_enabled,
     set_alert_threshold,
     set_alerts_enabled,
     set_scrollback,
+    set_session_log_enabled,
     set_terminal_font,
     set_terminal_theme,
     set_macros,
@@ -131,6 +134,7 @@ TOOLS = (
     ("menu_split", "_open_split"),
     ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
+    ("menu_known_hosts", "_manage_known_hosts"),
 )
 
 
@@ -330,7 +334,7 @@ class ConnectionDialog(QDialog):
     _FORM_KEYS = {
         "name", "host", "port", "username", "protocol", "key_file",
         "jump_host", "startup", "notes", "redirect_drives", "tags",
-        "password", "passphrase", "credential", "monitor", "tls_port",
+        "password", "passphrase", "credential", "monitor", "tls_port", "forward_agent",
     }
 
     def __init__(self, parent=None, data=None):
@@ -381,6 +385,9 @@ class ConnectionDialog(QDialog):
         self.jump_host = QLineEdit(data.get("jump_host", ""))
         self.jump_host.setPlaceholderText(t("ph_jump_host"))
         self.jump_host.setToolTip(t("tip_jump_host"))
+        self.forward_agent = QCheckBox(t("chk_forward_agent"))
+        self.forward_agent.setChecked(bool(data.get("forward_agent")))
+        self.forward_agent.setToolTip(t("tip_forward_agent"))
 
         # Przekierowanie dysków dotyczy tylko RDP — opt-in, bo wystawia
         # lokalne pliki zdalnemu serwerowi. Schowek idzie zawsze (jak w mstsc).
@@ -442,6 +449,8 @@ class ConnectionDialog(QDialog):
         form.addRow(t("fld_passphrase"), self.passphrase)
         self._jump_host_row = form.rowCount()
         form.addRow(t("fld_jump_host"), self.jump_host)
+        self._forward_agent_row = form.rowCount()
+        form.addRow("", self.forward_agent)
         self._startup_row = form.rowCount()
         form.addRow(t("fld_startup"), self.startup)
         form.addRow(t("fld_tags"), self.tags)
@@ -513,6 +522,7 @@ class ConnectionDialog(QDialog):
         self._form.setRowVisible(self._key_row, not is_rdp)
         self._form.setRowVisible(self._passphrase_row, not is_rdp)
         self._form.setRowVisible(self._jump_host_row, not is_rdp)
+        self._form.setRowVisible(self._forward_agent_row, not is_rdp)
         self._form.setRowVisible(self._startup_row, not is_rdp)
         self._form.setRowVisible(self._redirect_drives_row, is_rdp)
 
@@ -580,6 +590,8 @@ class ConnectionDialog(QDialog):
             data["key_file"] = self.key_file.text().strip()
         if protocol == "ssh" and self.jump_host.text().strip():
             data["jump_host"] = self.jump_host.text().strip()
+        if protocol == "ssh" and self.forward_agent.isChecked():
+            data["forward_agent"] = True
         if protocol == "ssh" and self.startup.toPlainText().strip():
             data["startup"] = self.startup.toPlainText().strip()
         tags = parse_tags(self.tags.text())
@@ -1754,6 +1766,7 @@ class MainWindow(QMainWindow):
         return {
             "highlighting": TerminalHighlighter.enabled,
             "timestamps": SshTerminal.timestamps,
+            "session_log": session_log_enabled(),
             "font": terminal_font(),
             "scrollback": scrollback(),
             "triggers": triggers_text(),
@@ -1796,6 +1809,7 @@ class MainWindow(QMainWindow):
         SshTerminal.timestamps = new["timestamps"]
         stored.setValue("highlighting", new["highlighting"])
         stored.setValue("timestamps", new["timestamps"])
+        set_session_log_enabled(new["session_log"])  # dotyczy sesji otwartych od teraz
         if "font" in changed:
             set_terminal_font(new["font"])
             for session in sessions:
@@ -1951,6 +1965,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+Shift+T", self._quick_connect),
             ("Ctrl+Shift+W", lambda: self._close_tab(self.tabs.currentIndex())),
             ("Ctrl+Shift+F", self._focus_filter),
+            ("Ctrl+Shift+E", self._toggle_compose),
         ):
             QShortcut(QKeySequence(keys), self, activated=handler)
         for number in range(1, 10):
@@ -2125,6 +2140,9 @@ class MainWindow(QMainWindow):
             return
         processes.ProcessDialog(self, session.terminal.client).exec()
 
+    def _manage_known_hosts(self):
+        KnownHostsDialog(self).exec()
+
     def _manage_credentials(self):
         credentials.CredentialManager(self, self.tree.nodes).exec()
         self.tree.refresh_tooltips()  # nazwa/login konta mogły się zmienić
@@ -2180,8 +2198,8 @@ class MainWindow(QMainWindow):
         """Zapis tego, co widać w terminalu aktywnej zakładki.
 
         ponytail: zapisujemy bufor okna (5000 linii z `setMaximumBlockCount`),
-        a nie strumień od początku sesji. Log pełny wymagałby pisania do pliku
-        na bieżąco — dołożyć wtedy, gdy komuś zabraknie tych 5000 linii.
+        a nie strumień od początku sesji — pełny zapis to „Zapisuj wszystkie
+        sesje” w Ustawieniach (`SshTerminal.start_log`).
         """
         session = self._current_session()
         if not isinstance(session, SessionTab):
@@ -2232,6 +2250,7 @@ class MainWindow(QMainWindow):
         terminal = connect_with_progress(
             self, conn["host"], conn["port"], auth["username"], password,
             auth.get("key_file"), passphrase, conn.get("jump_host"),
+            bool(conn.get("forward_agent")),
         )
         if terminal is None:
             return
@@ -2245,9 +2264,11 @@ class MainWindow(QMainWindow):
         session.reconnect_args = dict(
             host=conn["host"], port=conn["port"], username=auth["username"],
             password=password, key_file=auth.get("key_file"), passphrase=passphrase,
-            jump_host=conn.get("jump_host"),
+            jump_host=conn.get("jump_host"), forward_agent=bool(conn.get("forward_agent")),
         )
         session.startup = conn.get("startup")
+        session.terminal.start_log(conn["name"])
+        session.compose_to_all.connect(self._send_to_all_sessions)
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
         )
@@ -2354,7 +2375,20 @@ class MainWindow(QMainWindow):
             read_only.setCheckable(True)
             read_only.setChecked(widget.terminal.read_only)
             read_only.toggled.connect(lambda on: self._set_read_only(widget, on))
+            menu.addAction(t("tab_compose"), widget.toggle_compose)
         menu.exec(bar.mapToGlobal(pos))
+
+    def _send_to_all_sessions(self, data):
+        """Pole polecenia z „do wszystkich” — przez `send_text`, więc tylko do odczytu działa."""
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, SessionTab):
+                widget.terminal.send_text(data)
+
+    def _toggle_compose(self):
+        session = self.tabs.currentWidget()
+        if isinstance(session, SessionTab):
+            session.toggle_compose()
 
     def _set_read_only(self, session, on):
         session.terminal.read_only = on
@@ -2853,6 +2887,7 @@ def selftest():
     # Panel dysków: bez sesji nie może się wywalić; generator kluczy działa nawet bez.
     assert any(label == "menu_disks" for label, _ in TOOLS), TOOLS
     assert any(label == "menu_keygen" for label, _ in TOOLS), TOOLS
+    assert any(label == "menu_known_hosts" for label, _ in TOOLS), TOOLS
     shown.clear()
     window._open_disks()
     assert shown == [t("tunnels_need_session")], shown
@@ -2894,6 +2929,16 @@ def selftest():
     extra.protocol.setCurrentIndex(extra.protocol.findData("rdp"))
     assert "startup" not in extra.values(), "RDP nie ma powloki do karmienia"
     assert extra.values()["notes"] == "serwer klienta X", "notatki dotycza obu protokolow"
+
+    # Przekazanie agenta SSH: opt-in, tylko SSH, wraca przy edycji.
+    agent = ConnectionDialog(data={"host": "h"})
+    assert "forward_agent" not in agent.values()
+    agent.forward_agent.setChecked(True)
+    assert agent.values()["forward_agent"] is True
+    agent_again = ConnectionDialog(data=agent.values())
+    assert agent_again.forward_agent.isChecked()
+    agent.protocol.setCurrentIndex(agent.protocol.findData("rdp"))
+    assert "forward_agent" not in agent.values(), "RDP nie ma agenta SSH"
 
     # Edycja polaczenia nie moze skasowac zakladek SFTP ani tuneli - dawniej
     # values() budowalo slownik tylko z pol formularza i gubilo reszte.

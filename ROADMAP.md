@@ -48,9 +48,9 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 |---|---|---|---|---|
 | 11 | **Biblioteka poleceń (snippets) ze zmiennymi** — `systemctl restart {usługa}`, per grupa, w palecie | Termius | M | ⭐⭐⭐ |
 | 12 | **Podpowiadanie poleceń** z historii wszystkich sesji | WindTerm, Termius | M | ⭐⭐ |
-| 13 | **Pasek „compose”** — wieloliniowe polecenie edytowane przed wysłaniem, opcjonalnie do wielu sesji | Xshell, SecureCRT | S | ⭐⭐ |
-| 14 | **Klikalne adresy URL i IP** w terminalu (Ctrl+klik) | Tabby, Windows Terminal | S | ⭐⭐ |
-| 15 | **Automatyczny zapis wszystkich sesji do plików** z rotacją | SecureCRT, MobaXterm | S | ⭐⭐ |
+| 13 | ✅ **Pasek „compose”** — wieloliniowe polecenie edytowane przed wysłaniem, opcjonalnie do wielu sesji | Xshell, SecureCRT | S | ⭐⭐ |
+| 14 | ✅ **Klikalne adresy URL i IP** w terminalu (Ctrl+klik) | Tabby, Windows Terminal | S | ⭐⭐ |
+| 15 | ✅ **Automatyczny zapis wszystkich sesji do plików** z rotacją | SecureCRT, MobaXterm | S | ⭐⭐ |
 | 16 | **ZMODEM** (`rz`/`sz`) — plik przez sam terminal, bez SFTP | MobaXterm, WindTerm | M | ⭐ |
 | 17 | **Edytor reguł podświetlania** w Ustawieniach (słowo → kolor) | SecureCRT | S | ⭐ |
 | 18 | **Własne skróty klawiszowe** (makra pod skrótem) | wszystkie | S | ⭐⭐ |
@@ -62,9 +62,9 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 |---|---|---|---|---|
 | 20 | **Hasło główne / sejf** (najpierw plan — ryzyko utraty haseł) | Termius, Royal TS | L | ⭐⭐ |
 | 21 | **Integracja z KeePass / Bitwarden** — hasło pobierane z menedżera, nie z naszego pliku | Royal TS, RDM | M | ⭐⭐ |
-| 22 | **Agent SSH (Pageant/OpenSSH) i przekazywanie agenta** | wszystkie | S | ⭐⭐ |
+| 22 | ✅ **Agent SSH (Pageant/OpenSSH) i przekazywanie agenta** | wszystkie | S | ⭐⭐ |
 | 23 | **Logowanie z kodem 2FA** (keyboard-interactive, TOTP) | SecureCRT, Termius | M | ⭐⭐ |
-| 24 | **Okno zapamiętanych kluczy serwerów** — podgląd i usuwanie wpisów `known_hosts` | Bitvise | S | ⭐⭐ |
+| 24 | ✅ **Okno zapamiętanych kluczy serwerów** — podgląd i usuwanie wpisów `known_hosts` | Bitvise | S | ⭐⭐ |
 | 25 | **Nagrywanie sesji i dziennik audytu** (kto, gdzie, jakie polecenie) | WindTerm, RDM | M | ⭐⭐ |
 
 ### Monitoring i administracja
@@ -108,3 +108,5 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 5. #11 biblioteka poleceń + #18 skróty.
 6. #29 panel Docker.
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.
+
+Poza kolejką zrobione 2026-10-03: #13, #14, #15, #22, #24 (drobne usprawnienia terminala i bezpieczeństwa).
