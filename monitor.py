@@ -16,8 +16,11 @@ kogo zapytać, a `AutoAddPolicy` zdjęłoby ochronę przed MITM. Wystarczy raz
 połączyć się ręcznie, żeby klucz trafił do `known_hosts`.
 """
 
+import csv
+import io
 import sqlite3
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -64,9 +67,27 @@ def _read(client, command, parse):
         return None
 
 
-def _connect(target):
-    """Klient SSH bez pytań: nieznany klucz serwera -> wyjątek."""
-    kwargs = dict(
+def _no_track(_obj):
+    pass
+
+
+def _socket(host, port, track):
+    """Gniazdo zgłoszone do `track` *przed* łączeniem — zamknięcie go z innego
+    wątku przerywa nawet wiszące `connect()` (zamykanie okna w trakcie rundy).
+
+    ponytail: tylko pierwszy adres z DNS (bez próbowania IPv4 po IPv6 jak
+    `create_connection`) — dołożyć pętlę, gdy jakiś serwer na tym polegnie.
+    """
+    family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    sock = socket.socket(family, kind, proto)
+    track(sock)
+    sock.settimeout(CHECK_TIMEOUT)
+    sock.connect(address)
+    return sock
+
+
+def _ssh_kwargs(target):
+    return dict(
         username=target.get("username") or None,
         password=target.get("password") or None,
         key_filename=target.get("key_file") or None,
@@ -77,85 +98,115 @@ def _connect(target):
         banner_timeout=CHECK_TIMEOUT,
         auth_timeout=CHECK_TIMEOUT,
     )
-    jump = None
-    if target.get("jump_host"):
-        jump_host, _, jump_port = target["jump_host"].partition(":")
-        jump = paramiko.SSHClient()
-        load_host_keys(jump)
-        jump.set_missing_host_key_policy(paramiko.RejectPolicy())
-        jump.connect(hostname=jump_host, port=int(jump_port or 22), **kwargs)
-        sock = jump.get_transport().open_channel(
-            "direct-tcpip", (target["host"], target["port"]), ("127.0.0.1", 0)
-        )
-    else:
-        sock = socket.create_connection((target["host"], target["port"]), CHECK_TIMEOUT)
+
+
+def _client(host, port, sock, target, track):
+    """Klient SSH bez pytań: nieznany klucz serwera -> wyjątek."""
     client = paramiko.SSHClient()
+    track(client)
     load_host_keys(client)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    try:
-        client.connect(hostname=target["host"], port=target["port"], sock=sock, **kwargs)
-    except Exception:
-        client.close()
-        if jump:
-            jump.close()
-        raise
-    client._jump_client = jump  # zamykany razem z klientem w check_ssh
+    client.connect(hostname=host, port=port, sock=sock, **_ssh_kwargs(target))
     return client
 
 
-def check_ssh(target):
-    """-> {"ok", "cpu", "mem", "disk", "error"}. CPU z Linuksa wymaga dwóch próbek."""
+def _jump_channel(target, port, track):
+    """Kanał do `host:port` celu przez serwer pośredni (to samo konto co na cel)."""
+    jump_host, _, jump_port = target["jump_host"].partition(":")
+    jump_port = int(jump_port or 22)
+    jump = _client(jump_host, jump_port, _socket(jump_host, jump_port, track), target, track)
+    channel = jump.get_transport().open_channel(
+        "direct-tcpip", (target["host"], port), ("127.0.0.1", 0)
+    )
+    track(channel)
+    return channel
+
+
+def _connect(target, track):
+    if target.get("jump_host"):
+        sock = _jump_channel(target, target["port"], track)
+    else:
+        sock = _socket(target["host"], target["port"], track)
+    return _client(target["host"], target["port"], sock, target, track)
+
+
+def check_ssh(target, track=_no_track):
+    """-> {"ok", "cpu", "mem", "disk", "error"}. CPU z Linuksa wymaga dwóch próbek.
+
+    Wszystko, co otwiera, zgłasza do `track` — zamyka to `check()` albo runda.
+    """
     try:
-        client = _connect(target)
+        client = _connect(target, track)
     except paramiko.SSHException as error:
         if "not found in known_hosts" in str(error):
             return {"ok": False, "error": t("monitor_unknown_key")}
         return {"ok": False, "error": str(error) or type(error).__name__}
     except Exception as error:
         return {"ok": False, "error": str(error) or type(error).__name__}
-    try:
-        first = _read(client, STATS_CMD, parse_stats)
-        if first is not None:
-            time.sleep(1)
-            current = _read(client, STATS_CMD, parse_stats) or first
-            cpu = cpu_percent(current, first if current is not first else None)
-        else:
-            current = _read(client, WINDOWS_STATS_CMD, parse_windows_stats)
-            cpu = current and cpu_percent(current, None)
-        if current is None:
-            # Zalogowało się, ale statystyk brak (nie Linux/Windows) — żyje, to wystarczy.
-            return {"ok": True, "error": t("stats_unavailable")}
-        return {"ok": True, "cpu": cpu, "mem": mem_percent(current), "disk": current["disk_pct"]}
-    finally:
-        client.close()
-        if client._jump_client:
-            client._jump_client.close()
+    first = _read(client, STATS_CMD, parse_stats)
+    if first is not None:
+        time.sleep(1)
+        current = _read(client, STATS_CMD, parse_stats) or first
+        cpu = cpu_percent(current, first if current is not first else None)
+    else:
+        current = _read(client, WINDOWS_STATS_CMD, parse_windows_stats)
+        cpu = current and cpu_percent(current, None)
+    if current is None:
+        # Zalogowało się, ale statystyk brak (nie Linux/Windows) — żyje, to wystarczy.
+        return {"ok": True, "error": t("stats_unavailable")}
+    return {"ok": True, "cpu": cpu, "mem": mem_percent(current), "disk": current["disk_pct"]}
 
 
-def check_port(target):
+def check_port(target, track=_no_track):
     try:
-        with socket.create_connection((target["host"], target["port"]), CHECK_TIMEOUT):
-            return {"ok": True}
+        _socket(target["host"], target["port"], track)
+        return {"ok": True}
     except OSError as error:
         return {"ok": False, "error": str(error)}
 
 
-def check_cert(target, result):
+def check_cert(target, result, track=_no_track):
     """Dopisuje do wyniku dni do końca certyfikatu TLS (albo błąd odczytu).
 
-    ponytail: czytane wprost z tego komputera, bez hosta pośredniego — serwer
-    osiągalny tylko przez bastion pokaże błąd w podpowiedzi kafelka.
+    Z serwerem pośrednim (`jump_host`) certyfikat czytany przez niego — cel
+    bywa osiągalny tylko stamtąd. ponytail: osobne logowanie na serwer
+    pośredni (nie to z `check_ssh`), jedno więcej na rundę.
     """
+    port = target["tls_port"]
     try:
-        result["cert_days"] = cert_info(target["host"], target["tls_port"], CHECK_TIMEOUT)["days_left"]
+        if target.get("jump_host"):
+            sock = _jump_channel(target, port, track)
+        else:
+            sock = _socket(target["host"], port, track)
+        result["cert_days"] = cert_info(target["host"], port, CHECK_TIMEOUT, sock)["days_left"]
     except Exception as error:
         result["cert_error"] = t("monitor_tls_error", str(error) or type(error).__name__)
     return result
 
 
-def check(target):
-    result = check_ssh(target) if target.get("protocol", "ssh") == "ssh" else check_port(target)
-    return check_cert(target, result) if target.get("tls_port") else result
+def check(target, track=_no_track):
+    """Pełne sprawdzenie celu; wszystko, co otworzyło, zamyka na końcu."""
+    opened = []
+
+    def keep(obj):
+        opened.append(obj)
+        track(obj)
+
+    try:
+        is_ssh = target.get("protocol", "ssh") == "ssh"
+        result = check_ssh(target, keep) if is_ssh else check_port(target, keep)
+        return check_cert(target, result, keep) if target.get("tls_port") else result
+    finally:
+        _close_all(opened)
+
+
+def _close_all(objects):
+    # Od końca: kanał/klient celu przed serwerem pośrednim.
+    for obj in reversed(objects):
+        try:
+            obj.close()
+        except Exception:
+            pass
 
 
 # --- ocena i alerty (czyste funkcje, stąd testy) ----------------------------
@@ -241,28 +292,56 @@ def history(key, hours=24, path=None, now=None):
     return (100 * row[1],) + tuple(row[2:])
 
 
-def samples(key, hours=24, path=None, now=None):
-    """-> [(cpu, ram), ...] od najstarszej — punkty dużego wykresu historii."""
+def samples(key, hours=24, path=None, now=None, buckets=None):
+    """-> [(cpu, ram), ...] od najstarszej — punkty dużego wykresu historii.
+
+    `buckets` = najwyżej tyle punktów (średnia w przedziale czasu): 30 dni co
+    5 min to 8640 próbek, a wykres ma kilkaset pikseli szerokości. Puste
+    przedziały (serwer nie był monitorowany) po prostu nie dają punktu.
+    """
     since = int(now or time.time()) - hours * 3600
+    width = max(1, hours * 3600 // buckets) if buckets else 1
     db = _db(path)
     try:
         return db.execute(
-            "SELECT cpu, mem FROM samples WHERE key = ? AND ts >= ? ORDER BY ts",
-            (key, since),
+            "SELECT AVG(cpu), AVG(mem) FROM samples WHERE key = ? AND ts >= ?"
+            " GROUP BY (ts - ?) / ? ORDER BY MIN(ts)",
+            (key, since, since, width),
         ).fetchall()
     finally:
         db.close()
 
 
-def history_text(key):
+def export_csv(key, hours=24, path=None, now=None):
+    """Surowe próbki jako tekst CSV (separator „;” — Excel w polskich ustawieniach)."""
+    since = int(now or time.time()) - hours * 3600
+    db = _db(path)
     try:
-        stats = history(key)
+        rows = db.execute(
+            "SELECT ts, ok, cpu, mem, disk, error FROM samples WHERE key = ? AND ts >= ?"
+            " ORDER BY ts",
+            (key, since),
+        ).fetchall()
+    finally:
+        db.close()
+    out = io.StringIO()
+    writer = csv.writer(out, delimiter=";", lineterminator="\n")
+    writer.writerow(["time", "ok", "cpu", "ram", "disk", "error"])
+    for ts, ok, *rest in rows:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+        writer.writerow([stamp, ok] + ["" if v is None else v for v in rest])
+    return out.getvalue()
+
+
+def history_text(key, hours=24, label="24 h"):
+    try:
+        stats = history(key, hours)
     except sqlite3.Error:
         return ""  # baza akurat zablokowana zapisem rundy — podpowiedź to tylko dodatek
     if stats is None:
         return ""
     cells = [f"{v:.0f}%" if v is not None else "—" for v in stats]
-    return t("monitor_history", *cells)
+    return t("monitor_history", label, *cells)
 
 
 # --- runda w tle -------------------------------------------------------------
@@ -280,11 +359,37 @@ class MonitorRound(QThread):
     def __init__(self, targets):
         super().__init__()
         self.targets = targets  # {klucz: cel}
+        self._lock = threading.Lock()
+        self._open = []
+        self.cancelled = False
+
+    def _track(self, obj):
+        """Gniazda/klienci/kanały w locie; po `cancel()` zamykane od razu."""
+        with self._lock:
+            if not self.cancelled:
+                self._open.append(obj)
+                return
+        obj.close()
+        raise ConnectionAbortedError("monitoring zatrzymany")
+
+    def cancel(self):
+        """Zamknięcie okna: zrywa połączenia w locie zamiast czekać do CHECK_TIMEOUT."""
+        with self._lock:
+            self.cancelled = True
+            opened, self._open = self._open, []
+        _close_all(opened)
+
+    def _check(self, target):
+        if self.cancelled:
+            return {"ok": False, "error": "cancelled"}
+        return check(target, self._track)
 
     def run(self):
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            futures = {key: pool.submit(check, target) for key, target in self.targets.items()}
+            futures = {key: pool.submit(self._check, target) for key, target in self.targets.items()}
             results = {key: future.result() for key, future in futures.items()}
+        if self.cancelled:
+            return  # część wyników to „przerwane” — nie do historii ani na kafelki
         try:
             record(results)
         except sqlite3.Error:
@@ -333,6 +438,48 @@ def selftest():
         later = now + KEEP_DAYS * 86400 + 1
         record({}, path, later)  # sprząta wszystko starsze niż 30 dni
         assert history("a:22", 24 * 365, path, later) is None
+
+    # Wykres z dni/tygodni: najwyżej `buckets` punktów, średnia w przedziale.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "m.db"
+        now = 2_000_000
+        for i in range(12):  # godzina co 5 min
+            record({"a:22": {"ok": True, "cpu": i * 10, "mem": 50}}, path, now - 3600 + i * 300)
+        assert len(samples("a:22", 1, path, now)) == 12, "bez buckets = wszystkie próbki"
+        squeezed = samples("a:22", 1, path, now, buckets=2)
+        assert squeezed == [(25.0, 50.0), (85.0, 50.0)], squeezed
+        record({"a:22": {"ok": False, "error": "brak; trasy"}}, path, now)
+        rows = export_csv("a:22", 1, path, now).splitlines()
+        assert rows[0] == "time;ok;cpu;ram;disk;error" and len(rows) == 14, rows[:2]
+        assert rows[-1].endswith(';0;;;;"brak; trasy"'), rows[-1]
+
+    # Certyfikat przez gotowe połączenie (droga serwera pośredniego) i wprost.
+    from scanner import tls_test_server
+    port, stop = tls_test_server(days=5)
+    try:
+        assert check_cert({"host": "127.0.0.1", "tls_port": port}, {})["cert_days"] == 5
+    finally:
+        stop()
+
+    # Zamknięcie okna w trakcie rundy: wiszące łączenie przerwane od razu,
+    # runda nie zapisuje i nie zgłasza połowicznych wyników.
+    blackhole = {"protocol": "rdp", "host": "10.255.255.1", "port": 22}
+    stopped = MonitorRound({"x": blackhole})
+    got = []
+    stopped.done.connect(got.append)
+    stopped.start()
+    time.sleep(0.5)
+    started = time.monotonic()
+    stopped.cancel()
+    assert stopped.wait(3000), "runda nie skończyła się po cancel()"
+    assert time.monotonic() - started < 3 and got == [], (time.monotonic() - started, got)
+    late = MonitorRound({})
+    late.cancel()
+    try:
+        late._track(socket.socket())
+        raise AssertionError("po cancel() nowe połączenie ma być odrzucone")
+    except ConnectionAbortedError:
+        pass
 
     # Nieosiągalny port: błąd, nie wyjątek (port 9 na localhost zwykle zamknięty).
     assert check_port({"host": "127.0.0.1", "port": 9})["ok"] in (True, False)

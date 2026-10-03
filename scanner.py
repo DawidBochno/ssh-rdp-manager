@@ -78,20 +78,26 @@ def split_host_port(text, default=443):
     return host, int(port) if port else default
 
 
-def cert_info(host, port=443, timeout=5):
+def cert_info(host, port=443, timeout=5, sock=None):
     """Certyfikat TLS serwera: podmiot, wystawca, data ważności, dni do końca.
 
     Kontekst bez weryfikacji — chodzi o *odczytanie* certyfikatu (także
     samopodpisanego, także już wygasłego), a nie o zaufanie serwerowi.
     Weryfikujący kontekst zerwałby połączenie dokładnie w tych przypadkach,
     dla których to narzędzie powstało.
+
+    `sock` = gotowe połączenie (np. kanał Paramiko przez serwer pośredni) —
+    zamyka je wołający. Bez niego łączymy się sami.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
-    with socket.create_connection((host, port), timeout) as raw:
-        with context.wrap_socket(raw, server_hostname=host) as tls:
-            der = tls.getpeercert(binary_form=True)
+    if sock is not None:
+        der = _peer_cert_over(sock, context, host, timeout)
+    else:
+        with socket.create_connection((host, port), timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                der = tls.getpeercert(binary_form=True)
     # Nieweryfikujący kontekst oddaje pusty słownik, więc pola czytamy z DER-a.
     # ponytail: `_test_decode_cert` to prywatna funkcja CPythona — jedyny sposób
     # rozebrania certyfikatu bez `cryptography`. Gdyby zniknęła z nowej wersji
@@ -111,6 +117,25 @@ def cert_info(host, port=443, timeout=5):
         "expires": expires.strftime("%Y-%m-%d %H:%M"),
         "days_left": (expires - datetime.now(timezone.utc).replace(tzinfo=None)).days,
     }
+
+
+def _peer_cert_over(sock, context, host, timeout):
+    """Uzgodnienie TLS przez dowolny obiekt z `sendall`/`recv` (kanał Paramiko
+    nie jest gniazdem, więc `wrap_socket` odpada — idzie przez MemoryBIO)."""
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, outgoing, server_hostname=host)
+    sock.settimeout(timeout)
+    while True:
+        try:
+            tls.do_handshake()
+            return tls.getpeercert(binary_form=True)
+        except ssl.SSLWantReadError:
+            if outgoing.pending:
+                sock.sendall(outgoing.read())
+            data = sock.recv(65536)
+            if not data:
+                raise ConnectionError("TLS: polaczenie zamkniete w trakcie uzgadniania")
+            incoming.write(data)
 
 
 def _write_temp_pem(der):
@@ -494,7 +519,73 @@ def cert_dialog(parent):
     )
 
 
+def tls_test_server(days=30):
+    """Lokalny serwer TLS z samopodpisanym certyfikatem ważnym `days` dni.
+
+    Dla selftestów (tu i w monitor.py). `cryptography` i tak jest — wymaga jej
+    Paramiko. -> (port, stop)."""
+    import datetime as dt
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test.local")])
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(1)
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=days, hours=1))
+        .sign(key, hashes.SHA256())
+    )
+    folder = Path(tempfile.mkdtemp(prefix="sshrdp_tls_"))
+    (folder / "c.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    (folder / "k.pem").write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(folder / "c.pem", folder / "k.pem")
+    listener = socket.create_server(("127.0.0.1", 0))
+    stopped = threading.Event()
+
+    def serve():
+        while not stopped.is_set():
+            try:
+                conn, _ = listener.accept()
+                with context.wrap_socket(conn, server_side=True) as tls:
+                    tls.recv(1)  # klient po odczycie certyfikatu po prostu się rozłącza
+            except OSError:
+                pass
+
+    threading.Thread(target=serve, daemon=True).start()
+
+    def stop():
+        stopped.set()
+        listener.close()
+        for path in folder.iterdir():
+            path.unlink()
+        folder.rmdir()
+
+    return listener.getsockname()[1], stop
+
+
 def selftest():
+    # Certyfikat: zwykłe łączenie i to samo przez gotowe połączenie (MemoryBIO,
+    # droga kanału Paramiko przez serwer pośredni) dają ten sam wynik.
+    port, stop = tls_test_server(days=30)
+    try:
+        direct = cert_info("127.0.0.1", port)
+        assert direct["days_left"] == 30 and "test.local" in direct["subject"], direct
+        with socket.create_connection(("127.0.0.1", port), 5) as raw:
+            assert cert_info("127.0.0.1", port, 5, sock=raw) == direct
+    finally:
+        stop()
+
     assert parse_range("192.168.0.5") == ["192.168.0.5"]
     assert parse_range("192.168.0.1-3") == ["192.168.0.1", "192.168.0.2", "192.168.0.3"]
     assert parse_range("192.168.0.1-192.168.0.2") == ["192.168.0.1", "192.168.0.2"]
