@@ -1943,9 +1943,11 @@ def _run_commands(client, unix_cmd, windows_cmd):
     return text if text is not None else failed_text(t("script_failed"), error)
 
 
-def save_text(parent, text, default_name, title):
+def save_text(parent, text, default_name, title, file_filter=None):
     """Zapisuje tekst do wskazanego pliku. Zwraca ścieżkę albo pusty tekst."""
-    path, _ = QFileDialog.getSaveFileName(parent, title, default_name, t("text_filter"))
+    path, _ = QFileDialog.getSaveFileName(
+        parent, title, default_name, file_filter or t("text_filter")
+    )
     if not path:
         return ""
     try:
