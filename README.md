@@ -45,8 +45,11 @@ py main.py --selftest
 - Hasła **opcjonalnie** zapisywane, zaszyfrowane przez DPAPI (klucz związany z twoim
   kontem Windows). Bez zapisanego hasła program pyta jak dotąd.
 - Wskazanie pliku klucza prywatnego per połączenie; puste hasło = logowanie kluczem
-  (agent albo `~/.ssh`). **Hasło klucza (passphrase)** ma osobne pole — to nie to
-  samo co hasło konta i zapisuje się osobno.
+  (agent — Pageant albo agent OpenSSH — albo `~/.ssh`). **Hasło klucza (passphrase)**
+  ma osobne pole — to nie to samo co hasło konta i zapisuje się osobno.
+- **Przekazuj agenta SSH** (pole w formularzu, jak `ssh -A`): klucze z agenta
+  działają też w `ssh`/`git` uruchomionym na serwerze. Tylko dla zaufanych
+  serwerów — ich administrator może w tym czasie użyć twoich kluczy.
 - **Poświadczenia** (menu **Programy → Poświadczenia** albo przycisk **Nowe…**
   w formularzu połączenia): jedno konto — login, hasło, klucz, hasło klucza —
   wskazywane przez wiele połączeń. Zmiana hasła na koncie działa od razu na
@@ -84,6 +87,14 @@ py main.py --selftest
 - **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; dymek nad zakładką pokazuje
   `użytkownik@host:port`. Czcionka i znacznik czasu przy każdej linii — w oknie
   **Ustawienia**; **Widok → Zapisz zapis sesji** odkłada bufor terminala do pliku.
+- **Ctrl+klik** na adresie `http(s)://` otwiera go w przeglądarce, na adresie IP
+  kopiuje go do schowka.
+- **Edytor polecenia** (Ctrl+Shift+E albo prawy klik na zakładce): pole pod
+  terminalem na polecenie z wielu linii, poprawiane przed wysłaniem (Ctrl+Enter),
+  opcjonalnie **do wszystkich otwartych sesji**.
+- **Ustawienia → Terminal → Zapisuj wszystkie sesje do plików**: każda nowa sesja
+  SSH trafia na bieżąco do folderu `logs` obok programu (plik na sesję, starsze
+  niż 30 dni są kasowane).
 - Panel **SFTP** po lewej stronie zakładki (operacje w tle — wolny serwer nie zamraża okna): nawigacja, pobieranie, wysyłanie
   (w tle, w **kolejce transferów** pod listą plików: stan każdego pliku,
   anulowanie zaznaczonych — przerwany plik jest kasowany, żeby nie zostawał
@@ -180,6 +191,7 @@ Skróty okna (pełna lista: **Pomoc → Skróty klawiszowe**):
 | Ctrl+Shift+F | filtr listy połączeń |
 | Ctrl+Shift+S | ustawienia |
 | Ctrl+Shift+P | paleta poleceń: połączenia, akcje menu, skrypty |
+| Ctrl+Shift+E | edytor polecenia pod terminalem |
 
 Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala.
 
@@ -192,6 +204,8 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
   Odcisk jest w formacie SHA256 (jak `ssh-keygen -lf`), a zaakceptowany klucz
   trafia do pliku `known_hosts` obok `connections.json` — kolejne połączenie
   nie pyta, a podmieniony klucz tego samego serwera zostaje odrzucony.
+  **Programy → Zapamiętane klucze serwerów** pokazuje te wpisy z odciskami
+  i pozwala usunąć nieaktualny (np. po reinstalacji serwera).
 - Zerwana sesja SSH łączy się ponownie sama (5 prób: po 2, 5, 10, 30 i 60 s);
   treść terminala zostaje, SFTP, tunele i polecenia startowe wstają od nowa.
   `exit` w powłoce zamyka sesję normalnie, bez ponownego łączenia.
