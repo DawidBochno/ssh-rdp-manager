@@ -477,6 +477,10 @@ TEXTS = {
         "disks_failed": "Could not read disk usage on this server.",
         # --- generator kluczy SSH ---
         "menu_keygen": "SSH key generator…",
+        "menu_group_settings": "Group settings…",
+        "group_settings_title": "Group settings",
+        "group_settings_hint": "Connections in this group (and its subgroups) use these values when their own field is empty.",
+        "from_group": "from group: {0}",
         "fld_environment": "Environment:",
         "tip_environment": "Production: red tab and a confirmation before sending commands (again after 10 minutes of silence).",
         "env_none": "—",
@@ -988,6 +992,10 @@ TEXTS = {
         "disks_failed": "Nie udało się odczytać zajętości dysków na tym serwerze.",
         # --- generator kluczy SSH ---
         "menu_keygen": "Generator kluczy SSH…",
+        "menu_group_settings": "Ustawienia grupy…",
+        "group_settings_title": "Ustawienia grupy",
+        "group_settings_hint": "Połączenia w tej grupie (i w podgrupach) przejmują te wartości, gdy ich własne pole jest puste.",
+        "from_group": "z grupy: {0}",
         "fld_environment": "Środowisko:",
         "tip_environment": "Produkcja: czerwona zakładka i pytanie przed wysłaniem polecenia (znowu po 10 minutach ciszy).",
         "env_none": "—",

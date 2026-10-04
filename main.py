@@ -180,7 +180,36 @@ class ConnectionData(dict):
     oddaje **nową kopię** — `conn["last_used"] = ...`, zakładki SFTP i tunele
     zmieniały kopię i przepadały, a `origin is conn` przy dwukliku nigdy nie
     trafiało. Podklasę dict PySide trzyma jako obiekt Pythona i oddaje ten sam.
+
+    Dziedziczenie z grupy (ROADMAP #1): `defaults` to scalone ustawienia grup
+    nad połączeniem (`ConnectionTree.refresh_inheritance`). `get()` oddaje
+    wartość grupy, gdy połączenie samo ma puste pole — dzięki temu łączenie,
+    monitoring, kolor zakładki i `effective_auth` dziedziczą bez zmian u siebie.
+    Do pliku idzie tylko to, co własne (`json.dumps` nie woła `get`), a formularz
+    dostaje `dict(conn)`, czyli też tylko własne pola.
     """
+
+    defaults = {}
+
+    @classmethod
+    def wrap(cls, data):
+        # Nie-słownik (uszkodzony plik) zostaje jak jest — wyłapie go `load()`.
+        return cls(data) if isinstance(data, dict) and not isinstance(data, cls) else data
+
+    def get(self, key, default=None):
+        if key in INHERITED_KEYS and not super().get(key) and self.defaults.get(key):
+            # Konto z grupy nie przykrywa własnego logowania połączenia.
+            if key == "credential" and any(super(ConnectionData, self).get(k) for k in OWN_AUTH_KEYS):
+                return super().get(key, default)
+            return self.defaults[key]
+        return super().get(key, default)
+
+
+# Pola ustawiane raz na grupie. Port celowo nie: formularz zawsze go zapisuje,
+# więc „puste” nie istnieje — a 22 jako „dziedzicz” myliłoby się z wpisanym 22.
+INHERITED_KEYS = ("username", "credential", "key_file", "jump_host", "environment")
+OWN_AUTH_KEYS = ("username", "password", "key_file")
+GROUP_DATA = Qt.UserRole + 4
 COLOR_DATA = Qt.UserRole + 3
 GROUP_ICON = "📁"
 
@@ -331,6 +360,53 @@ def search_text(data):
     return " ".join(parts).lower()
 
 
+class GroupDialog(QDialog):
+    """Ustawienia grupy dziedziczone przez połączenia w niej (i w podgrupach),
+    które same mają te pola puste."""
+
+    def __init__(self, parent=None, data=None):
+        super().__init__(parent)
+        data = data or {}
+        self.setWindowTitle(t("group_settings_title"))
+        self.username = QLineEdit(data.get("username", ""))
+        self.credential = QComboBox()
+        self.credential.addItem(t("cred_none"), None)
+        for cred in credentials.load()[0]:
+            self.credential.addItem(f"{cred['name']} ({cred.get('username', '')})", cred["id"])
+        self.credential.setCurrentIndex(max(0, self.credential.findData(data.get("credential"))))
+        self.key_file = QLineEdit(data.get("key_file", ""))
+        self.jump_host = QLineEdit(data.get("jump_host", ""))
+        self.jump_host.setPlaceholderText(t("ph_jump_host"))
+        self.environment = QComboBox()
+        for value, label in ENVIRONMENTS:
+            self.environment.addItem(t(label), value)
+        self.environment.setCurrentIndex(max(0, self.environment.findData(data.get("environment", ""))))
+        form = QFormLayout(self)
+        hint = QLabel(t("group_settings_hint"))
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        form.addRow(t("fld_user"), self.username)
+        form.addRow(t("fld_credential"), self.credential)
+        form.addRow(t("fld_key_file"), self.key_file)
+        form.addRow(t("fld_jump_host"), self.jump_host)
+        form.addRow(t("fld_environment"), self.environment)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self):
+        """Tylko wypełnione pola — puste nie przykrywają ustawień grupy wyżej."""
+        values = {
+            "username": self.username.text().strip(),
+            "credential": self.credential.currentData(),
+            "key_file": self.key_file.text().strip(),
+            "jump_host": self.jump_host.text().strip(),
+            "environment": self.environment.currentData(),
+        }
+        return {key: value for key, value in values.items() if value}
+
+
 class ConnectionDialog(QDialog):
     """Formularz danych połączenia — SSH albo RDP."""
 
@@ -343,10 +419,13 @@ class ConnectionDialog(QDialog):
         "environment",
     }
 
-    def __init__(self, parent=None, data=None):
+    def __init__(self, parent=None, data=None, inherited=None):
         super().__init__(parent)
-        data = data or {}
+        # Kopia = tylko własne pola (patrz `ConnectionData.get`), dziedziczone
+        # pokazujemy jako podpowiedź w pustym polu, nie jako wpisaną wartość.
+        data = dict(data or {})
         self._data = data
+        self._inherited = inherited = inherited or {}
 
         self.protocol = QComboBox()
         self.protocol.addItem("SSH", "ssh")
@@ -406,9 +485,17 @@ class ConnectionDialog(QDialog):
         # Port certyfikatu TLS do pilnowania przez monitoring; 0 = nie sprawdzaj.
         self.environment = QComboBox()
         for value, label in ENVIRONMENTS:
-            self.environment.addItem(t(label), value)
+            if not value and inherited.get("environment"):
+                label = t("from_group", t(dict(ENVIRONMENTS)[inherited["environment"]]))
+            else:
+                label = t(label)
+            self.environment.addItem(label, value)
         self.environment.setCurrentIndex(max(0, self.environment.findData(data.get("environment", ""))))
         self.environment.setToolTip(t("tip_environment"))
+        for field, key in ((self.username, "username"), (self.key_file, "key_file"),
+                           (self.jump_host, "jump_host")):
+            if inherited.get(key):
+                field.setPlaceholderText(t("from_group", inherited[key]))
 
         self.tls_port = QSpinBox()
         self.tls_port.setRange(0, 65535)
@@ -491,8 +578,12 @@ class ConnectionDialog(QDialog):
     def _fill_credentials(self, selected=None):
         self.credential.blockSignals(True)
         self.credential.clear()
-        self.credential.addItem(t("cred_none"), None)
-        for cred in credentials.load()[0]:
+        accounts = credentials.load()[0]
+        group_cred = credentials.find(accounts, self._inherited.get("credential"))
+        self.credential.addItem(
+            t("from_group", group_cred["name"]) if group_cred else t("cred_none"), None
+        )
+        for cred in accounts:
             self.credential.addItem(f"{cred['name']} ({cred.get('username', '')})", cred["id"])
         # Wskazane konto mogło zostać usunięte — wtedy „brak”, własne pola.
         self.credential.setCurrentIndex(max(0, self.credential.findData(selected)))
@@ -566,13 +657,13 @@ class ConnectionDialog(QDialog):
             password = decrypt_password(auth["password"]) if auth["password"] else ""
             passphrase = decrypt_password(auth["passphrase"]) if auth["passphrase"] else ""
         else:
-            auth = {"username": self.username.text().strip(),
-                    "key_file": self.key_file.text().strip()}
+            auth = {"username": self.username.text().strip() or self._inherited.get("username", ""),
+                    "key_file": self.key_file.text().strip() or self._inherited.get("key_file", "")}
             password, passphrase = self.password.text(), self.passphrase.text()
         terminal = connect_with_progress(
             self, host, port, auth["username"], password or "",
             auth.get("key_file") or None, passphrase or None,
-            self.jump_host.text().strip() or None,
+            self.jump_host.text().strip() or self._inherited.get("jump_host") or None,
         )
         if terminal is None:
             return  # błąd już pokazany
@@ -683,6 +774,8 @@ class ConnectionTree(QTreeWidget):
         if item.type() == CONNECTION_TYPE:
             node["connection"] = item.data(0, CONNECTION_DATA)
         else:
+            if item.data(0, GROUP_DATA):
+                node["defaults"] = item.data(0, GROUP_DATA)
             node["children"] = [
                 self._serialize(item.child(i)) for i in range(item.childCount())
             ]
@@ -693,8 +786,40 @@ class ConnectionTree(QTreeWidget):
         root = self.topLevelItem(0)
         return [self._serialize(root.child(i)) for i in range(root.childCount())]
 
+    def group_defaults(self, item):
+        """Scalone ustawienia grup od korzenia do `item` — bliższa grupa wygrywa."""
+        chain = []
+        while item is not None:
+            if item.type() != CONNECTION_TYPE and item.data(0, GROUP_DATA):
+                chain.append(item.data(0, GROUP_DATA))
+            item = item.parent()
+        merged = {}
+        for defaults in reversed(chain):
+            merged.update(defaults)
+        return merged
+
+    def refresh_inheritance(self):
+        """Każdemu połączeniu wpisuje ustawienia jego grup — po każdej zmianie drzewa
+        (przeniesienie, edycja grupy), stąd wołane z `save()` i po wczytaniu."""
+        self.credentials = credentials.load()[0]
+        it = QTreeWidgetItemIterator(self)
+        while it.value():
+            item = it.value()
+            if item.type() == CONNECTION_TYPE and isinstance(item.data(0, CONNECTION_DATA), dict):
+                data = ConnectionData.wrap(item.data(0, CONNECTION_DATA))
+                data.defaults = self.group_defaults(item.parent())
+                self._apply_connection(item, data)  # dymek z loginem z grupy
+            it += 1
+
+    def _edit_group(self, item):
+        dialog = GroupDialog(self, item.data(0, GROUP_DATA) or {})
+        if dialog.exec() == QDialog.Accepted:
+            item.setData(0, GROUP_DATA, dialog.values() or None)
+            self.save()
+
     def save(self):
         """Zrzuca całe drzewo do JSON. Wołane po każdej zmianie."""
+        self.refresh_inheritance()
         nodes = self.nodes()
         try:
             credentials.atomic_write_text(
@@ -714,6 +839,8 @@ class ConnectionTree(QTreeWidget):
             self._apply_connection(item, node["connection"])
         else:
             item = QTreeWidgetItem(parent, [])
+            if node.get("defaults"):
+                item.setData(0, GROUP_DATA, dict(node["defaults"]))
             for child in node.get("children", []):
                 self._build(item, child)
             item.setExpanded(True)
@@ -730,6 +857,7 @@ class ConnectionTree(QTreeWidget):
             nodes = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             for node in nodes:
                 self._build(root, node)
+            self.refresh_inheritance()
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             # Uszkodzonego pliku (zly JSON albo zla struktura wewnatrz) nie
             # nadpisujemy w ciszy — odkladamy kopie, zeby dalo sie odzyskac
@@ -839,6 +967,7 @@ class ConnectionTree(QTreeWidget):
                 menu.addAction(t("menu_unpin" if pinned else "menu_pin"), lambda: self._toggle_pin(item))
             else:
                 menu.addAction(t("menu_rename"), lambda: self._rename_group(item))
+                menu.addAction(t("menu_group_settings"), lambda: self._edit_group(item))
             menu.addAction(t("menu_icon"), lambda: self._pick_icon(item))
             menu.addAction(t("menu_color"), lambda: self._pick_color(item))
             if item.data(0, COLOR_DATA):
@@ -849,8 +978,7 @@ class ConnectionTree(QTreeWidget):
 
     def _apply_connection(self, item, data):
         """Wpisuje dane połączenia do elementu drzewa (etykieta, tooltip, dane)."""
-        if isinstance(data, dict) and not isinstance(data, ConnectionData):
-            data = ConnectionData(data)  # inaczej data() oddawałoby kopie, patrz wyżej
+        data = ConnectionData.wrap(data)  # inaczej data() oddawałoby kopie, patrz wyżej
         item.setData(0, CONNECTION_DATA, data)
         cred = credentials.find(self.credentials, data.get("credential"))
         user = cred.get("username", "") if cred else data.get("username", "")
@@ -865,7 +993,8 @@ class ConnectionTree(QTreeWidget):
         self.set_label(item, data["name"], item.data(0, ICON_DATA) or "")
 
     def _edit_connection(self, item):
-        dialog = ConnectionDialog(self, item.data(0, CONNECTION_DATA))
+        data = item.data(0, CONNECTION_DATA)
+        dialog = ConnectionDialog(self, data, inherited=data.defaults)
         if dialog.exec() != QDialog.Accepted:
             return
         self.credentials = credentials.load()[0]
@@ -974,12 +1103,14 @@ class ConnectionTree(QTreeWidget):
         self.save()
 
     def _add_connection(self, parent_item):
-        dialog = ConnectionDialog(self)
+        parent_item = parent_item or self.topLevelItem(0)
+        if parent_item.type() == CONNECTION_TYPE:
+            parent_item = parent_item.parent()  # klik na połączeniu = nowe obok niego
+        dialog = ConnectionDialog(self, inherited=self.group_defaults(parent_item))
         if dialog.exec() != QDialog.Accepted:
             return
         data = dialog.values()
         self.credentials = credentials.load()[0]
-        parent_item = parent_item or self.topLevelItem(0)
         item = QTreeWidgetItem(parent_item, [], CONNECTION_TYPE)
         self._apply_connection(item, data)
         parent_item.setExpanded(True)
@@ -2581,6 +2712,52 @@ def selftest():
         saved.setData(0, CONNECTION_DATA, conn_data)
         tree.save()
         assert CONFIG_FILE.exists(), "plik konfiguracji nie powstał"
+
+        # Dziedziczenie z grupy: puste pole połączenia bierze wartość z najbliższej
+        # grupy, własne wygrywa; do pliku idzie tylko to, co własne.
+        outer = QTreeWidgetItem(root, ["Klient"])
+        outer.setData(0, GROUP_DATA, {"username": "deploy", "environment": "prod",
+                                      "jump_host": "bastion:2200"})
+        inner = QTreeWidgetItem(outer, ["Bazy"])
+        inner.setData(0, GROUP_DATA, {"username": "dba", "credential": "konto-1"})
+        heir = QTreeWidgetItem(inner, [], CONNECTION_TYPE)
+        tree._apply_connection(heir, {"name": "db-01", "host": "10.1.0.1", "port": 22})
+        own = QTreeWidgetItem(inner, [], CONNECTION_TYPE)
+        tree._apply_connection(own, {"name": "db-02", "host": "10.1.0.2", "port": 22,
+                                     "username": "root", "environment": "test"})
+        tree.save()
+        heir_data, own_data = heir.data(0, CONNECTION_DATA), own.data(0, CONNECTION_DATA)
+        assert heir_data.get("username") == "dba", "bliższa grupa ma wygrać"
+        assert heir_data.get("jump_host") == "bastion:2200" and heir_data.get("environment") == "prod"
+        assert heir_data.get("credential") == "konto-1"
+        assert own_data.get("username") == "root" and own_data.get("environment") == "test"
+        assert own_data.get("credential") is None, "konto grupy przykryło własny login"
+        assert "username" not in dict(heir_data), "wartość z grupy nie może stać się własną"
+        stored = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        stored_outer = next(node for node in stored if node["name"] == "Klient")
+        assert stored_outer["defaults"]["username"] == "deploy"
+        assert "username" not in stored_outer["children"][0]["children"][0]["connection"]
+        # Po wczytaniu z pliku dziedziczenie działa tak samo.
+        reloaded = ConnectionTree()
+        reloaded.load()
+        found = {d["name"]: d for d in tree_connections(reloaded)}
+        assert found["db-01"].get("username") == "dba" and found["db-01"].get("environment") == "prod"
+        # Formularz: wartość grupy jako podpowiedź, nie wpisana — zapis jej nie utrwala.
+        form = ConnectionDialog(None, heir_data, inherited=heir_data.defaults)
+        assert form.username.text() == "" and "dba" in form.username.placeholderText()
+        assert form.values()["username"] == "" and "jump_host" not in form.values()
+        # Przeniesienie do innej grupy = nowe ustawienia po zapisie.
+        inner.removeChild(heir)
+        root.addChild(heir)
+        tree.save()
+        assert heir_data.get("username") is None and heir_data.get("environment") is None
+        # Okno grupy oddaje tylko wypełnione pola.
+        group_form = GroupDialog(None, {"username": "deploy"})
+        group_form.jump_host.setText("  ")
+        assert group_form.values() == {"username": "deploy"}, group_form.values()
+        root.removeChild(heir)
+        root.removeChild(outer)
+        tree.save()
 
         # Kropka statusu: cel bierze host/port z połączenia, wynik trafia na ikonę.
         targets = tree.status_targets()
