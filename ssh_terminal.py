@@ -372,11 +372,19 @@ def set_triggers(text):
     _triggers = compile_triggers(text)
 
 
+_MACRO_SHORTCUT = re.compile(r"^(.*?)\s*\[([^\]]+)\]$")
+# Zmienna w poleceniu: `{{usługa}}`. Podwójne klamry, bo pojedyncze są w powłoce
+# zwykłe (`${HOME}`, `awk '{print $1}'`) — tamte nie mogą wyskakiwać jako pytania.
+SNIPPET_FIELD = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_snippet_memory = {}  # ostatnio wpisane wartości zmiennych — podpowiedź przy kolejnym razie
+
+
 def parse_macros(text):
-    """„Nazwa = polecenie” na linię -> [(nazwa, polecenie)].
+    """„Nazwa [skrót] = polecenie” na linię -> [(nazwa, polecenie, skrót)].
 
     Pierwszy „=” dzieli, więc polecenie z własnym „=” (`export A=1`) musi
     mieć nazwę przed sobą; linia bez „=” to polecenie, które jest swoją nazwą.
+    Skrót w nawiasie kwadratowym na końcu nazwy jest opcjonalny („” = brak).
     """
     macros = []
     for line in text.splitlines():
@@ -384,9 +392,22 @@ def parse_macros(text):
         label, command = label.strip(), command.strip()
         if not sep:
             label = command = line.strip()
+        shortcut = ""
+        match = _MACRO_SHORTCUT.match(label)
+        if sep and match:
+            label, shortcut = match.group(1).strip(), match.group(2).strip()
         if label and command:
-            macros.append((label, command))
+            macros.append((label, command, shortcut))
     return macros
+
+
+def snippet_fields(command):
+    """Nazwy zmiennych `{{...}}` w kolejności, bez powtórzeń."""
+    return list(dict.fromkeys(m.group(1) for m in SNIPPET_FIELD.finditer(command)))
+
+
+def fill_snippet(command, values):
+    return SNIPPET_FIELD.sub(lambda m: values[m.group(1)], command)
 
 
 def macros_text():
@@ -1887,18 +1908,38 @@ class SessionTab(QWidget):
         """Przebudowuje pasek makr — przy starcie i po zmianie w Ustawieniach."""
         while self._macro_layout.count():
             self._macro_layout.takeAt(0).widget().deleteLater()
-        for label, command in macros:
+        for label, command, shortcut in macros:
             button = QToolButton(self.macro_bar)
             button.setText(label)
-            button.setToolTip(command)
+            button.setToolTip(f"{command}  ({shortcut})" if shortcut else command)
             button.clicked.connect(lambda _=False, c=command: self.send_macro(c))
             self._macro_layout.addWidget(button)
         self._macro_layout.addStretch()
         self.macro_bar.setVisible(bool(macros))
 
-    def send_macro(self, command):
-        if self.terminal.send_text(command + "\r"):
+    def send_macro(self, command, ask=None):
+        """Wysyła polecenie z biblioteki; o zmienne `{{...}}` pyta po kolei.
+
+        `ask(nazwa, podpowiedź) -> tekst albo None` — podmieniane w testach.
+        Anulowanie którejkolwiek zmiennej = nic nie idzie do serwera.
+        """
+        ask = ask or self._ask_field
+        values = {}
+        for name in snippet_fields(command):
+            value = ask(name, _snippet_memory.get(name, ""))
+            if value is None:
+                return False
+            values[name] = _snippet_memory[name] = value
+        if self.terminal.send_text(fill_snippet(command, values) + "\r"):
             self.terminal.setFocus()
+            return True
+        return False
+
+    def _ask_field(self, name, default):
+        value, ok = QInputDialog.getText(
+            self, t("snippet_title"), t("snippet_prompt", name), text=default
+        )
+        return value if ok else None
 
     @property
     def last_stats(self):
@@ -2584,7 +2625,26 @@ def selftest():
 
     # Makra: pierwszy „=” dzieli, linia bez „=” jest swoją nazwą, puste odpadają.
     macros = parse_macros("Root = sudo -i\n\nuptime\n Env = export B=2 \n=\n")
-    assert macros == [("Root", "sudo -i"), ("uptime", "uptime"), ("Env", "export B=2")], macros
+    assert macros == [("Root", "sudo -i", ""), ("uptime", "uptime", ""), ("Env", "export B=2", "")], macros
+    # Biblioteka poleceń: skrót w [ ] po nazwie, zmienne w {{ }} — pojedyncze
+    # klamry powłoki (`${HOME}`, awk) nie są zmiennymi.
+    assert parse_macros("Restart [Ctrl+Alt+R] = systemctl restart {{usługa}}") == [
+        ("Restart", "systemctl restart {{usługa}}", "Ctrl+Alt+R")]
+    assert parse_macros("ls [a]") == [("ls [a]", "ls [a]", "")], "bez „=” nawias to część polecenia"
+    command = "tail -n {{ ile }} /var/log/{{plik}} | awk '{print $1}' ${HOME} {{plik}}"
+    assert snippet_fields(command) == ["ile", "plik"], snippet_fields(command)
+    assert fill_snippet(command, {"ile": "5", "plik": "syslog"}) == (
+        "tail -n 5 /var/log/syslog | awk '{print $1}' ${HOME} syslog")
+    snippet_tab = SessionTab(OfflineTerminal())
+    asked = []
+    answers = {"usługa": "nginx"}
+    assert snippet_tab.send_macro("systemctl restart {{usługa}}",
+                                  ask=lambda n, d: asked.append((n, d)) or answers[n])
+    assert snippet_tab.terminal.channel.sent == ["systemctl restart nginx\r"]
+    snippet_tab.send_macro("systemctl status {{usługa}}", ask=lambda n, d: asked.append((n, d)) or d)
+    assert asked[-1] == ("usługa", "nginx"), "ostatnia wartość ma wracać jako podpowiedź"
+    assert not snippet_tab.send_macro("rm {{plik}}", ask=lambda n, d: None), "anulowanie wysłało"
+    assert snippet_tab.terminal.channel.sent[-1] == "systemctl status nginx\r"
 
     # Tylko do odczytu: klawisze, wklejanie i makra nie mogą dojść do kanału.
     guarded = OfflineTerminal()

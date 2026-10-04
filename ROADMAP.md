@@ -46,14 +46,14 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 
 | # | Propozycja | Na wzór | Wielkość | Priorytet |
 |---|---|---|---|---|
-| 11 | **Biblioteka poleceń (snippets) ze zmiennymi** — `systemctl restart {usługa}`, per grupa, w palecie | Termius | M | ⭐⭐⭐ |
+| 11 | ✅ **Biblioteka poleceń (snippets) ze zmiennymi** — `systemctl restart {usługa}`, per grupa, w palecie | Termius | M | ⭐⭐⭐ |
 | 12 | **Podpowiadanie poleceń** z historii wszystkich sesji | WindTerm, Termius | M | ⭐⭐ |
 | 13 | ✅ **Pasek „compose”** — wieloliniowe polecenie edytowane przed wysłaniem, opcjonalnie do wielu sesji | Xshell, SecureCRT | S | ⭐⭐ |
 | 14 | ✅ **Klikalne adresy URL i IP** w terminalu (Ctrl+klik) | Tabby, Windows Terminal | S | ⭐⭐ |
 | 15 | ✅ **Automatyczny zapis wszystkich sesji do plików** z rotacją | SecureCRT, MobaXterm | S | ⭐⭐ |
 | 16 | **ZMODEM** (`rz`/`sz`) — plik przez sam terminal, bez SFTP | MobaXterm, WindTerm | M | ⭐ |
 | 17 | **Edytor reguł podświetlania** w Ustawieniach (słowo → kolor) | SecureCRT | S | ⭐ |
-| 18 | **Własne skróty klawiszowe** (makra pod skrótem) | wszystkie | S | ⭐⭐ |
+| 18 | ✅ **Własne skróty klawiszowe** (makra pod skrótem) | wszystkie | S | ⭐⭐ |
 | 19 | ✅ **Kolor środowiska na zakładce** — produkcja na czerwono + pytanie przed wysłaniem do prod | Royal TS | S | ⭐⭐⭐ |
 
 ### Bezpieczeństwo
@@ -105,7 +105,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 2. ~~#19 kolor produkcji + pytanie przed wysłaniem~~ — zrobione 2026-10-04.
 3. ~~#3 przywracanie sesji po starcie~~ — zrobione 2026-10-04 (siatka wraca jako zwykłe zakładki).
 4. ~~#1 dziedziczenie ustawień z grupy~~ — zrobione 2026-10-04 (bez portu); ~~#2 import z innych programów~~ — zrobione 2026-10-04 (PuTTY, MobaXterm, mRemoteNG, CSV; bez RDCMan).
-5. #11 biblioteka poleceń + #18 skróty.
+5. ~~#11 biblioteka poleceń + #18 skróty~~ — zrobione 2026-10-04 (zmienne `{{...}}`, skrót w `[ ]`; bez podziału na grupy).
 6. #29 panel Docker.
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.
 
