@@ -31,11 +31,13 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTimer,
+    QUrl,
     Signal,
     Slot,
 )
 from PySide6.QtGui import (
     QColor,
+    QDesktopServices,
     QFont,
     QKeySequence,
     QPainter,
@@ -47,7 +49,9 @@ from PySide6.QtGui import (
     QTextDocument,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -57,8 +61,12 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressDialog,
+    QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -389,6 +397,57 @@ def set_macros(text):
     i18n.settings().setValue("macros", text)
 
 
+# Automatyczny zapis sesji: plik na sesję w `logs/` obok programu, starsze
+# niż SESSION_LOG_DAYS kasowane przy otwarciu nowego (to cała „rotacja”).
+SESSION_LOG_DIR = Path(__file__).with_name("logs")
+SESSION_LOG_DAYS = 30
+
+
+def session_log_enabled():
+    return i18n.settings().value("session_log", False, type=bool)
+
+
+def set_session_log_enabled(on):
+    i18n.settings().setValue("session_log", on)
+
+
+def session_log_path(name, folder=None, now=None):
+    """`logs/web01_20261003-141500.log` — nazwa połączenia bez znaków niedozwolonych w pliku."""
+    safe = re.sub(r"[^\w.-]+", "_", name).strip("_") or "sesja"
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    return (folder or SESSION_LOG_DIR) / f"{safe}_{stamp}.log"
+
+
+def prune_session_logs(folder=None, days=SESSION_LOG_DAYS, now=None):
+    cutoff = (now or time.time()) - days * 86400
+    for path in (folder or SESSION_LOG_DIR).glob("*.log"):
+        if path.stat().st_mtime < cutoff:
+            path.unlink(missing_ok=True)
+
+
+def log_text(text):
+    r"""Wyjście do pliku: bez `\r` i dzwonka. ponytail: backspace zostaje
+    dosłownie (poprawiona literówka zostaje w pliku jako `ab\b`), pełna
+    emulacja linii byłaby drugim `apply_output`."""
+    return text.replace("\r", "").replace("\x07", "")
+
+
+# Ctrl+klik w terminalu: adres URL otwiera przeglądarkę, adres IP idzie do schowka.
+_LINK_RE = re.compile(
+    r"(?P<url>https?://[^\s'\"<>]+)|(?P<ip>(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]))"
+)
+
+
+def link_at(line, column):
+    """("url"|"ip", tekst) pod kolumną albo None. Czysta funkcja — do selftestu."""
+    for match in _LINK_RE.finditer(line):
+        if match.start() <= column < match.end():
+            if match.lastgroup == "url":
+                return "url", match.group().rstrip(".,;:!?)]}")
+            return "ip", match.group()
+    return None
+
+
 def pending_lines(tail, text):
     """Dzieli wyjście na linie kompletne i ogon czekający na resztę.
 
@@ -629,10 +688,92 @@ def remember_host_key(hostname, key, path=None):
         if path.exists():
             keys.load(str(path))
         keys.add(hostname, key.get_name(), key)
-        # Obok i podmiana — przerwany zapis nie może zgubić zapamiętanych kluczy.
-        tmp = path.with_name(path.name + ".tmp")
-        keys.save(str(tmp))
-        os.replace(tmp, path)
+        _save_host_keys(keys, path)
+
+
+def _save_host_keys(keys, path):
+    # Obok i podmiana — przerwany zapis nie może zgubić zapamiętanych kluczy.
+    tmp = path.with_name(path.name + ".tmp")
+    keys.save(str(tmp))
+    os.replace(tmp, path)
+
+
+def known_host_entries(path=None):
+    """[(host, typ klucza, odcisk SHA256)] z naszego pliku — do okna kluczy."""
+    path = path or KNOWN_HOSTS_FILE
+    keys = paramiko.HostKeys()
+    if path.exists():
+        keys.load(str(path))
+    return sorted(
+        (host, name, fingerprint_sha256(key))
+        for host in keys for name, key in keys[host].items()
+    )
+
+
+def forget_host_key(hostname, key_type, path=None):
+    """Usuwa jeden wpis — np. po reinstalacji serwera, gdy klucz się zmienił."""
+    path = path or KNOWN_HOSTS_FILE
+    with _known_hosts_lock:
+        keys = paramiko.HostKeys()
+        if path.exists():
+            keys.load(str(path))
+        kept = paramiko.HostKeys()
+        for host in keys:
+            for name, key in keys[host].items():
+                if (host, name) != (hostname, key_type):
+                    kept.add(host, name, key)
+        _save_host_keys(kept, path)
+
+
+class KnownHostsDialog(QDialog):
+    """Zapamiętane klucze serwerów: podgląd i usuwanie wpisów.
+
+    Tylko nasz plik — `~/.ssh/known_hosts` należy do OpenSSH, nie ruszamy go.
+    """
+
+    def __init__(self, parent=None, path=None):
+        super().__init__(parent)
+        self.path = path
+        self.setWindowTitle(t("known_hosts_title"))
+        self.resize(720, 360)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(
+            [t("known_hosts_host"), t("known_hosts_type"), t("known_hosts_fingerprint")]
+        )
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        remove = QPushButton(t("known_hosts_remove"))
+        remove.clicked.connect(self.remove_selected)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.addButton(remove, QDialogButtonBox.ActionRole)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.table)
+        layout.addWidget(buttons)
+        self.refresh()
+
+    def refresh(self):
+        entries = known_host_entries(self.path)
+        self.table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            for column, text in enumerate(entry):
+                self.table.setItem(row, column, QTableWidgetItem(text))
+        self.table.resizeColumnsToContents()
+
+    def remove_selected(self, confirm=True):
+        rows = sorted({index.row() for index in self.table.selectedIndexes()})
+        if not rows:
+            return
+        if confirm and QMessageBox.question(
+            self, t("known_hosts_title"), t("known_hosts_confirm", len(rows))
+        ) != QMessageBox.Yes:
+            return
+        for row in rows:
+            forget_host_key(
+                self.table.item(row, 0).text(), self.table.item(row, 1).text(), self.path
+            )
+        self.refresh()
 
 
 class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -684,8 +825,12 @@ class SshConnector(QThread):
     failed = Signal(str)
 
     def __init__(self, host, port, username, password, key_file=None, passphrase=None,
-                 jump_host=None):
+                 jump_host=None, forward_agent=False):
         super().__init__()
+        # Przekazanie agenta (`ssh -A`): klucze z Pageanta/agenta OpenSSH działają
+        # też w `ssh`/`git` uruchomionym na serwerze. Opt-in — root na serwerze
+        # może w tym czasie logować się naszymi kluczami gdzie indziej.
+        self.forward_agent = forward_agent
         self.host = host
         self.port = port
         self.username = username
@@ -764,7 +909,14 @@ class SshConnector(QThread):
             client.connect(hostname=self.host, port=self.port, sock=sock, **self._connect_kwargs())
             # Bezczynna sesja za NAT-em/firewallem inaczej wygasa po cichu.
             client.get_transport().set_keepalive(KEEPALIVE_SECONDS)
-            channel = client.invoke_shell(term="xterm", width=100, height=30)
+            if self.forward_agent:
+                # `invoke_shell()` nie daje wpiąć agenta — kanał składamy sami.
+                channel = client.get_transport().open_session()
+                paramiko.agent.AgentRequestHandler(channel)
+                channel.get_pty(term="xterm", width=100, height=30)
+                channel.invoke_shell()
+            else:
+                channel = client.invoke_shell(term="xterm", width=100, height=30)
         except Exception as error:
             client.close()
             if not self._cancelled:
@@ -778,7 +930,7 @@ class SshConnector(QThread):
 
 
 def connect_with_progress(parent, host, port, username, password, key_file=None,
-                          passphrase=None, jump_host=None):
+                          passphrase=None, jump_host=None, forward_agent=False):
     """Łączy się pokazując okno postępu. Zwraca SshTerminal albo None.
 
     None oznacza anulowanie lub błąd (błąd jest pokazywany użytkownikowi).
@@ -791,7 +943,9 @@ def connect_with_progress(parent, host, port, username, password, key_file=None,
     dialog.setAutoClose(False)
     dialog.setAutoReset(False)
 
-    connector = SshConnector(host, port, username, password, key_file, passphrase, jump_host)
+    connector = SshConnector(
+        host, port, username, password, key_file, passphrase, jump_host, forward_agent
+    )
     asker = HostKeyAsker(parent)
     # Blocking: wątek roboczy czeka, aż użytkownik odpowie w oknie GUI.
     connector.ask_host_key.connect(asker.ask, Qt.BlockingQueuedConnection)
@@ -1434,6 +1588,7 @@ class SshTerminal(QPlainTextEdit):
             text, self._at_line_start = stamp_lines(
                 text, time.strftime("[%H:%M:%S] "), self._at_line_start
             )
+        self._write_log(text)
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.End)
         apply_output(cursor, text)
@@ -1485,6 +1640,29 @@ class SshTerminal(QPlainTextEdit):
     # i Ctrl+F działają, bo to operacje lokalne.
     read_only = False
     _held_cr = ""
+    _log_file = None
+
+    def start_log(self, name, folder=None):
+        """Otwiera plik zapisu sesji, jeśli włączony w Ustawieniach."""
+        if not session_log_enabled():
+            return
+        folder = folder or SESSION_LOG_DIR
+        try:
+            folder.mkdir(exist_ok=True)
+            prune_session_logs(folder)
+            # buffering=1: linia od razu na dysku — awaria programu nie zjada końcówki.
+            self._log_file = open(session_log_path(name, folder), "a", encoding="utf-8", buffering=1)
+        except OSError:
+            self._log_file = None  # brak zapisu nie może blokować sesji
+
+    def _write_log(self, text):
+        if self._log_file is None:
+            return
+        try:
+            self._log_file.write(log_text(text))
+        except OSError:
+            self._log_file.close()  # pełny dysk — dalej bez zapisu
+            self._log_file = None
 
     def send_text(self, data):
         """Jedyna droga od użytkownika do powłoki — tu pilnuje tryb tylko do odczytu."""
@@ -1520,7 +1698,25 @@ class SshTerminal(QPlainTextEdit):
         if event.button() == Qt.MiddleButton:
             self._paste()
             return
+        if event.button() == Qt.LeftButton and event.modifiers() & Qt.ControlModifier:
+            if self.open_link(event.position().toPoint(), event.globalPosition().toPoint()):
+                return
         super().mousePressEvent(event)
+
+    def open_link(self, pos, global_pos=None):
+        """Ctrl+klik: URL do przeglądarki, IP do schowka. False = nic tam nie ma."""
+        cursor = self.cursorForPosition(pos)
+        link = link_at(cursor.block().text(), cursor.positionInBlock())
+        if link is None:
+            return False
+        kind, text = link
+        if kind == "url":
+            QDesktopServices.openUrl(QUrl(text))
+        else:
+            QApplication.clipboard().setText(text)
+            if global_pos is not None:
+                QToolTip.showText(global_pos, t("link_ip_copied", text), self)
+        return True
 
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Find):
@@ -1548,6 +1744,9 @@ class SshTerminal(QPlainTextEdit):
         """Zamyka kanał i połączenie; bezpieczne do wielokrotnego wywołania."""
         self._closing = True
         self._close_client()
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
 
     def _close_client(self):
         if self.channel and not self.channel.closed:
@@ -1591,6 +1790,8 @@ class OfflineTerminal(SshTerminal):
 class SessionTab(QWidget):
     """Zawartość zakładki sesji: SFTP po lewej, terminal po prawej — wzorem MobaXterm."""
 
+    compose_to_all = Signal(str)  # pole polecenia z „do wszystkich sesji” — rozsyła okno
+
     def __init__(self, terminal, parent=None, bookmarks=None, on_change=None):
         super().__init__(parent)
         self.terminal = terminal
@@ -1630,6 +1831,45 @@ class SessionTab(QWidget):
         layout.addWidget(self.macro_bar)
         layout.addWidget(splitter)
         self.set_macros(parse_macros(macros_text()))
+
+        # Pole polecenia pod terminalem: wieloliniowe polecenie poprawiane przed
+        # wysłaniem (Ctrl+Enter), opcjonalnie do wszystkich otwartych sesji.
+        self.compose = QPlainTextEdit(self)
+        self.compose.setFont(terminal_font())
+        self.compose.setPlaceholderText(t("compose_hint"))
+        self.compose.setFixedHeight(80)
+        QShortcut(QKeySequence("Ctrl+Return"), self.compose, self.send_compose,
+                  context=Qt.WidgetShortcut)
+        self.compose_all = QCheckBox(t("compose_all"))
+        send = QPushButton(t("compose_send"))
+        send.clicked.connect(self.send_compose)
+        side = QVBoxLayout()
+        side.addWidget(send)
+        side.addWidget(self.compose_all)
+        side.addStretch()
+        self.compose_bar = QWidget(self)
+        bar_layout = QHBoxLayout(self.compose_bar)
+        bar_layout.setContentsMargins(2, 0, 2, 2)
+        bar_layout.addWidget(self.compose, 1)
+        bar_layout.addLayout(side)
+        self.compose_bar.hide()
+        layout.addWidget(self.compose_bar)
+
+    def toggle_compose(self):
+        show = self.compose_bar.isHidden()
+        self.compose_bar.setVisible(show)
+        (self.compose if show else self.terminal).setFocus()
+
+    def send_compose(self):
+        text = self.compose.toPlainText().rstrip("\n")
+        if not text.strip():
+            return
+        data = paste_bytes(text) + "\r"
+        if self.compose_all.isChecked():
+            self.compose_to_all.emit(data)
+        elif not self.terminal.send_text(data):
+            return  # tylko do odczytu albo zamknięta sesja — tekst zostaje do poprawki
+        self.compose.clear()
 
     def set_macros(self, macros):
         """Przebudowuje pasek makr — przy starcie i po zmianie w Ustawieniach."""
@@ -2354,6 +2594,86 @@ def selftest():
     split._append("kod: 0\r")
     split._append("\nroot@proxmox:~# ")
     assert split.toPlainText() == "kod: 0\nroot@proxmox:~# ", repr(split.toPlainText())
+
+    # Ctrl+klik: URL bez kropki z końca zdania, IP tylko całe, nic poza linkiem.
+    line = "zobacz https://example.com/a?b=1. albo 10.0.0.5:22, wersja 1.2.3.4.5"
+    assert link_at(line, line.index("example")) == ("url", "https://example.com/a?b=1")
+    assert link_at(line, line.index("10.0")) == ("ip", "10.0.0.5")
+    assert link_at(line, 0) is None and link_at(line, line.index("1.2.3")) is None
+    linked = OfflineTerminal()
+    linked._append("serwer 192.168.1.20 gotowy")
+    pos = linked.cursorRect(linked.document().find("192.168")).center()
+    assert linked.open_link(pos) and QApplication.clipboard().text() == "192.168.1.20"
+    assert not linked.open_link(linked.cursorRect(linked.document().find("serwer")).center())
+
+    # Zapis sesji do pliku: nazwa bez znaków zakazanych, rotacja po dacie,
+    # zapis tylko przy włączonym ustawieniu, tekst bez `\r`.
+    assert session_log_path("web 01/prod", Path("x"), 0).name.startswith("web_01_prod_")
+    assert log_text("a\r\nb\x07") == "a\nb"
+    stored_log = i18n.settings().value("session_log")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            old = folder / "stary.log"
+            old.write_text("x")
+            os.utime(old, (0, 0))
+            set_session_log_enabled(False)
+            logged = OfflineTerminal()
+            logged.start_log("web", folder)
+            assert logged._log_file is None and old.exists(), "wyłączony zapis coś zrobił"
+            set_session_log_enabled(True)
+            logged.start_log("web", folder)
+            assert not old.exists(), "stary log miał zniknąć"
+            logged._append("uptime\r\n 10:00 up\r\n")
+            logged._log_file.close()
+            files = list(folder.glob("web_*.log"))
+            assert len(files) == 1 and files[0].read_text(encoding="utf-8") == "uptime\n 10:00 up\n"
+    finally:
+        if stored_log is None:
+            i18n.settings().remove("session_log")
+        else:
+            i18n.settings().setValue("session_log", stored_log)
+
+    # Okno kluczy: lista z odciskiem i usunięcie jednego wpisu.
+    with tempfile.TemporaryDirectory() as tmp:
+        kh = Path(tmp) / "known_hosts"
+        key, other = paramiko.RSAKey.generate(1024), paramiko.RSAKey.generate(1024)
+        remember_host_key("a", key, kh)
+        remember_host_key("b", other, kh)
+        assert known_host_entries(kh) == [
+            ("a", "ssh-rsa", fingerprint_sha256(key)), ("b", "ssh-rsa", fingerprint_sha256(other))
+        ]
+        dialog = KnownHostsDialog(path=kh)
+        assert dialog.table.rowCount() == 2
+        dialog.table.selectRow(0)
+        dialog.remove_selected(confirm=False)
+        assert [e[0] for e in known_host_entries(kh)] == ["b"] and dialog.table.rowCount() == 1
+
+    # Agent: przekazanie to opt-in, domyślnie wyłączone.
+    assert not SshConnector("h", 22, "u", "").forward_agent
+    assert SshConnector("h", 22, "u", "", forward_agent=True).forward_agent
+
+    # Pole polecenia: wieloliniowe z `\r`, czyści się po wysłaniu; „do wszystkich”
+    # idzie sygnałem do okna; tylko do odczytu zostawia tekst do poprawki.
+    session = SessionTab(OfflineTerminal())
+    session.compose.setPlainText("cd /tmp\nls\n")
+    session.send_compose()
+    assert session.terminal.channel.sent == ["cd /tmp\rls\r"], session.terminal.channel.sent
+    assert session.compose.toPlainText() == ""
+    broadcast = []
+    session.compose_to_all.connect(broadcast.append)
+    session.compose_all.setChecked(True)
+    session.compose.setPlainText("uptime")
+    session.send_compose()
+    assert broadcast == ["uptime\r"] and len(session.terminal.channel.sent) == 1
+    session.compose_all.setChecked(False)
+    session.terminal.read_only = True
+    session.compose.setPlainText("rm x")
+    session.send_compose()
+    assert session.compose.toPlainText() == "rm x"
+    assert session.compose_bar.isHidden()
+    session.toggle_compose()
+    assert not session.compose_bar.isHidden()
 
     # Panel SFTP: patrz sftp.selftest().
 

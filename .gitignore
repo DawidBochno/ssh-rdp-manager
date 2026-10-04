@@ -27,3 +27,6 @@ known_hosts
 
 # Historia monitoringu w tle (SQLite) — lokalna, nie repo.
 monitor.db
+
+# Automatyczny zapis sesji (Ustawienia -> Terminal) — lokalny, nie repo.
+logs/

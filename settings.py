@@ -51,6 +51,9 @@ class SettingsDialog(QDialog):
         self.highlighting.setChecked(current["highlighting"])
         self.timestamps = QCheckBox(t("menu_timestamps"))
         self.timestamps.setChecked(current["timestamps"])
+        self.session_log = QCheckBox(t("settings_session_log"))
+        self.session_log.setChecked(current["session_log"])
+        self.session_log.setToolTip(t("tip_session_log"))
         self.font_button = QPushButton()
         self.font_button.clicked.connect(self._pick_font)
         self._show_font()
@@ -61,6 +64,7 @@ class SettingsDialog(QDialog):
         form = self._tab(tabs, t("settings_tab_terminal"))
         form.addRow(self.highlighting)
         form.addRow(self.timestamps)
+        form.addRow(self.session_log)
         form.addRow(t("settings_font"), self.font_button)
         form.addRow(t("settings_scrollback"), self.scrollback)
         form.addRow(t("settings_triggers"), self.triggers)
@@ -165,6 +169,7 @@ class SettingsDialog(QDialog):
         return {
             "highlighting": self.highlighting.isChecked(),
             "timestamps": self.timestamps.isChecked(),
+            "session_log": self.session_log.isChecked(),
             "font": self._font,
             "scrollback": self.scrollback.value(),
             "triggers": self.triggers.toPlainText(),
