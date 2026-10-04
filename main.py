@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import containers
 import credentials
 import disks
 import graphs
@@ -145,6 +146,7 @@ TOOLS = (
     ("menu_services", "_manage_services"),
     ("menu_disks", "_open_disks"),
     ("menu_processes", "_open_processes"),
+    ("menu_docker", "_open_docker"),
     ("menu_multirun", "_open_multirun"),
     ("menu_split", "_open_split"),
     ("menu_credentials", "_manage_credentials"),
@@ -2409,6 +2411,13 @@ class MainWindow(QMainWindow):
             return
         processes.ProcessDialog(self, session.terminal.client).exec()
 
+    def _open_docker(self):
+        session = self._current_session()
+        if not isinstance(session, SessionTab):
+            QMessageBox.information(self, t("docker_title"), t("tunnels_need_session"))
+            return
+        containers.DockerDialog(self, session.terminal.client).exec()
+
     def _manage_known_hosts(self):
         KnownHostsDialog(self).exec()
 
@@ -3252,6 +3261,10 @@ def selftest():
     shown.clear()
     window._open_processes()
     assert shown == [t("tunnels_need_session")], shown
+    assert any(label == "menu_docker" for label, _ in TOOLS), TOOLS
+    shown.clear()
+    window._open_docker()
+    assert shown == [t("tunnels_need_session")], shown
 
     # Tagi: parsowanie i wyszukiwanie po #tagu (drzewo i Home tym samym tekstem).
     assert parse_tags(" Prod, #db,, prod ") == ["prod", "db"]
@@ -3555,6 +3568,7 @@ def selftest():
     tunnels_module.selftest()
     logtail.selftest()
     services.selftest()
+    containers.selftest()
     processes.selftest()
     multirun.selftest()
     transfers.selftest()
