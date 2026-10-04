@@ -209,6 +209,7 @@ def selftest():
     import i18n
 
     app = QApplication.instance() or QApplication([])
+    assert app is not None  # referencja trzyma QApplication przy zyciu do konca testu
     i18n.use("en")
 
     conn = {"name": "srv", "host": "10.0.0.7", "port": 3390, "username": "admin"}
