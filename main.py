@@ -1942,6 +1942,11 @@ class MainWindow(QMainWindow):
         for label, handler in TOOLS:
             tools_menu.addAction(t(label), getattr(self, handler))
 
+        # Biblioteka poleceń (makra z Ustawień): menu = paleta (Ctrl+Shift+P)
+        # i skróty za darmo — skrót akcji menu działa w całym oknie.
+        self.snippet_menu = menu.addMenu(t("menu_snippets"))
+        self._fill_snippet_menu()
+
         help_menu = menu.addMenu(t("menu_help"))
         help_menu.addAction(t("menu_shortcuts"), self._show_shortcuts)
         help_menu.addAction(t("menu_about"), self._show_about)
@@ -2065,6 +2070,7 @@ class MainWindow(QMainWindow):
             set_macros(new["macros"])
             for session in sessions:
                 session.set_macros(parse_macros(new["macros"]))
+            self._fill_snippet_menu()
         if "theme" in changed:
             set_terminal_theme(new["theme"])
             for session in sessions:
@@ -2662,6 +2668,23 @@ class MainWindow(QMainWindow):
             menu.addAction(t("tab_compose"), widget.toggle_compose)
         menu.exec(bar.mapToGlobal(pos))
 
+    def _fill_snippet_menu(self):
+        self.snippet_menu.clear()
+        for label, command, shortcut in parse_macros(macros_text()):
+            action = self.snippet_menu.addAction(label, lambda c=command: self._send_snippet(c))
+            action.setStatusTip(command)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+        self.snippet_menu.addSeparator()
+        self.snippet_menu.addAction(t("menu_snippets_edit"), self._open_settings)
+
+    def _send_snippet(self, command):
+        session = self._current_session()
+        if not isinstance(session, SessionTab):
+            self.statusBar().showMessage(t("scripts_need_session"), 5000)
+            return
+        session.send_macro(command)
+
     def _send_to_all_sessions(self, data):
         """Pole polecenia z „do wszystkich” — przez `send_text`, więc tylko do odczytu działa."""
         for i in range(self.tabs.count()):
@@ -3235,6 +3258,27 @@ def selftest():
     assert "#db" in search_text({"name": "x", "tags": ["db"]})
     assert HomeTab.matches({"name": "x", "tags": ["klient-a"]}, "#klient")
     assert not HomeTab.matches({"name": "x"}, "#klient")
+
+    # Biblioteka poleceń: menu „Polecenia” z makr (skrót z [ ]) — trafia też do palety;
+    # bez sesji komunikat zamiast wyjątku.
+    stored_macros = i18n.settings().value("macros")
+    try:
+        set_macros("Restart [Ctrl+Alt+R] = systemctl restart {{usługa}}\nUptime = uptime")
+        window._fill_snippet_menu()
+        actions = [a for a in window.snippet_menu.actions() if not a.isSeparator()]
+        assert [a.text() for a in actions[:2]] == ["Restart", "Uptime"], [a.text() for a in actions]
+        assert actions[0].shortcut().toString() == "Ctrl+Alt+R"
+        labels = [label for label, _ in menu_entries(window.menuBar())]
+        assert any(label.endswith("› Uptime") for label in labels), labels
+        window.tabs.setCurrentIndex(0)
+        window._send_snippet("uptime")
+        assert window.statusBar().currentMessage() == t("scripts_need_session")
+    finally:
+        if stored_macros is None:
+            i18n.settings().remove("macros")
+        else:
+            i18n.settings().setValue("macros", stored_macros)
+        window._fill_snippet_menu()
 
     # Okno Ustawień: bieżące wartości wchodzą, te same wychodzą; PIN pilnowany.
     assert any(a.text() == t("menu_settings") for a in window.findChildren(QAction))

@@ -36,9 +36,13 @@ py main.py --selftest
   podgląd logu, **tylko do odczytu** (🔒 na zakładce: klawisze, wklejanie i makra
   nie idą do serwera — do prezentacji). Zakładka w tle z nowym wyjściem dostaje
   znacznik „● ”.
-- **Makra**: przyciski nad terminalem wysyłające gotowe polecenie z Enterem.
-  Definiuje się je w **Ustawienia → Terminal → Makra**, jedno na linię:
-  `Nazwa = polecenie` (np. `Root = sudo -i`).
+- **Biblioteka poleceń** (Ustawienia → Terminal → Polecenia): jedno na linię,
+  `Nazwa = polecenie`. Opcjonalny **skrót** po nazwie w nawiasie kwadratowym
+  i **zmienne** w podwójnych klamrach, np.
+  `Restart [Ctrl+Alt+R] = sudo systemctl restart {{usługa}}` — przy wysyłaniu
+  program pyta o wartość (podpowiada ostatnio wpisaną). Polecenia są przyciskami
+  nad terminalem, w menu **Polecenia** i w palecie (Ctrl+Shift+P); trafiają do
+  bieżącej sesji.
 - Drzewo grup i połączeń: przeciąganie myszą, ikony (emoji), kolory dziedziczone
   w grupie, zmiana nazwy i edycja wpisu.
 - Zapis do `connections.json` obok programu; eksport i import tego samego formatu.
@@ -245,7 +249,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 Pełna lista ponad 40 propozycji z porównaniem do MobaXterm, Termius, Royal TS,
 SecureCRT, mRemoteNG, Tabby, WindTerm i Xshell: **[ROADMAP.md](ROADMAP.md)**.
 
-Najbliżej w kolejce: biblioteka poleceń ze zmiennymi i własne skróty klawiszowe.
+Najbliżej w kolejce: panel Docker i alerty na zewnątrz (e-mail, Teams, Slack, Telegram).
 
 ## Automatyczne sprawdzanie zmian (PR)
 

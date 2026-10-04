@@ -72,7 +72,9 @@ class SettingsDialog(QDialog):
         form.addRow(t("settings_scrollback"), self.scrollback)
         form.addRow(t("settings_triggers"), self.triggers)
         self.macros = QPlainTextEdit(current["macros"])
-        self.macros.setPlaceholderText("Root = sudo -i\nNginx = systemctl status nginx")
+        self.macros.setPlaceholderText(
+            "Root = sudo -i\nRestart [Ctrl+Alt+R] = sudo systemctl restart {{usługa}}"
+        )
         self.macros.setToolTip(t("macros_hint"))
         form.addRow(t("settings_macros"), self.macros)
         form.addRow(QLabel(t("macros_hint")))
