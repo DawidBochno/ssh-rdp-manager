@@ -69,6 +69,12 @@ py main.py --selftest
 - **Import z `~/.ssh/config`** (Połączenie → Importuj): wpisy wchodzą jako osobna
   grupa, z hostem, portem, użytkownikiem i plikiem klucza. Parser jest z Paramiko,
   więc rozumie `Include` i `Match`.
+- **Połączenie → Importuj z innego programu**: zapisane sesje **PuTTY** (z rejestru),
+  **MobaXterm** (`.mxtsessions` albo `MobaXterm.ini`), **mRemoteNG** (`confCons.xml`)
+  i plik **CSV** (kolumny `name`, `host`, `port`, `username`, `protocol`, `group` —
+  podgrupy przez „/”, separator „;” albo „,”). Połączenia SSH i RDP trafiają do nowej
+  grupy „Import: …” z zachowaniem folderów. Hasła nie są importowane (tamte programy
+  trzymają je zaszyfrowane po swojemu) — program zapyta o nie przy pierwszym połączeniu.
 - **Duplikowanie** wpisu z menu pod prawym klawiszem, **notatki** widoczne w dymku
   i **polecenia startowe** wysyłane do powłoki tuż po zalogowaniu.
 - **Jump host / ProxyJump**: pole w formularzu połączenia łączy najpierw z bastionem,
@@ -239,7 +245,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 Pełna lista ponad 40 propozycji z porównaniem do MobaXterm, Termius, Royal TS,
 SecureCRT, mRemoteNG, Tabby, WindTerm i Xshell: **[ROADMAP.md](ROADMAP.md)**.
 
-Najbliżej w kolejce: import połączeń z innych programów (PuTTY, MobaXterm, mRemoteNG).
+Najbliżej w kolejce: biblioteka poleceń ze zmiennymi i własne skróty klawiszowe.
 
 ## Automatyczne sprawdzanie zmian (PR)
 
@@ -286,6 +292,7 @@ płatne tokeny API, zwykle grosze za PR).
 | `multirun.py` | Polecenie/skrypt na wielu serwerach naraz |
 | `keygen.py` | Generator kluczy SSH |
 | `monitor.py` | Monitoring serwerów w tle, historia w SQLite |
+| `importers.py` | Import połączeń z PuTTY, MobaXterm, mRemoteNG i CSV |
 | `split.py` | Podział ekranu i pisanie do wielu terminali |
 | `ROADMAP.md` | Porównanie z rynkiem i plan rozwoju |
 
