@@ -75,7 +75,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 27 | ✅ **Alert „certyfikat TLS wygasa”** w monitoringu | — | S | ⭐⭐⭐ |
 | 28 | **Alerty na zewnątrz** — e-mail, Teams, Slack, Telegram (webhook) | Uptime Kuma | M | ⭐⭐ |
 | 29 | **Panel Docker** — kontenery, logi, restart, zużycie | Portainer (lekko) | M | ⭐⭐⭐ |
-| 30 | **Panel aktualizacji** — ile pakietów czeka, „wymagany restart”, na całej grupie | — | M | ⭐⭐ |
+| 30 | ✅ **Panel aktualizacji** — ile pakietów czeka, „wymagany restart”, na całej grupie | — | M | ⭐⭐ |
 | 31 | **Edytor zadań cron / Harmonogramu zadań Windows** | Webmin | M | ⭐ |
 | 32 | **Podgląd zapory** (ufw/firewalld/Windows Firewall) | Webmin | M | ⭐ |
 | 33 | **Wyszukiwanie w logach na wielu serwerach naraz** (grep po grupie, wynik per serwer) | — | M | ⭐⭐ |
@@ -106,7 +106,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 3. ~~#3 przywracanie sesji po starcie~~ — zrobione 2026-10-04 (siatka wraca jako zwykłe zakładki).
 4. ~~#1 dziedziczenie ustawień z grupy~~ — zrobione 2026-10-04 (bez portu); ~~#2 import z innych programów~~ — zrobione 2026-10-04 (PuTTY, MobaXterm, mRemoteNG, CSV; bez RDCMan).
 5. ~~#11 biblioteka poleceń + #18 skróty~~ — zrobione 2026-10-04 (zmienne `{{...}}`, skrót w `[ ]`; bez podziału na grupy).
-6. #29 panel Docker.
+6. #29 panel Docker; ~~#30 panel aktualizacji~~ — zrobione 2026-10-04 (tylko odczyt, otwarte sesje).
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.
 
 Poza kolejką zrobione 2026-10-03: #13, #14, #15, #22, #24 (drobne usprawnienia terminala i bezpieczeństwa).
