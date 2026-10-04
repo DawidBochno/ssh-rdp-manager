@@ -1193,25 +1193,62 @@ class HomeTab(QWidget):
         menu.exec(self.tiles.viewport().mapToGlobal(point))
 
     def history_dialog(self, data, show=True):
-        """Duży wykres CPU/RAM z `monitor.db` — ten sam `StatsGraph` co w pasku statusu."""
+        """Duży wykres CPU/RAM z `monitor.db` (24 h / 7 dni / 30 dni) + eksport CSV."""
         key = monitor.target_key(data)
-        try:
-            points = monitor.samples(key)
-        except sqlite3.Error:
-            points = []  # baza zablokowana zapisem rundy — pokaż „brak pomiarów”
+        name = data.get("name", key)
         dialog = QDialog(self)
-        dialog.setWindowTitle(t("monitor_history_title", data.get("name", key)))
+        dialog.setWindowTitle(t("monitor_history_title", name))
+        span = QComboBox()
+        for label, hours in (
+            ("monitor_range_day", 24),
+            ("monitor_range_week", 24 * 7),
+            ("monitor_range_month", 24 * monitor.KEEP_DAYS),
+        ):
+            span.addItem(t(label), hours)
+        export = QPushButton(t("monitor_export_csv"))
+        top = QHBoxLayout()
+        top.addWidget(span)
+        top.addStretch()
+        top.addWidget(export)
+        graph = graphs.StatsGraph(dialog)
+        graph.setFixedSize(576, 200)
+        legend = QLabel(t("monitor_history_legend", graphs.CPU_COLOR, graphs.RAM_COLOR))
+        summary = QLabel()
         layout = QVBoxLayout(dialog)
-        if points:
-            graph = graphs.StatsGraph(dialog)
-            graph.setFixedSize(576, 200)  # 288 próbek = 24 h co 5 min, 2 px na próbkę
-            graph.step = max(1, graph.width() // len(points))
+        layout.addLayout(top)
+        layout.addWidget(graph)
+        layout.addWidget(legend)
+        layout.addWidget(summary)
+
+        def show_range():
+            hours = span.currentData()
+            try:
+                # Najwyżej punkt na piksel — 30 dni to ~8600 próbek, uśredniane w bazie.
+                points = monitor.samples(key, hours, buckets=graph.width())
+            except sqlite3.Error:
+                points = []  # baza zablokowana zapisem rundy — pokaż „brak pomiarów”
+            graph.step = max(1, graph.width() // max(1, len(points)))
             graph.set_history(points)
-            layout.addWidget(graph)
-            layout.addWidget(QLabel(t("monitor_history_legend", graphs.CPU_COLOR, graphs.RAM_COLOR)))
-            layout.addWidget(QLabel(monitor.history_text(key)))
-        else:
-            layout.addWidget(QLabel(t("monitor_history_empty")))
+            graph.setVisible(bool(points))
+            legend.setVisible(bool(points))
+            summary.setText(
+                monitor.history_text(key, hours, span.currentText()) if points
+                else t("monitor_history_empty")
+            )
+
+        def save_csv():
+            try:
+                text = monitor.export_csv(key, span.currentData())
+            except sqlite3.Error as error:
+                QMessageBox.warning(dialog, t("monitor_export_csv"), str(error))
+                return
+            safe = re.sub(r"[^\w.-]+", "_", name).strip("_") or "historia"
+            save_text(dialog, text, f"{safe}.csv", t("monitor_export_csv"), t("csv_filter"))
+
+        span.currentIndexChanged.connect(show_range)
+        export.clicked.connect(save_csv)
+        show_range()
+        dialog.span, dialog.graph, dialog.summary = span, graph, summary  # dla selftestu
         if show:
             dialog.exec()
         return dialog
@@ -1582,8 +1619,8 @@ class MainWindow(QMainWindow):
         if self._monitor_timer:
             self._monitor_timer.stop()
         if self._monitor_round:
-            # ponytail: czeka na koniec rundy (do CHECK_TIMEOUT), przerywanie
-            # połączeń w locie dopiero, gdy zamykanie okna zacznie przeszkadzać
+            # Zrywa połączenia w locie — okno zamyka się od razu, nie po CHECK_TIMEOUT.
+            self._monitor_round.cancel()
             self._monitor_round.wait()
 
     # --- blokada okna po bezczynności --------------------------------------
@@ -2651,12 +2688,17 @@ def selftest():
         assert window._monitor_targets()["10.0.0.1:22"]["tls_port"] == 443
         reopened = ConnectionDialog(None, data)
         assert reopened.tls_port.value() == 443, "port TLS wraca przy edycji"
-        # Historia kafelka: pusta baza -> komunikat, z próbkami -> wykres.
+        # Historia kafelka: pusta baza -> komunikat, z próbkami -> wykres;
+        # przełącznik okresu (24 h / 7 / 30 dni) przelicza wykres.
         empty = home.history_dialog(data, show=False)
-        assert empty.findChild(graphs.StatsGraph) is None
+        assert empty.graph.isHidden() and empty.summary.text() == t("monitor_history_empty")
         monitor.record({"10.0.0.1:22": {"ok": True, "cpu": 5, "mem": 10}})
-        graph = home.history_dialog(data, show=False).findChild(graphs.StatsGraph)
-        assert graph is not None and graph.history == [(5, 10)], graph and graph.history
+        monitor.record({"10.0.0.1:22": {"ok": True, "cpu": 50, "mem": 60}}, now=time.time() - 3 * 86400)
+        filled = home.history_dialog(data, show=False)
+        assert not filled.graph.isHidden() and filled.graph.history == [(5, 10)], filled.graph.history
+        filled.span.setCurrentIndex(1)  # 7 dni: dochodzi próbka sprzed 3 dni
+        assert filled.graph.history == [(50, 60), (5, 10)], filled.graph.history
+        assert filled.span.currentText() in filled.summary.text()
     finally:
         monitor.DB_FILE = real_db
         data.pop("monitor", None)

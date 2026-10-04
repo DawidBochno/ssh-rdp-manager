@@ -101,7 +101,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 
 ## Rekomendowana kolejność (najpierw tanie i odczuwalne)
 
-1. ~~#27 alert TLS + #26 wykres historii~~ — zrobione 2026-10-02 (24 h; dni/tygodnie i CSV dalej otwarte).
+1. ~~#27 alert TLS + #26 wykres historii~~ — zrobione 2026-10-02, dni/tygodnie i CSV 2026-10-03.
 2. #19 kolor produkcji + pytanie przed wysłaniem — chroni przed pomyłką.
 3. #3 przywracanie sesji po starcie.
 4. #1 dziedziczenie ustawień z grupy + #2 import z innych programów.

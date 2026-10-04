@@ -153,9 +153,11 @@ py main.py --selftest
   Ustawieniach → Powiadomienia). Na Starcie kafelki: zielony = OK, żółty = CPU/RAM/
   dysk ponad próg albo certyfikat TLS ważny ≤ 14 dni (pole „Port TLS”, np. 443),
   czerwony = brak odpowiedzi; podpowiedź pokazuje ostatnie 24 h, prawy klik →
-  „Historia (24 h)” rysuje wykres CPU/RAM, dwuklik otwiera sesję. Zmiana stanu = dymek w zasobniku. Historia (30 dni)
-  w lokalnym `monitor.db`. Nieznany klucz serwera nie jest akceptowany w tle —
-  trzeba raz połączyć się ręcznie.
+  „Historia…” rysuje wykres CPU/RAM z 24 h, 7 albo 30 dni i eksportuje pomiary
+  do CSV (Excel); dwuklik otwiera sesję. Zmiana stanu = dymek w zasobniku. Historia (30 dni)
+  w lokalnym `monitor.db`. Serwer za hostem pośrednim ma certyfikat TLS sprawdzany
+  przez ten host. Nieznany klucz serwera nie jest akceptowany w tle —
+  trzeba raz połączyć się ręcznie. Zamknięcie programu przerywa trwające sprawdzanie.
 - Menu **Programy → Podziel ekran**: 2–4 sesje SSH obok siebie w jednej zakładce;
   **„Wpisuj do wszystkich”** wysyła to, co piszesz, do każdego terminala w siatce
   (czerwone ramki; terminale tylko do odczytu pomijane). „Rozdziel” oddaje zakładki.
