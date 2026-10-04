@@ -87,6 +87,11 @@ py main.py --selftest
 - **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; dymek nad zakładką pokazuje
   `użytkownik@host:port`. Czcionka i znacznik czasu przy każdej linii — w oknie
   **Ustawienia**; **Widok → Zapisz zapis sesji** odkłada bufor terminala do pliku.
+- **Środowisko** w formularzu połączenia (produkcja / test / deweloperskie):
+  nazwa zakładki w kolorze środowiska, a na **produkcji** program pyta przed
+  wysłaniem polecenia — przy pierwszym i znowu po 10 minutach ciszy.
+- **Przywracanie sesji**: zakładki otwarte przy zamknięciu programu otwierają się
+  same przy następnym starcie (Ustawienia → Terminal, domyślnie włączone).
 - **Ctrl+klik** na adresie `http(s)://` otwiera go w przeglądarce, na adresie IP
   kopiuje go do schowka.
 - **Edytor polecenia** (Ctrl+Shift+E albo prawy klik na zakładce): pole pod
@@ -229,8 +234,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 Pełna lista ponad 40 propozycji z porównaniem do MobaXterm, Termius, Royal TS,
 SecureCRT, mRemoteNG, Tabby, WindTerm i Xshell: **[ROADMAP.md](ROADMAP.md)**.
 
-Najbliżej w kolejce: kolor środowiska produkcyjnego na zakładce, przywracanie sesji
-po starcie, dziedziczenie ustawień z grupy i import z innych programów.
+Najbliżej w kolejce: dziedziczenie ustawień z grupy i import z innych programów.
 
 ## Automatyczne sprawdzanie zmian (PR)
 

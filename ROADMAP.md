@@ -33,7 +33,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 |---|---|---|---|---|
 | 1 | **Dziedziczenie ustawień z grupy** — login, klucz, port, bastion ustawione raz na folderze | mRemoteNG, Royal TS | M | ⭐⭐⭐ |
 | 2 | **Import z innych programów** — MobaXterm, PuTTY (rejestr), mRemoteNG, RDCMan, CSV | Royal TS, mRemoteNG | M | ⭐⭐⭐ |
-| 3 | **Przywracanie sesji po starcie** — otwarte zakładki (i siatka) wracają po ponownym uruchomieniu | Tabby, Windows Terminal | S | ⭐⭐⭐ |
+| 3 | ✅ **Przywracanie sesji po starcie** — otwarte zakładki (i siatka) wracają po ponownym uruchomieniu | Tabby, Windows Terminal | S | ⭐⭐⭐ |
 | 4 | **Obszary robocze** — zapisany zestaw zakładek/siatek („poranny przegląd”) otwierany jednym kliknięciem | Royal TS | M | ⭐⭐ |
 | 5 | **VNC** jako typ połączenia | MobaXterm, mRemoteNG | M | ⭐⭐ |
 | 6 | **Telnet i port szeregowy (COM)** — przełączniki, routery, konsole UPS | SecureCRT, Tabby | M | ⭐⭐ |
@@ -54,7 +54,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 16 | **ZMODEM** (`rz`/`sz`) — plik przez sam terminal, bez SFTP | MobaXterm, WindTerm | M | ⭐ |
 | 17 | **Edytor reguł podświetlania** w Ustawieniach (słowo → kolor) | SecureCRT | S | ⭐ |
 | 18 | **Własne skróty klawiszowe** (makra pod skrótem) | wszystkie | S | ⭐⭐ |
-| 19 | **Kolor środowiska na zakładce** — produkcja na czerwono + pytanie przed wysłaniem do prod | Royal TS | S | ⭐⭐⭐ |
+| 19 | ✅ **Kolor środowiska na zakładce** — produkcja na czerwono + pytanie przed wysłaniem do prod | Royal TS | S | ⭐⭐⭐ |
 
 ### Bezpieczeństwo
 
@@ -102,8 +102,8 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 ## Rekomendowana kolejność (najpierw tanie i odczuwalne)
 
 1. ~~#27 alert TLS + #26 wykres historii~~ — zrobione 2026-10-02, dni/tygodnie i CSV 2026-10-03.
-2. #19 kolor produkcji + pytanie przed wysłaniem — chroni przed pomyłką.
-3. #3 przywracanie sesji po starcie.
+2. ~~#19 kolor produkcji + pytanie przed wysłaniem~~ — zrobione 2026-10-04.
+3. ~~#3 przywracanie sesji po starcie~~ — zrobione 2026-10-04 (siatka wraca jako zwykłe zakładki).
 4. #1 dziedziczenie ustawień z grupy + #2 import z innych programów.
 5. #11 biblioteka poleceń + #18 skróty.
 6. #29 panel Docker.
