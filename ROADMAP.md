@@ -32,7 +32,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | # | Propozycja | Na wzór | Wielkość | Priorytet |
 |---|---|---|---|---|
 | 1 | ✅ **Dziedziczenie ustawień z grupy** — login, klucz, port, bastion ustawione raz na folderze | mRemoteNG, Royal TS | M | ⭐⭐⭐ |
-| 2 | **Import z innych programów** — MobaXterm, PuTTY (rejestr), mRemoteNG, RDCMan, CSV | Royal TS, mRemoteNG | M | ⭐⭐⭐ |
+| 2 | ✅ **Import z innych programów** — MobaXterm, PuTTY (rejestr), mRemoteNG, RDCMan, CSV | Royal TS, mRemoteNG | M | ⭐⭐⭐ |
 | 3 | ✅ **Przywracanie sesji po starcie** — otwarte zakładki (i siatka) wracają po ponownym uruchomieniu | Tabby, Windows Terminal | S | ⭐⭐⭐ |
 | 4 | **Obszary robocze** — zapisany zestaw zakładek/siatek („poranny przegląd”) otwierany jednym kliknięciem | Royal TS | M | ⭐⭐ |
 | 5 | **VNC** jako typ połączenia | MobaXterm, mRemoteNG | M | ⭐⭐ |
@@ -104,7 +104,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 1. ~~#27 alert TLS + #26 wykres historii~~ — zrobione 2026-10-02, dni/tygodnie i CSV 2026-10-03.
 2. ~~#19 kolor produkcji + pytanie przed wysłaniem~~ — zrobione 2026-10-04.
 3. ~~#3 przywracanie sesji po starcie~~ — zrobione 2026-10-04 (siatka wraca jako zwykłe zakładki).
-4. ~~#1 dziedziczenie ustawień z grupy~~ — zrobione 2026-10-04 (bez portu); #2 import z innych programów.
+4. ~~#1 dziedziczenie ustawień z grupy~~ — zrobione 2026-10-04 (bez portu); ~~#2 import z innych programów~~ — zrobione 2026-10-04 (PuTTY, MobaXterm, mRemoteNG, CSV; bez RDCMan).
 5. #11 biblioteka poleceń + #18 skróty.
 6. #29 panel Docker.
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.

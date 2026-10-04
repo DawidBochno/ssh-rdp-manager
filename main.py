@@ -4,6 +4,7 @@ Lewa strona: drzewo katalogów z grupami i połączeniami.
 Prawa strona: zakładki, jedna na każde otwarte połączenie.
 """
 import copy
+import xml.etree.ElementTree as ET
 import hashlib
 import json
 import re
@@ -66,6 +67,7 @@ import credentials
 import disks
 import graphs
 import i18n
+import importers
 import keygen
 import logtail
 import monitor
@@ -122,6 +124,14 @@ from ssh_terminal import (
 # pyta przed wysłaniem polecenia (`SshTerminal.confirm_send`).
 ENVIRONMENTS = (("", "env_none"), ("prod", "env_prod"), ("test", "env_test"), ("dev", "env_dev"))
 ENV_COLORS = {"prod": "#e74c3c", "test": "#e67e22", "dev": "#27ae60"}
+
+# Połączenie → Importuj z innego programu: (napis, czytnik w `importers`).
+IMPORT_SOURCES = (
+    ("import_putty", "putty"),
+    ("import_mobaxterm", "mobaxterm"),
+    ("import_mremoteng", "mremoteng"),
+    ("import_csv", "csv"),
+)
 
 # Menu „Programy”: klucz napisu -> metoda `MainWindow`. Kolejny dodatek
 # narzędziowy to jeden wiersz tutaj, bez dotykania budowania menu.
@@ -936,6 +946,14 @@ class ConnectionTree(QTreeWidget):
         group.setExpanded(True)
         self.save()
         return len(connections)
+
+    def import_items(self, items, group_name):
+        """[(folder, połączenie)] z `importers` jako nowa grupa. Zwraca liczbę połączeń."""
+        if not items:
+            return 0
+        self._build(self.topLevelItem(0), {"name": group_name, "children": importers.nodes(items)})
+        self.save()
+        return len(items)
 
     def _drop_allowed(self, item, on_item):
         # Upuszczenie w pustym miejscu zrobiłoby element najwyższego poziomu,
@@ -1884,6 +1902,9 @@ class MainWindow(QMainWindow):
         connection_menu.addAction(t("menu_export"), self._export_connections)
         connection_menu.addAction(t("menu_import"), self._import_connections)
         connection_menu.addAction(t("menu_import_ssh_config"), self._import_ssh_config)
+        other = connection_menu.addMenu(t("menu_import_other"))
+        for label, source in IMPORT_SOURCES:
+            other.addAction(t(label), lambda s=source, l=label: self._import_from_program(s, l))
         connection_menu.addSeparator()
         connection_menu.addAction(t("menu_quit"), self.close)
 
@@ -2309,6 +2330,28 @@ class MainWindow(QMainWindow):
 
     def _check_certificate(self):
         scanner.cert_dialog(self)
+
+    def _import_from_program(self, source, label, path=None):
+        """PuTTY z rejestru, reszta z pliku wskazanego w oknie (`path` — dla testów)."""
+        title = t(label)
+        try:
+            if source == "putty":
+                items = importers.read_putty()
+            else:
+                if path is None:
+                    path, _ = QFileDialog.getOpenFileName(self, title, "", t(f"filter_{source}"))
+                    if not path:
+                        return
+                # utf-8-sig: CSV z Excela i pliki MobaXterm bywają z BOM.
+                text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+                items = getattr(importers, f"parse_{source}")(text)
+        except (OSError, ValueError, ET.ParseError) as error:
+            QMessageBox.warning(self, title, t("import_other_failed", error))
+            return
+        count = self.tree.import_items(items, t("import_group", title.rstrip("…")))
+        QMessageBox.information(
+            self, title, t("import_other_done", count) if count else t("import_other_none")
+        )
 
     def _import_ssh_config(self):
         try:
@@ -3405,6 +3448,32 @@ def selftest():
         assert entries["www"]["username"] == "domyslny", "Host * ma dawac wartosci domyslne"
         assert fresh.import_ssh_config(config.with_name("brak")) is None, "brak pliku = None"
 
+        # Import z innych programów: plik -> nowa grupa z podgrupami, komunikat z liczbą;
+        # zły plik = ostrzeżenie, nie wyjątek.
+        assert [s for _, s in IMPORT_SOURCES] == ["putty", "mobaxterm", "mremoteng", "csv"]
+        listing = Path(tmp) / "serwery.csv"
+        listing.write_text("name;host;group\nweb;10.0.0.1;Klient/Prod\nad;10.0.0.5;\n",
+                           encoding="utf-8-sig")
+        shown.clear()
+        tree_root = window.tree.topLevelItem(0)
+        before = tree_root.childCount()
+        window._import_from_program("csv", "import_csv", listing)
+        assert shown == [t("import_other_done", 2)], shown
+        imported = tree_root.child(before)
+        assert window.tree.item_name(imported) == t("import_group", t("import_csv").rstrip("…"))
+        prod = imported.child(0).child(0)
+        assert window.tree.item_name(prod) == "Prod" and prod.child(0).data(0, CONNECTION_DATA)["host"] == "10.0.0.1"
+        tree_root.removeChild(imported)
+        broken = Path(tmp) / "zly.xml"
+        broken.write_text("<to nie jest xml", encoding="utf-8")
+        warned, real_warning = [], QMessageBox.warning
+        QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a[-1]))
+        try:
+            window._import_from_program("mremoteng", "import_mremoteng", broken)
+        finally:
+            QMessageBox.warning = real_warning
+        assert len(warned) == 1 and tree_root.childCount() == before, "zły plik coś dodał"
+
     # Podział ekranu: zakładki sesji chowają się, Ctrl+Tab je omija, a
     # zamknięcie siatki to „Rozdziel” — sesje wracają, nic się nie rozłącza.
     fakes = []
@@ -3431,6 +3500,7 @@ def selftest():
 
     i18n.selftest()
 
+    importers.selftest()
     ssh_terminal.selftest()
     i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
     rdp.selftest()
