@@ -87,6 +87,11 @@ py main.py --selftest
 - **Ctrl+Tab** i **Ctrl+1..9** przełączają zakładki; dymek nad zakładką pokazuje
   `użytkownik@host:port`. Czcionka i znacznik czasu przy każdej linii — w oknie
   **Ustawienia**; **Widok → Zapisz zapis sesji** odkłada bufor terminala do pliku.
+- **Ustawienia grupy** (prawy klik na folderze → „Ustawienia grupy…”): login,
+  konto, klucz, host pośredni i środowisko ustawione raz na folderze. Połączenia
+  w nim i w podfolderach przejmują je, gdy same mają puste pole (własna wartość
+  wygrywa, bliższy folder wygrywa z dalszym); formularz pokazuje je jako
+  podpowiedź „z grupy: …”.
 - **Środowisko** w formularzu połączenia (produkcja / test / deweloperskie):
   nazwa zakładki w kolorze środowiska, a na **produkcji** program pyta przed
   wysłaniem polecenia — przy pierwszym i znowu po 10 minutach ciszy.
@@ -234,7 +239,7 @@ Wszystkie z Shiftem celowo — samo Ctrl+N/W/F/T należy do powłoki i terminala
 Pełna lista ponad 40 propozycji z porównaniem do MobaXterm, Termius, Royal TS,
 SecureCRT, mRemoteNG, Tabby, WindTerm i Xshell: **[ROADMAP.md](ROADMAP.md)**.
 
-Najbliżej w kolejce: dziedziczenie ustawień z grupy i import z innych programów.
+Najbliżej w kolejce: import połączeń z innych programów (PuTTY, MobaXterm, mRemoteNG).
 
 ## Automatyczne sprawdzanie zmian (PR)
 
