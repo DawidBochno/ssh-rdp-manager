@@ -397,6 +397,9 @@ def set_macros(text):
     i18n.settings().setValue("macros", text)
 
 
+PROD_CONFIRM_IDLE = 600  # sekund ciszy, po których produkcja pyta znowu
+
+
 # Automatyczny zapis sesji: plik na sesję w `logs/` obok programu, starsze
 # niż SESSION_LOG_DAYS kasowane przy otwarciu nowego (to cała „rotacja”).
 SESSION_LOG_DIR = Path(__file__).with_name("logs")
@@ -1641,6 +1644,10 @@ class SshTerminal(QPlainTextEdit):
     read_only = False
     _held_cr = ""
     _log_file = None
+    # Serwer produkcyjny: okno ustawia funkcję pytającą „na pewno?”. Pyta przy
+    # pierwszym wysłaniu i po PROD_CONFIRM_IDLE ciszy — nie przy każdym klawiszu.
+    confirm_send = None
+    _sent_at = None
 
     def start_log(self, name, folder=None):
         """Otwiera plik zapisu sesji, jeśli włączony w Ustawieniach."""
@@ -1668,6 +1675,11 @@ class SshTerminal(QPlainTextEdit):
         """Jedyna droga od użytkownika do powłoki — tu pilnuje tryb tylko do odczytu."""
         if self.read_only or not self.channel or self.channel.closed:
             return False
+        now = time.monotonic()
+        if self.confirm_send and (self._sent_at is None or now - self._sent_at > PROD_CONFIRM_IDLE):
+            if not self.confirm_send():
+                return False
+        self._sent_at = now
         self.channel.send(data)
         self.sent.emit(data)  # siatka (split.py) powiela to do pozostałych terminali
         return True
@@ -2596,6 +2608,17 @@ def selftest():
     split._append("kod: 0\r")
     split._append("\nroot@proxmox:~# ")
     assert split.toPlainText() == "kod: 0\nroot@proxmox:~# ", repr(split.toPlainText())
+
+    # Produkcja: „Nie” zatrzymuje tekst, „Tak” przepuszcza; kolejne wysłanie
+    # w ciągu PROD_CONFIRM_IDLE nie pyta, po dłuższej ciszy pyta znowu.
+    prod = OfflineTerminal()
+    answers, asked = [False, True, True], []
+    prod.confirm_send = lambda: asked.append(1) or answers.pop(0)
+    assert not prod.send_text("rm x\r") and prod.channel.sent == []
+    assert prod.send_text("ls\r") and prod.send_text("pwd\r") and len(asked) == 2
+    prod._sent_at -= PROD_CONFIRM_IDLE + 1
+    assert prod.send_text("df\r") and len(asked) == 3
+    assert prod.channel.sent == ["ls\r", "pwd\r", "df\r"], prod.channel.sent
 
     # Ctrl+klik: URL bez kropki z końca zdania, IP tylko całe, nic poza linkiem.
     line = "zobacz https://example.com/a?b=1. albo 10.0.0.5:22, wersja 1.2.3.4.5"

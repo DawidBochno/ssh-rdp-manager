@@ -118,6 +118,11 @@ from ssh_terminal import (
     wait_for_pending,
 )
 
+# Środowisko połączenia (ROADMAP #19): kolor nazwy zakładki; produkcja dodatkowo
+# pyta przed wysłaniem polecenia (`SshTerminal.confirm_send`).
+ENVIRONMENTS = (("", "env_none"), ("prod", "env_prod"), ("test", "env_test"), ("dev", "env_dev"))
+ENV_COLORS = {"prod": "#e74c3c", "test": "#e67e22", "dev": "#27ae60"}
+
 # Menu „Programy”: klucz napisu -> metoda `MainWindow`. Kolejny dodatek
 # narzędziowy to jeden wiersz tutaj, bez dotykania budowania menu.
 TOOLS = (
@@ -335,6 +340,7 @@ class ConnectionDialog(QDialog):
         "name", "host", "port", "username", "protocol", "key_file",
         "jump_host", "startup", "notes", "redirect_drives", "tags",
         "password", "passphrase", "credential", "monitor", "tls_port", "forward_agent",
+        "environment",
     }
 
     def __init__(self, parent=None, data=None):
@@ -398,6 +404,12 @@ class ConnectionDialog(QDialog):
         self.monitor.setChecked(bool(data.get("monitor")))
         self.monitor.setToolTip(t("tip_monitor"))
         # Port certyfikatu TLS do pilnowania przez monitoring; 0 = nie sprawdzaj.
+        self.environment = QComboBox()
+        for value, label in ENVIRONMENTS:
+            self.environment.addItem(t(label), value)
+        self.environment.setCurrentIndex(max(0, self.environment.findData(data.get("environment", ""))))
+        self.environment.setToolTip(t("tip_environment"))
+
         self.tls_port = QSpinBox()
         self.tls_port.setRange(0, 65535)
         self.tls_port.setSpecialValueText("—")
@@ -454,6 +466,7 @@ class ConnectionDialog(QDialog):
         self._startup_row = form.rowCount()
         form.addRow(t("fld_startup"), self.startup)
         form.addRow(t("fld_tags"), self.tags)
+        form.addRow(t("fld_environment"), self.environment)
         form.addRow(t("fld_notes"), self.notes)
         self._redirect_drives_row = form.rowCount()
         form.addRow("", self.redirect_drives)
@@ -597,6 +610,8 @@ class ConnectionDialog(QDialog):
         tags = parse_tags(self.tags.text())
         if tags:
             data["tags"] = tags
+        if self.environment.currentData():
+            data["environment"] = self.environment.currentData()
         if self.notes.toPlainText().strip():
             data["notes"] = self.notes.toPlainText().strip()
         if protocol == "rdp" and self.redirect_drives.isChecked():
@@ -1439,6 +1454,7 @@ class MainWindow(QMainWindow):
         self.tree = ConnectionTree()
         # itemActivated = dwuklik ORAZ Enter (dwuklik sam w sobie pomijał klawiaturę).
         self.tree.itemActivated.connect(self._on_item_activated)
+        self.tree.saved.connect(self._refresh_tab_texts)  # np. zmienione środowisko
 
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -1691,6 +1707,40 @@ class MainWindow(QMainWindow):
         stored = i18n.settings()
         stored.setValue("geometry", self.saveGeometry())
         stored.setValue("splitter", self.splitter.sizes())
+        stored.setValue("open_sessions", json.dumps(self.open_session_keys()))
+
+    def open_session_keys(self):
+        """Otwarte zakładki z drzewa jako (nazwa, host, port) — do przywrócenia po starcie.
+
+        Szybkie połączenia (bez wpisu w drzewie) pomijane — nie ma czego otworzyć.
+        ponytail: siatka (split.py) wraca jako zwykłe zakładki, bez układu.
+        """
+        keys = []
+        for i in range(self.tabs.count()):
+            origin = getattr(self.tabs.widget(i), "origin", None)
+            if origin:
+                key = [origin.get("name"), origin.get("host"), origin.get("port")]
+                if key not in keys:  # zduplikowana sesja wraca raz
+                    keys.append(key)
+        return keys
+
+    def restore_sessions(self):
+        """Wołane z `main()` — `--selftest` nie ma się łączyć z serwerami."""
+        stored = i18n.settings()
+        if not stored.value("restore_sessions", True, type=bool):
+            return
+        try:
+            keys = json.loads(stored.value("open_sessions", "[]") or "[]")
+        except ValueError:
+            return
+        connections = tree_connections(self.tree)
+        for key in keys:
+            conn = next(
+                (c for c in connections if [c.get("name"), c.get("host"), c.get("port")] == key),
+                None,
+            )
+            if conn is not None:  # usunięte w międzyczasie — pomijamy po cichu
+                self._open_connection_tab(conn)
 
     def _build_menu(self):
         """Pasek menu u góry (wzorem MobaXterm), z akcjami znanymi już z menu drzewa."""
@@ -1804,6 +1854,7 @@ class MainWindow(QMainWindow):
             "highlighting": TerminalHighlighter.enabled,
             "timestamps": SshTerminal.timestamps,
             "session_log": session_log_enabled(),
+            "restore_sessions": stored.value("restore_sessions", True, type=bool),
             "font": terminal_font(),
             "scrollback": scrollback(),
             "triggers": triggers_text(),
@@ -1847,6 +1898,7 @@ class MainWindow(QMainWindow):
         stored.setValue("highlighting", new["highlighting"])
         stored.setValue("timestamps", new["timestamps"])
         set_session_log_enabled(new["session_log"])  # dotyczy sesji otwartych od teraz
+        stored.setValue("restore_sessions", new["restore_sessions"])
         if "font" in changed:
             set_terminal_font(new["font"])
             for session in sessions:
@@ -2305,6 +2357,7 @@ class MainWindow(QMainWindow):
         )
         session.startup = conn.get("startup")
         session.terminal.start_log(conn["name"])
+        session.terminal.confirm_send = lambda c=conn, s=session: self._confirm_prod(c, s)
         session.compose_to_all.connect(self._send_to_all_sessions)
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
@@ -2354,6 +2407,7 @@ class MainWindow(QMainWindow):
         widget.tab_name = name  # nazwa bez znacznika aktywności „● ”
         widget.has_activity = False
         index = self.tabs.insertTab(self.tabs.count() - 1, widget, name)
+        self._update_tab_text(widget)  # kolor środowiska
         if origin:
             self.tabs.setTabToolTip(
                 index, f"{origin.get('username', '')}@{origin.get('host', '')}:{origin.get('port', '')}"
@@ -2378,6 +2432,25 @@ class MainWindow(QMainWindow):
             if terminal is not None and terminal.read_only:
                 mark += "🔒 "
             self.tabs.setTabText(index, mark + widget.tab_name)
+            env = (getattr(widget, "origin", None) or {}).get("environment")
+            # Niepoprawny QColor = kolor z palety, czyli zwykła zakładka.
+            self.tabs.tabBar().setTabTextColor(index, QColor(ENV_COLORS.get(env, "")))
+
+    def _refresh_tab_texts(self):
+        """Po zapisie drzewa — np. zmienione środowisko otwartego połączenia."""
+        for i in range(self.tabs.count()):
+            if hasattr(self.tabs.widget(i), "tab_name"):
+                self._update_tab_text(self.tabs.widget(i))
+
+    def _confirm_prod(self, conn, session):
+        """Pytanie przed wysłaniem do produkcji; inne środowiska przechodzą od razu."""
+        if conn.get("environment") != "prod":
+            return True
+        self.tabs.setCurrentWidget(getattr(session, "split", None) or session)
+        return QMessageBox.question(
+            self, t("prod_confirm_title"), t("prod_confirm_body", session.tab_name),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) == QMessageBox.Yes
 
     def _mark_activity(self, widget):
         """Wyjście w zakładce, która nie jest na wierzchu -> „● ” przed nazwą."""
@@ -2982,6 +3055,50 @@ def selftest():
     agent.protocol.setCurrentIndex(agent.protocol.findData("rdp"))
     assert "forward_agent" not in agent.values(), "RDP nie ma agenta SSH"
 
+    # Środowisko: zapis w formularzu, kolor zakładki, pytanie tylko dla produkcji.
+    env_form = ConnectionDialog(data={"host": "h"})
+    assert "environment" not in env_form.values()
+    env_form.environment.setCurrentIndex(env_form.environment.findData("prod"))
+    prod_conn = env_form.values()
+    assert prod_conn["environment"] == "prod"
+    env_again = ConnectionDialog(data=prod_conn)
+    assert env_again.environment.currentData() == "prod", "środowisko wraca przy edycji"
+    prod_tab = QWidget()
+    index = window._add_tab(prod_tab, "prod-01", prod_conn)
+    assert window.tabs.tabBar().tabTextColor(index).name() == ENV_COLORS["prod"]
+    prod_conn["environment"] = "dev"
+    window._refresh_tab_texts()
+    assert window.tabs.tabBar().tabTextColor(index).name() == ENV_COLORS["dev"]
+    assert window._confirm_prod(prod_conn, prod_tab), "nie-produkcja nie pyta"
+    window.tabs.removeTab(index)
+
+    # Przywracanie sesji: otwarte zakładki z drzewa zapisane jako (nazwa, host,
+    # port); po starcie otwierane z drzewa, usunięte pomijane, wyłączone = nic.
+    window._add_tab(QWidget(), data["name"], data)
+    window._add_tab(QWidget(), "szybkie")  # szybkie połączenie — bez wpisu w drzewie
+    keys = window.open_session_keys()
+    assert keys == [["srv-01", "10.0.0.1", 22]], keys
+    stored_sessions = {k: i18n.settings().value(k) for k in ("open_sessions", "restore_sessions")}
+    opened = []
+    real_open = window._open_connection_tab
+    window._open_connection_tab = opened.append
+    try:
+        i18n.settings().setValue("open_sessions", json.dumps(keys + [["usuniety", "x", 22]]))
+        window.restore_sessions()
+        assert opened == [data], opened
+        i18n.settings().setValue("restore_sessions", False)
+        window.restore_sessions()
+        assert len(opened) == 1, "wyłączone przywracanie coś otworzyło"
+    finally:
+        window._open_connection_tab = real_open
+        for key, value in stored_sessions.items():
+            if value is None:
+                i18n.settings().remove(key)
+            else:
+                i18n.settings().setValue(key, value)
+    for i in range(window.tabs.count() - 2, 0, -1):
+        window.tabs.removeTab(i)
+
     # Edycja polaczenia nie moze skasowac zakladek SFTP ani tuneli - dawniej
     # values() budowalo slownik tylko z pol formularza i gubilo reszte.
     with_extras = ConnectionDialog(
@@ -3170,6 +3287,8 @@ def main():
     window.start_status_polling()
     window.start_monitoring()
     window.start_lock_watch()
+    # Po pokazaniu okna — łączenie z oknami postępu ma się dziać nad gotowym oknem.
+    QTimer.singleShot(0, window.restore_sessions)
     sys.exit(app.exec())
 
 
