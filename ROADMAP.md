@@ -73,7 +73,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 |---|---|---|---|---|
 | 26 | ✅ **Wykres historii z monitoringu** po kliknięciu kafelka (dni/tygodnie) + eksport CSV | Zabbix (lekko) | S | ⭐⭐⭐ |
 | 27 | ✅ **Alert „certyfikat TLS wygasa”** w monitoringu | — | S | ⭐⭐⭐ |
-| 28 | **Alerty na zewnątrz** — e-mail, Teams, Slack, Telegram (webhook) | Uptime Kuma | M | ⭐⭐ |
+| 28 | ✅ **Alerty na zewnątrz** — e-mail, Teams, Slack, Telegram (webhook) | Uptime Kuma | M | ⭐⭐ |
 | 29 | ✅ **Panel Docker** — kontenery, logi, restart, zużycie | Portainer (lekko) | M | ⭐⭐⭐ |
 | 30 | ✅ **Panel aktualizacji** — ile pakietów czeka, „wymagany restart”, na całej grupie | — | M | ⭐⭐ |
 | 31 | **Edytor zadań cron / Harmonogramu zadań Windows** | Webmin | M | ⭐ |
@@ -107,6 +107,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 4. ~~#1 dziedziczenie ustawień z grupy~~ — zrobione 2026-10-04 (bez portu); ~~#2 import z innych programów~~ — zrobione 2026-10-04 (PuTTY, MobaXterm, mRemoteNG, CSV; bez RDCMan).
 5. ~~#11 biblioteka poleceń + #18 skróty~~ — zrobione 2026-10-04 (zmienne `{{...}}`, skrót w `[ ]`; bez podziału na grupy).
 6. ~~#29 panel Docker~~ — zrobione 2026-10-04 (bez hasła sudo i compose); ~~#30 panel aktualizacji~~ — zrobione 2026-10-04 (tylko odczyt, otwarte sesje).
+   ~~#28 alerty na zewnątrz~~ — zrobione 2026-10-05 (Telegram; bez e-maila/Teams/Slacka).
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.
 
 Poza kolejką zrobione 2026-10-03: #13, #14, #15, #22, #24 (drobne usprawnienia terminala i bezpieczeństwa).
