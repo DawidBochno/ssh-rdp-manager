@@ -157,6 +157,26 @@ TOOLS = (
 )
 
 
+def telegram_config():
+    """-> (token, chat_id) do alertów monitoringu; puste, gdy nieustawione.
+
+    Token bota to sekret (kto go ma, pisze jako bot) — w `QSettings` leży
+    zaszyfrowany DPAPI, jak hasła połączeń.
+    """
+    stored = i18n.settings()
+    token = decrypt_password(stored.value("telegram_token", "")) if stored.value("telegram_token") else ""
+    return token or "", stored.value("telegram_chat", "")
+
+
+def set_telegram_config(token, chat_id):
+    stored = i18n.settings()
+    if token and CAN_STORE_PASSWORDS:
+        stored.setValue("telegram_token", encrypt_password(token))
+    else:
+        stored.remove("telegram_token")  # bez DPAPI nie trzymamy go jawnie
+    stored.setValue("telegram_chat", chat_id)
+
+
 def dark_palette():
     """Ciemna paleta w stylu Fusion — bez arkusza QSS, sam `QPalette`."""
     palette = QPalette()
@@ -1773,6 +1793,7 @@ class MainWindow(QMainWindow):
 
     def _on_monitor_done(self, results):
         threshold = alert_threshold()
+        alerts = []
         for key, result in results.items():
             state = monitor.status(result, threshold)
             text = monitor.alert_text(
@@ -1780,7 +1801,11 @@ class MainWindow(QMainWindow):
             )
             if text:
                 notify.notify(t("monitor_title"), text)
+                alerts.append(text)
             self._monitor_states[key] = state
+        token, chat = telegram_config()
+        if alerts and token and chat:
+            notify.telegram_async(token, chat, "\n".join(alerts))  # jedna wiadomość na rundę
         self.monitor_results.update(results)
         self.tabs.widget(0).refresh_tiles()
 
@@ -2030,6 +2055,8 @@ class MainWindow(QMainWindow):
             "alerts": alerts_enabled(),
             "alert_threshold": alert_threshold(),
             "monitor_interval": int(stored.value("monitor_interval", monitor.INTERVAL_DEFAULT)),
+            "telegram_token": telegram_config()[0],
+            "telegram_chat": telegram_config()[1],
             "lock": stored.value("lock_enabled", False, type=bool),
             "lock_timeout": int(stored.value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
             "pin_set": bool(stored.value("lock_pin_hash")),
@@ -2085,6 +2112,8 @@ class MainWindow(QMainWindow):
         set_alerts_enabled(new["alerts"])
         set_alert_threshold(new["alert_threshold"])
         stored.setValue("monitor_interval", new["monitor_interval"])
+        if changed & {"telegram_token", "telegram_chat"}:
+            set_telegram_config(new["telegram_token"], new["telegram_chat"])
         if "monitor_interval" in changed and self._monitor_timer:
             self._monitor_timer.start(new["monitor_interval"] * 1000)
 

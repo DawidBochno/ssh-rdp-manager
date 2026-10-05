@@ -111,6 +111,18 @@ class SettingsDialog(QDialog):
         form.addRow(t("settings_alert_threshold"), self.alert_threshold)
         self.tree_status.toggled.connect(self.tree_status_interval.setEnabled)
         self.alerts.toggled.connect(self.alert_threshold.setEnabled)
+        # Telegram: alerty monitoringu także poza komputerem (notify.send_telegram).
+        self.telegram_token = QLineEdit(current["telegram_token"])
+        self.telegram_token.setEchoMode(QLineEdit.Password)
+        self.telegram_chat = QLineEdit(current["telegram_chat"])
+        telegram_test = QPushButton(t("settings_telegram_test"))
+        telegram_test.clicked.connect(self._test_telegram)
+        form.addRow(t("settings_telegram_token"), self.telegram_token)
+        form.addRow(t("settings_telegram_chat"), self.telegram_chat)
+        hint = QLabel(t("settings_telegram_hint"))
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        form.addRow(telegram_test)
 
         # --- Bezpieczeństwo ---
         self.lock = QCheckBox(t("menu_lock"))
@@ -154,6 +166,17 @@ class SettingsDialog(QDialog):
             self._font = font
             self._show_font()
 
+    def _test_telegram(self):
+        import notify
+        from ssh_terminal import in_background
+
+        token, chat = self.telegram_token.text().strip(), self.telegram_chat.text().strip()
+        error = in_background(self, lambda: notify.send_telegram(token, chat, t("telegram_test_text")))
+        if error:
+            QMessageBox.warning(self, t("settings_title"), t("telegram_test_failed", error))
+        else:
+            QMessageBox.information(self, t("settings_title"), t("telegram_test_ok"))
+
     def pin_error(self):
         """Tekst błędu PIN-u albo None. Osobno od `accept`, żeby dało się testować."""
         pin = self.new_pin.text()
@@ -188,6 +211,8 @@ class SettingsDialog(QDialog):
             "alerts": self.alerts.isChecked(),
             "alert_threshold": self.alert_threshold.value(),
             "monitor_interval": self.monitor_interval.value(),
+            "telegram_token": self.telegram_token.text().strip(),
+            "telegram_chat": self.telegram_chat.text().strip(),
             "lock": self.lock.isChecked(),
             "lock_timeout": self.lock_timeout.value(),
             "new_pin": self.new_pin.text(),
