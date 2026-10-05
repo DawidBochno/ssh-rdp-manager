@@ -74,6 +74,7 @@ import logtail
 import monitor
 import multirun
 import notify
+import patches
 import processes
 import scanner
 import services
@@ -148,6 +149,7 @@ TOOLS = (
     ("menu_processes", "_open_processes"),
     ("menu_docker", "_open_docker"),
     ("menu_multirun", "_open_multirun"),
+    ("menu_patches", "_open_patches"),
     ("menu_split", "_open_split"),
     ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
@@ -2436,6 +2438,17 @@ class MainWindow(QMainWindow):
             return
         multirun.MultiRunDialog(self, targets).exec()
 
+    def _open_patches(self):
+        targets = [
+            (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
+            for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), SessionTab)
+        ]
+        if not targets:
+            QMessageBox.information(self, t("patches_title"), t("scripts_need_session"))
+            return
+        patches.PatchDialog(self, targets).exec()
+
     def _open_split(self):
         """Siatka 2–4 terminali (split.py); ich zakładki chowają się na ten czas."""
         sessions = [
@@ -3261,6 +3274,10 @@ def selftest():
     shown.clear()
     window._open_processes()
     assert shown == [t("tunnels_need_session")], shown
+    assert any(label == "menu_patches" for label, _ in TOOLS), TOOLS
+    shown.clear()
+    window._open_patches()
+    assert shown == [t("scripts_need_session")], shown
     assert any(label == "menu_docker" for label, _ in TOOLS), TOOLS
     shown.clear()
     window._open_docker()
@@ -3571,6 +3588,7 @@ def selftest():
     containers.selftest()
     processes.selftest()
     multirun.selftest()
+    patches.selftest()
     transfers.selftest()
     sftp.selftest()
     graphs.selftest()
