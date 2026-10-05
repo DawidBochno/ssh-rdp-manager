@@ -78,7 +78,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 30 | ✅ **Panel aktualizacji** — ile pakietów czeka, „wymagany restart”, na całej grupie | — | M | ⭐⭐ |
 | 31 | **Edytor zadań cron / Harmonogramu zadań Windows** | Webmin | M | ⭐ |
 | 32 | **Podgląd zapory** (ufw/firewalld/Windows Firewall) | Webmin | M | ⭐ |
-| 33 | **Wyszukiwanie w logach na wielu serwerach naraz** (grep po grupie, wynik per serwer) | — | M | ⭐⭐ |
+| 33 | ✅ **Wyszukiwanie w logach na wielu serwerach naraz** (grep po grupie, wynik per serwer) | — | M | ⭐⭐ |
 | 34 | **Scenariusze na grupie serwerów** — kroki po kolei, stop przy błędzie, harmonogram | Ansible (lekko) | L | ⭐⭐ |
 | 35 | **Asystent AI w terminalu** — wyjaśnij błąd/log, zaproponuj polecenie (wysyłka po kliknięciu) | Warp, Termius | M | ⭐⭐ |
 
@@ -108,6 +108,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 5. ~~#11 biblioteka poleceń + #18 skróty~~ — zrobione 2026-10-04 (zmienne `{{...}}`, skrót w `[ ]`; bez podziału na grupy).
 6. ~~#29 panel Docker~~ — zrobione 2026-10-04 (bez hasła sudo i compose); ~~#30 panel aktualizacji~~ — zrobione 2026-10-04 (tylko odczyt, otwarte sesje).
    ~~#28 alerty na zewnątrz~~ — zrobione 2026-10-05 (Telegram; bez e-maila/Teams/Slacka).
+   ~~#33 szukanie w logach na wielu serwerach~~ — zrobione 2026-10-05 (otwarte sesje, tylko Linux).
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.
 
 Poza kolejką zrobione 2026-10-03: #13, #14, #15, #22, #24 (drobne usprawnienia terminala i bezpieczeństwa).
