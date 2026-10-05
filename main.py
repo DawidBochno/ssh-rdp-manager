@@ -70,6 +70,7 @@ import graphs
 import i18n
 import importers
 import keygen
+import logsearch
 import logtail
 import monitor
 import multirun
@@ -144,6 +145,7 @@ TOOLS = (
     ("menu_tunnels", "_manage_tunnels"),
     ("menu_dashboard", "_open_dashboard"),
     ("menu_logtail", "_open_log_tail"),
+    ("menu_logsearch", "_open_logsearch"),
     ("menu_services", "_manage_services"),
     ("menu_disks", "_open_disks"),
     ("menu_processes", "_open_processes"),
@@ -2467,6 +2469,17 @@ class MainWindow(QMainWindow):
             return
         multirun.MultiRunDialog(self, targets).exec()
 
+    def _open_logsearch(self):
+        targets = [
+            (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
+            for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), SessionTab)
+        ]
+        if not targets:
+            QMessageBox.information(self, t("logsearch_title"), t("scripts_need_session"))
+            return
+        logsearch.LogSearchDialog(self, targets).exec()
+
     def _open_patches(self):
         targets = [
             (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
@@ -3307,6 +3320,10 @@ def selftest():
     shown.clear()
     window._open_patches()
     assert shown == [t("scripts_need_session")], shown
+    assert any(label == "menu_logsearch" for label, _ in TOOLS), TOOLS
+    shown.clear()
+    window._open_logsearch()
+    assert shown == [t("scripts_need_session")], shown
     assert any(label == "menu_docker" for label, _ in TOOLS), TOOLS
     shown.clear()
     window._open_docker()
@@ -3618,6 +3635,7 @@ def selftest():
     processes.selftest()
     multirun.selftest()
     patches.selftest()
+    logsearch.selftest()
     transfers.selftest()
     sftp.selftest()
     graphs.selftest()
