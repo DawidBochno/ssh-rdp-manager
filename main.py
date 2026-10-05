@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -1624,6 +1624,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(t("app_title"))
         self.resize(1000, 650)
 
+        # Dolny pasek: statystyki serwera z aktywnej zakładki, wykres CPU/RAM z prawej.
+        # Przed zakładkami: pierwsze `addTab` odpala `currentChanged` ->
+        # `_show_current_stats`, które już potrzebuje wykresu.
+        self.statusBar().showMessage(t("status_idle"))
+        self.stats_graph = graphs.StatsGraph()
+        self.statusBar().addPermanentWidget(self.stats_graph)
+
         self.tree = ConnectionTree()
         # itemActivated = dwuklik ORAZ Enter (dwuklik sam w sobie pomijał klawiaturę).
         self.tree.itemActivated.connect(self._on_item_activated)
@@ -1682,10 +1689,6 @@ class MainWindow(QMainWindow):
         TerminalHighlighter.enabled = i18n.settings().value("highlighting", True, type=bool)
         SshTerminal.timestamps = i18n.settings().value("timestamps", False, type=bool)
         self._build_shortcuts()
-        # Dolny pasek: statystyki serwera z aktywnej zakładki, wykres CPU/RAM z prawej.
-        self.statusBar().showMessage(t("status_idle"))
-        self.stats_graph = graphs.StatsGraph()
-        self.statusBar().addPermanentWidget(self.stats_graph)
         self._restore_layout()
         self._update_check = None  # wątek startuje z main(), nie w testach
         self._status_timer = None  # tak samo — --selftest nie ma chodzić po sieci
@@ -3600,6 +3603,14 @@ def selftest():
     assert all(window.tabs.isTabVisible(window.tabs.indexOf(f)) for f in fakes)
     for fake in fakes:
         window._close_tab(window.tabs.indexOf(fake))
+
+    # Testy okna nie kręcą pętli zdarzeń, więc zostawiają w kolejce zaległe
+    # zdarzenia (m.in. `deleteLater`). Bez opróżnienia wybuchały losowo (ok. 1 na
+    # 5 przebiegów, segfault) dopiero w pierwszej pętli lokalnej: `run_transfer`
+    # w `transfers.selftest()`.
+    for _ in range(3):
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     i18n.selftest()
 
