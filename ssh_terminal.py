@@ -78,6 +78,9 @@ from sftp import SftpPanel
 from i18n import t
 
 CONNECT_TIMEOUT = 15  # sekundy
+# Logowanie z kodem 2FA czeka na człowieka (telefon, aplikacja) — domyślne
+# 30 s Paramiko to za mało. sshd i tak rozłącza po LoginGraceTime (120 s).
+AUTH_TIMEOUT = 120
 
 # Czcionka terminala: jedna dla wszystkich zakładek i okien wyniku skryptu.
 # Wybór siedzi w QSettings, więc przeżywa restart, i wczytuje się leniwie —
@@ -822,6 +825,88 @@ class _ThreadHostKeyPolicy(paramiko.MissingHostKeyPolicy):
         remember_host_key(hostname, key)
 
 
+def looks_like_password(prompt, echo):
+    """Czy pytanie keyboard-interactive to zwykłe hasło konta (a nie kod 2FA)."""
+    text = prompt.lower()
+    return not echo and ("password" in text or "hasło" in text or "haslo" in text)
+
+
+class InteractiveClient(paramiko.SSHClient):
+    """`SSHClient` z logowaniem keyboard-interactive — hasło + kod z aplikacji (2FA).
+
+    Paramiko samo z siebie: przy „klucz + kod” woła `auth_interactive_dumb`,
+    które czyta kod przez `input()` z konsoli (okno wisi albo dziwny błąd);
+    przy „hasło, potem kod” wraca z `connect()` niezalogowane; przy samym
+    keyboard-interactive odpowiada hasłem na każde pytanie (także o kod).
+    Dlatego podmieniamy fazę logowania (`_auth` — prywatne API Paramiko, stąd
+    test na prawdziwym serwerze w `selftest`).
+
+    `ask(tytuł, instrukcje, pytanie, echo)` -> tekst albo None (anulowano);
+    `ask=None` = nikogo nie ma do pytania (monitoring w tle) — czytelny błąd.
+    """
+
+    def __init__(self, ask=None):
+        super().__init__()
+        self.ask = ask
+        self._password = None
+        self._abort = None  # powód przerwania (anulowano / nikt nie odpowie)
+
+    def _answer(self, title, instructions, prompts):
+        # Wyjątek rzucony tutaj (wątek transportu Paramiko) zabija całe
+        # połączenie i zostaje mylące „No existing session” — więc przy
+        # anulowaniu odpowiadamy pustym tekstem, a powód zapamiętujemy.
+        answers = []
+        for prompt, echo in prompts:
+            if self._abort:
+                answers.append("")
+            elif self._password and looks_like_password(prompt, echo):
+                # Raz: drugie pytanie o hasło = zapisane jest złe, pyta człowiek.
+                answers.append(self._password)
+                self._password = None
+            elif self.ask is None:
+                self._abort = t("twofa_no_one")
+                answers.append("")
+            else:
+                answer = self.ask(title, instructions, prompt, echo)
+                if answer is None:
+                    self._abort = t("twofa_cancelled")
+                answers.append(answer or "")
+        return answers
+
+    def _auth(self, username, password, *args, **kwargs):
+        transport = self._transport
+        self._password, self._abort = password, None
+        transport.auth_interactive_dumb = (
+            lambda user, handler=None, submethods="":
+            transport.auth_interactive(user, self._answer, submethods)
+        )
+        # Tryb awaryjny Paramiko (hasło jako odpowiedź na każde pytanie) przy
+        # dwóch pytaniach rzuca wyjątek w wątku transportu i zrywa połączenie.
+        plain_password = transport.auth_password
+        transport.auth_password = (
+            lambda user, secret, *rest, fallback=True:
+            plain_password(user, secret, *rest, fallback=False)
+        )
+        error = None
+        try:
+            super()._auth(username, password, *args, **kwargs)
+        except paramiko.SSHException as failed:  # też „No authentication methods”
+            error = failed
+        if transport.is_authenticated():
+            return
+        if self._abort or not transport.is_active():
+            raise paramiko.AuthenticationException(self._abort) if self._abort else error
+        try:
+            transport.auth_interactive(username, self._answer)
+        except paramiko.BadAuthenticationType:
+            # Serwer nie zna keyboard-interactive — liczy się pierwotny błąd.
+            raise error or paramiko.AuthenticationException(t("twofa_cancelled"))
+        except paramiko.AuthenticationException:
+            if self._abort:
+                raise paramiko.AuthenticationException(self._abort)
+            raise
+
+
 class HostKeyAsker(QObject):
     """Żyje w wątku GUI i pokazuje pytanie o odcisk klucza."""
 
@@ -840,11 +925,22 @@ class HostKeyAsker(QObject):
         )
         answer["accepted"] = reply == QMessageBox.Yes
 
+    @Slot(str, str, bool, object)
+    def ask_secret(self, instructions, prompt, echo, answer):
+        """Kod 2FA (albo inne pytanie serwera) — z wątku logowania przez sygnał."""
+        label = f"{instructions.strip()}\n\n{prompt}" if instructions.strip() else prompt
+        text, ok = QInputDialog.getText(
+            self.widget, t("twofa_title"), label,
+            QLineEdit.Normal if echo else QLineEdit.Password,
+        )
+        answer["value"] = text if ok else None
+
 
 class SshConnector(QThread):
     """Nawiązuje połączenie SSH w tle."""
 
     ask_host_key = Signal(str, str, str, object)
+    ask_secret = Signal(str, str, bool, object)  # instrukcje, pytanie, echo, odpowiedź
     connected = Signal(object, object)  # client, channel
     failed = Signal(str)
 
@@ -904,16 +1000,23 @@ class SshConnector(QThread):
             look_for_keys=not self.password,
             allow_agent=not self.password,
             timeout=CONNECT_TIMEOUT,
+            auth_timeout=AUTH_TIMEOUT,
         )
 
+    def _ask(self, title, instructions, prompt, echo):
+        """Wątek Paramiko -> okno na wątku GUI (BlockingQueuedConnection)."""
+        answer = {}
+        self.ask_secret.emit(" ".join(filter(None, (title, instructions))), prompt, echo, answer)
+        return answer.get("value")
+
     def run(self):
-        client = paramiko.SSHClient()
+        client = InteractiveClient(self._ask)
         load_host_keys(client)
         client.set_missing_host_key_policy(_ThreadHostKeyPolicy(self))
         try:
             if self.jump_host:
                 jump_host, _, jump_port = self.jump_host.partition(":")
-                jump_client = paramiko.SSHClient()
+                jump_client = InteractiveClient(self._ask)
                 load_host_keys(jump_client)
                 jump_client.set_missing_host_key_policy(_ThreadHostKeyPolicy(self))
                 jump_client.connect(
@@ -973,6 +1076,7 @@ def connect_with_progress(parent, host, port, username, password, key_file=None,
     asker = HostKeyAsker(parent)
     # Blocking: wątek roboczy czeka, aż użytkownik odpowie w oknie GUI.
     connector.ask_host_key.connect(asker.ask, Qt.BlockingQueuedConnection)
+    connector.ask_secret.connect(asker.ask_secret, Qt.BlockingQueuedConnection)
 
     result = {}
     connector.connected.connect(lambda c, ch: result.update(client=c, channel=ch))
@@ -1994,6 +2098,7 @@ class SessionTab(QWidget):
         connector = SshConnector(**self.reconnect_args)
         # Nowy/zmieniony klucz serwera pyta tak samo jak przy pierwszym łączeniu.
         connector.ask_host_key.connect(self._asker.ask, Qt.BlockingQueuedConnection)
+        connector.ask_secret.connect(self._asker.ask_secret, Qt.BlockingQueuedConnection)
         connector.connected.connect(self._on_reconnected)
         connector.failed.connect(self._schedule_reconnect)
         _pending.add(connector)
@@ -2344,6 +2449,67 @@ def run_script(parent, client, script):
     _show_script_output(parent, label, text)
 
 
+def _twofa_login(mode, ask, password=None, pkey=None):
+    """Logowanie `InteractiveClient` na prawdziwy serwer Paramiko (socketpair).
+
+    mode: "password" (zwykłe hasło), "password+code" (keyboard-interactive:
+    hasło i kod), "key+code" (klucz, potem kod). Kod = 123456, hasło = tajne.
+    -> (zalogowany?, błąd, pytania, które trafiły do `ask`).
+    """
+    class Server(paramiko.ServerInterface):
+        key_done = False
+
+        def get_allowed_auths(self, username):
+            if mode == "password":
+                return "password"
+            if mode == "key+code" and not self.key_done:
+                return "publickey"
+            return "keyboard-interactive"
+
+        def check_auth_password(self, username, secret):
+            # Serwer Paramiko nie pilnuje `get_allowed_auths` — robimy to sami.
+            ok = mode == "password" and secret == "tajne"
+            return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
+
+        def check_auth_publickey(self, username, key):
+            self.key_done = True
+            return paramiko.AUTH_PARTIALLY_SUCCESSFUL
+
+        def check_auth_interactive(self, username, submethods):
+            query = paramiko.InteractiveQuery("", "Two-factor login")
+            if mode == "password+code":
+                query.add_prompt("Password: ", False)
+            query.add_prompt("Verification code: ", False)
+            return query
+
+        def check_auth_interactive_response(self, responses):
+            expected = ["tajne", "123456"] if mode == "password+code" else ["123456"]
+            return paramiko.AUTH_SUCCESSFUL if list(responses) == expected else paramiko.AUTH_FAILED
+
+    ours, theirs = socket.socketpair()
+    server = paramiko.Transport(theirs)
+    server.add_server_key(paramiko.RSAKey.generate(1024))
+    threading.Thread(target=lambda: server.start_server(server=Server()), daemon=True).start()
+    asked = []
+
+    def recording_ask(title, instructions, prompt, echo):
+        asked.append(prompt)
+        return ask(prompt)
+
+    client = InteractiveClient(recording_ask if ask else None)
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # tylko test, serwer z pamięci
+    try:
+        client.connect("test", sock=ours, username="u", password=password, pkey=pkey,
+                       look_for_keys=False, allow_agent=False, timeout=10, auth_timeout=10)
+        result = client.get_transport().is_authenticated(), ""
+    except paramiko.SSHException as error:
+        result = False, str(error)
+    finally:
+        client.close()
+        server.close()
+    return (*result, asked)
+
+
 def selftest():
     """Sprawdza czyste funkcje — bez sieci."""
     import i18n
@@ -2364,6 +2530,38 @@ def selftest():
         known = fresh.get_host_keys()
         assert known.check("[srv]:2222", key) and known.check("inny", other)
         assert not known.check("[srv]:2222", other), "podmieniony klucz przeszedł"
+
+    # 2FA (keyboard-interactive) na prawdziwym serwerze Paramiko: zapisane hasło
+    # wpisuje się samo, o kod pyta okno; nigdy `input()` z konsoli.
+    code = lambda prompt: "123456"
+    assert _twofa_login("password", None, password="tajne")[:2] == (True, ""), "zwykłe hasło"
+    assert _twofa_login("password+code", code, password="tajne") == (
+        True, "", ["Verification code: "]), "hasło z pliku, kod od człowieka"
+    assert not _twofa_login("password+code", lambda p: "000000", password="tajne")[0]
+    key = paramiko.RSAKey.generate(1024)
+    assert _twofa_login("key+code", code, pkey=key) == (True, "", ["Verification code: "])
+    assert _twofa_login("key+code", None, pkey=key) == (
+        False, t("twofa_no_one"), []), "w tle nikt nie poda kodu — czytelny błąd"
+    assert _twofa_login("password+code", lambda p: None, password="tajne")[:2] == (
+        False, t("twofa_cancelled"))
+    typed = lambda prompt: "tajne" if "Password" in prompt else "123456"
+    assert _twofa_login("password+code", typed) == (
+        True, "", ["Password: ", "Verification code: "]), "bez zapisanego hasła pyta o oba"
+    assert looks_like_password("Hasło: ", False) and not looks_like_password("Password: ", True)
+    original_get_text = QInputDialog.getText
+    seen = []
+    QInputDialog.getText = staticmethod(
+        lambda parent, title, label, mode: seen.append((label, mode)) or ("654321", True))
+    try:
+        answer = {}
+        HostKeyAsker().ask_secret("Google Authenticator", "Verification code: ", False, answer)
+        assert answer == {"value": "654321"}, answer
+        assert seen == [("Google Authenticator\n\nVerification code: ", QLineEdit.Password)], seen
+        QInputDialog.getText = staticmethod(lambda *args: ("", False))
+        HostKeyAsker().ask_secret("", "Code: ", True, answer)
+        assert answer == {"value": None}, "anulowane okno = None, nie pusty kod"
+    finally:
+        QInputDialog.getText = original_get_text
 
     # Ponowne łączenie: `exit` (jest status wyjścia) nie łączy od nowa, zerwanie tak;
     # liczba prób skończona, żeby nie dobijać się do wyłączonego serwera.

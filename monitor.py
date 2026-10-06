@@ -33,6 +33,7 @@ from scanner import cert_info
 from ssh_terminal import (
     STATS_CMD,
     WINDOWS_STATS_CMD,
+    InteractiveClient,
     cpu_percent,
     load_host_keys,
     mem_percent,
@@ -102,7 +103,8 @@ def _ssh_kwargs(target):
 
 def _client(host, port, sock, target, track):
     """Klient SSH bez pytań: nieznany klucz serwera -> wyjątek."""
-    client = paramiko.SSHClient()
+    # Bez pytań: kod 2FA w tle = czytelny błąd, nie `input()` z konsoli Paramiko.
+    client = InteractiveClient(ask=None)
     track(client)
     load_host_keys(client)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())

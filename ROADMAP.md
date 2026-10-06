@@ -63,7 +63,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 20 | **Hasło główne / sejf** (najpierw plan — ryzyko utraty haseł) | Termius, Royal TS | L | ⭐⭐ |
 | 21 | **Integracja z KeePass / Bitwarden** — hasło pobierane z menedżera, nie z naszego pliku | Royal TS, RDM | M | ⭐⭐ |
 | 22 | ✅ **Agent SSH (Pageant/OpenSSH) i przekazywanie agenta** | wszystkie | S | ⭐⭐ |
-| 23 | **Logowanie z kodem 2FA** (keyboard-interactive, TOTP) | SecureCRT, Termius | M | ⭐⭐ |
+| 23 | ✅ **Logowanie z kodem 2FA** (keyboard-interactive, TOTP) | SecureCRT, Termius | M | ⭐⭐ |
 | 24 | ✅ **Okno zapamiętanych kluczy serwerów** — podgląd i usuwanie wpisów `known_hosts` | Bitvise | S | ⭐⭐ |
 | 25 | **Nagrywanie sesji i dziennik audytu** (kto, gdzie, jakie polecenie) | WindTerm, RDM | M | ⭐⭐ |
 
@@ -109,6 +109,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 6. ~~#29 panel Docker~~ — zrobione 2026-10-04 (bez hasła sudo i compose); ~~#30 panel aktualizacji~~ — zrobione 2026-10-04 (tylko odczyt, otwarte sesje).
    ~~#28 alerty na zewnątrz~~ — zrobione 2026-10-05 (Telegram; bez e-maila/Teams/Slacka).
    ~~#33 szukanie w logach na wielu serwerach~~ — zrobione 2026-10-05 (otwarte sesje, tylko Linux).
+   ~~#23 logowanie z kodem 2FA~~ — zrobione 2026-10-05 (keyboard-interactive: hasło+kod, klucz+kod; bez zapisywania sekretu TOTP).
 7. Dalej duże kierunki: #34 scenariusze, #35 AI, #20 sejf, #39 instalator, #25 audyt.
 
 Poza kolejką zrobione 2026-10-03: #13, #14, #15, #22, #24 (drobne usprawnienia terminala i bezpieczeństwa).
