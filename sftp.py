@@ -66,7 +66,7 @@ class _SftpListWidget(QListWidget):
             return
         name, is_dir = entry
         if is_dir:
-            return  # foldery pomijamy — bez rekurencji, jak przy uploadzie
+            return  # ponytail: folder trzeba by pobrać cały przed QDrag — tylko z menu „Pobierz”
         local_path = Path(tempfile.mkdtemp(prefix="sshrdp_drag_")) / name
         error = self.panel._transfer("get", self.panel._child_path(name), local_path,
                                      t("transfer_download", name))
@@ -117,6 +117,7 @@ class SftpPanel(QWidget):
             ("🔄", t("sftp_refresh"), self.refresh),
             ("📁+", t("sftp_new_folder"), self._new_folder),
             ("📤", t("sftp_upload"), self._upload),
+            ("📂📤", t("sftp_upload_folder"), self._upload_folder),
         ):
             button = QToolButton()
             button.setText(text)
@@ -348,9 +349,9 @@ class SftpPanel(QWidget):
             return
         for url in event.mimeData().urls():
             local_path = url.toLocalFile()
-            if not local_path or not Path(local_path).is_file():
-                continue  # foldery przeciągnięte całością pomijamy — bez rekurencji
-            self.queue.add("put", self._child_path(Path(local_path).name), local_path)
+            if local_path and Path(local_path).exists():
+                self.queue.add("put", self._child_path(Path(local_path).name), local_path,
+                               Path(local_path).is_dir())
         event.acceptProposedAction()
 
     # --- edycja pliku w lokalnym edytorze -----------------------------------
@@ -391,6 +392,18 @@ class SftpPanel(QWidget):
         if local_path:
             self.queue.add("get", remote_path, local_path)
 
+    def _download_folder(self, remote_path, name):
+        target = QFileDialog.getExistingDirectory(self, t("sftp_download_folder_title"))
+        if target:
+            self.queue.add("get", remote_path, os.path.join(target, name), True)
+
+    def _upload_folder(self):
+        if not self.sftp:
+            return
+        local_path = QFileDialog.getExistingDirectory(self, t("sftp_upload_folder"))
+        if local_path:
+            self.queue.add("put", self._child_path(Path(local_path).name), local_path, True)
+
     def _upload(self):
         if not self.sftp:
             return
@@ -415,7 +428,9 @@ class SftpPanel(QWidget):
             return
         name, is_dir = entry
         menu = QMenu(self)
-        if not is_dir:
+        if is_dir:
+            menu.addAction(t("sftp_download"), lambda: self._download_folder(self._child_path(name), name))
+        else:
             menu.addAction(t("sftp_download"), lambda: self._download(self._child_path(name), name))
             menu.addAction(t("sftp_edit"), lambda: self._edit(self._child_path(name), name))
         menu.addAction(t("sftp_rename"), lambda: self._rename(name))
