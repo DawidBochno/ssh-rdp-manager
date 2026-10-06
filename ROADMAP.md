@@ -86,7 +86,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 
 | # | Propozycja | Na wzór | Wielkość | Priorytet |
 |---|---|---|---|---|
-| 36 | **Przesyłanie całych folderów + wznawianie przerwanego transferu** | WinSCP | M | ⭐⭐ |
+| 36 | ~~**Przesyłanie całych folderów + wznawianie przerwanego transferu**~~ — zrobione 2026-10-06 (wznawianie na żądanie z kolejki) | WinSCP | M | ⭐⭐ |
 | 37 | **Porównanie i synchronizacja katalogów** (lokalny ↔ zdalny) | WinSCP | L | ⭐ |
 | 38 | **Edytor uprawnień** (chmod/chown z okienkiem) | WinSCP | S | ⭐ |
 
