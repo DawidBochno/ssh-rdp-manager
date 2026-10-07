@@ -73,6 +73,7 @@ from PySide6.QtWidgets import (
 
 import i18n
 import notify
+import suggest
 import tunnels
 from sftp import SftpPanel
 from i18n import t
@@ -1598,6 +1599,9 @@ class SshTerminal(QPlainTextEdit):
         self._trigger_at = 0.0
         self.highlighter = TerminalHighlighter(self.document())
         install_find(self)
+        # Podpowiedzi z historii poleceń (suggest.py): wpisywana linia + lista pod kursorem.
+        self.input = suggest.InputTracker()
+        self.suggest_popup = suggest.SuggestPopup(self)
 
         # Emulacja VT100 dla programow pelnoekranowych (vim/htop/mc) — patrz
         # sekcja przy `_AltScreen`. Nakladka jest niewidoczna, dopoki `_append`
@@ -1806,8 +1810,24 @@ class SshTerminal(QPlainTextEdit):
                 return False
         self._sent_at = now
         self.channel.send(data)
+        self._remember_commands(data)
         self.sent.emit(data)  # siatka (split.py) powiela to do pozostałych terminali
         return True
+
+    def _remember_commands(self, data):
+        """Zakończone Enterem linie do historii podpowiedzi — tylko te z echem (nie hasła)."""
+        for line in self.input.feed(data):
+            # ponytail: echo musi już być na ekranie w chwili Entera — przy bardzo
+            # wolnym łączu szybko wpisane polecenie przepadnie (bezpieczny błąd).
+            if not self._alt_screen.alt_active and self.document().lastBlock().text().rstrip().endswith(line.rstrip()):
+                suggest.record(line)
+
+    def accept_suggestion(self, command):
+        """Wybrana podpowiedź: do powłoki idzie tylko brakująca reszta polecenia."""
+        typed = self.input.line or ""
+        if command.startswith(typed):
+            self.send_text(command[len(typed):])
+        self.setFocus()
 
     def send_startup(self, commands):
         """Wysyła polecenia startowe (jedno na linię) tuż po zalogowaniu."""
@@ -1873,9 +1893,15 @@ class SshTerminal(QPlainTextEdit):
         ):
             self._paste()
             return
+        if self.suggest_popup.handle_key(event.key()):
+            return
         data = key_to_bytes(event.key(), event.modifiers(), event.text())
         if data:
             self.send_text(data)
+            if self.input.line and not self._alt_screen.alt_active:
+                self.suggest_popup.refresh(self.input.line)
+            else:
+                self.suggest_popup.hide()
 
     def close_session(self):
         """Zamyka kanał i połączenie; bezpieczne do wielokrotnego wywołania."""
@@ -2877,6 +2903,42 @@ def selftest():
     prod._sent_at -= PROD_CONFIRM_IDLE + 1
     assert prod.send_text("df\r") and len(asked) == 3
     assert prod.channel.sent == ["ls\r", "pwd\r", "df\r"], prod.channel.sent
+
+    # Podpowiedzi (suggest.py): do historii tylko linia z echem — hasło przy
+    # sudo (bez echa) przepada; ↓ + Enter na liście wstawia resztę polecenia.
+    from PySide6.QtGui import QKeyEvent
+    recorded, real_record, real_load = [], suggest.record, suggest.load_history
+    suggest.record = recorded.append
+    suggest.load_history = lambda: ["systemctl status nginx", "ls"]
+    try:
+        typing = OfflineTerminal()
+
+        def press(key, text=""):
+            typing.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier, text))
+
+        typing._append("$ ")
+        for char in "uptime":
+            press(Qt.Key_A, char)
+        typing._append("uptime")  # echo z serwera
+        press(Qt.Key_Return)
+        typing._append("\r\n[sudo] password for x: ")
+        for char in "Tajne1":
+            press(Qt.Key_A, char)
+        press(Qt.Key_Return)
+        assert recorded == ["uptime"], recorded
+        typing._append("\r\n$ ")
+        press(Qt.Key_A, "s")
+        press(Qt.Key_A, "y")
+        assert not typing.suggest_popup.isHidden(), "lista podpowiedzi się nie pokazała"
+        assert typing.suggest_popup.item(0).text() == "systemctl status nginx"
+        press(Qt.Key_Down)
+        press(Qt.Key_Return)
+        assert typing.channel.sent[-2:] == ["y", "stemctl status nginx"], typing.channel.sent[-3:]
+        assert typing.suggest_popup.isHidden() and typing.input.line == "systemctl status nginx"
+        press(Qt.Key_Escape)  # lista schowana — Esc idzie do powłoki
+        assert typing.channel.sent[-1] == "\x1b"
+    finally:
+        suggest.record, suggest.load_history = real_record, real_load
 
     # Ctrl+klik: URL bez kropki z końca zdania, IP tylko całe, nic poza linkiem.
     line = "zobacz https://example.com/a?b=1. albo 10.0.0.5:22, wersja 1.2.3.4.5"

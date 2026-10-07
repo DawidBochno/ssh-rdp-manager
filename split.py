@@ -10,9 +10,13 @@ Pisanie do wszystkich: terminal emituje `sent` z każdego udanego
 `send_text()`, siatka powtarza to samo przez `send_text()` pozostałych —
 czyli przez tę samą bramkę co klawiatura, więc tryb tylko do odczytu
 dalej obowiązuje każdy terminal osobno.
+
+RDP też wchodzi do siatki: zamiast terminala jedzie kontrolka (`RdpTab.control`),
+pisanie do wszystkich jej nie dotyczy (nie ma `send_text`).
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,13 +39,32 @@ from i18n import t
 MAX_PANES = 4
 
 
+def pane_widget(session):
+    """Co jedzie do siatki: terminal SSH albo kontrolka RDP."""
+    terminal = getattr(session, "terminal", None)
+    return terminal if terminal is not None else getattr(session, "control", None)
+
+
+def can_split(widget):
+    """Zakładka, którą da się wstawić do siatki (i jeszcze w żadnej nie jest)."""
+    return (hasattr(widget, "split") and widget.split is None
+            and pane_widget(widget) is not None)
+
+
+def _return_pane(session):
+    if getattr(session, "terminal", None) is not None:
+        session.splitter.insertWidget(1, session.terminal)
+    else:
+        session.layout().addWidget(session.control)
+
+
 def grid_rows(count):
     """Ile terminali w kolejnych wierszach: 2 -> [2], 3 -> [2, 1], 4 -> [2, 2]."""
     return [min(2, count - i) for i in range(0, count, 2)]
 
 
 class SplitTab(QWidget):
-    """Zakładka z siatką terminali. `sessions` = otwarte `SessionTab` (SSH)."""
+    """Zakładka z siatką terminali. `sessions` = otwarte `SessionTab`/`RdpTab`."""
 
     focus_changed = Signal()  # inny terminal w siatce dostał fokus — pasek statystyk
 
@@ -64,24 +87,45 @@ class SplitTab(QWidget):
         top.addStretch()
         top.addWidget(unsplit)
 
-        rows = QSplitter(Qt.Vertical)
+        self.rows = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(top)
+        for session in self.sessions:
+            self._attach(session)
+        self._build()
+        QApplication.instance().focusChanged.connect(self._on_focus)
+
+    def _attach(self, session):
+        session.split = self
+        if getattr(session, "terminal", None) is not None:
+            session.terminal.sent.connect(self._on_sent)
+
+    def _build(self):
+        """Wiersze siatki od nowa — ramki już istniejących paneli tylko się przenoszą."""
+        old, self.rows = self.rows, QSplitter(Qt.Vertical)
         queue = list(self.sessions)
         for count in grid_rows(len(queue)):
             row = QSplitter(Qt.Horizontal)
             for _ in range(count):
-                row.addWidget(self._pane(queue.pop(0)))
-            rows.addWidget(row)
+                session = queue.pop(0)
+                row.addWidget(self._frames.get(session) or self._pane(session))
+            self.rows.addWidget(row)
+        if old is None:
+            self.layout().addWidget(self.rows, 1)
+        else:
+            self.layout().replaceWidget(old, self.rows)
+            old.deleteLater()
+        self._show_broadcast(self.broadcast.isChecked())
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(top)
-        layout.addWidget(rows, 1)
-
-        for session in self.sessions:
-            session.split = self
-            session.terminal.sent.connect(self._on_sent)
-        QApplication.instance().focusChanged.connect(self._on_focus)
-        self._show_broadcast(False)
+    def add_session(self, session):
+        """Dorzucenie zakładki do gotowej siatki (przeciągnięcie). False = siatka pełna."""
+        if len(self.sessions) >= MAX_PANES or not can_split(session):
+            return False
+        self.sessions.append(session)
+        self._attach(session)
+        self._build()
+        return True
 
     def _pane(self, session):
         """Ramka: nazwa sesji nad terminalem. Terminal przechodzi tu z SessionTab."""
@@ -91,8 +135,9 @@ class SplitTab(QWidget):
         box.setContentsMargins(2, 2, 2, 2)
         box.setSpacing(1)
         box.addWidget(QLabel(getattr(session, "tab_name", "")))
-        box.addWidget(session.terminal, 1)
-        session.terminal.show()
+        widget = pane_widget(session)
+        box.addWidget(widget, 1)
+        widget.show()
         self._frames[session] = frame
         return frame
 
@@ -109,14 +154,17 @@ class SplitTab(QWidget):
         self._forwarding = True  # inaczej każdy powtórzony `send_text` wracałby tu znowu
         try:
             for session in self.sessions:
-                if session.terminal is not source:
-                    session.terminal.send_text(data)
+                terminal = getattr(session, "terminal", None)
+                if terminal is not None and terminal is not source:
+                    terminal.send_text(data)
         finally:
             self._forwarding = False
 
     def _on_focus(self, _old, new):
         for session in self.sessions:
-            if new is session.terminal and session is not self._focused:
+            pane = pane_widget(session)
+            hit = new is not None and (new is pane or pane.isAncestorOf(new))
+            if hit and session is not self._focused:
                 self._focused = session
                 self.focus_changed.emit()
 
@@ -130,16 +178,65 @@ class SplitTab(QWidget):
             return
         QApplication.instance().focusChanged.disconnect(self._on_focus)
         for session in self.sessions:
-            session.terminal.sent.disconnect(self._on_sent)
+            if getattr(session, "terminal", None) is not None:
+                session.terminal.sent.disconnect(self._on_sent)
             session.split = None
-            session.splitter.insertWidget(1, session.terminal)
+            _return_pane(session)
         released, self.sessions = self.sessions, []
         if self._release_callback:
             self._release_callback(self, released)
 
 
+TAB_MIME = "application/x-sshrdp-tab"
+
+
+class TabDragger(QObject):
+    """Przeciąganie zakładki na inną w pasku: `on_drop(źródło, cel)` z indeksami.
+
+    Filtr zdarzeń na `QTabBar` zamiast podklasy — pasek tworzy `QTabWidget`.
+    Pasek nie jest przesuwalny (`setMovable`), więc przeciąganie nie gryzie się
+    z przestawianiem kolejności.
+    """
+
+    def __init__(self, bar, on_drop):
+        super().__init__(bar)
+        self.bar, self.on_drop, self._press = bar, on_drop, None
+        bar.setAcceptDrops(True)
+        bar.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._press = event.position().toPoint()
+        elif kind == QEvent.MouseButtonRelease:
+            self._press = None
+        elif kind == QEvent.MouseMove and self._press is not None and event.buttons() & Qt.LeftButton:
+            moved = (event.position().toPoint() - self._press).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                index, self._press = self.bar.tabAt(self._press), None
+                if index >= 0:
+                    mime = QMimeData()
+                    mime.setData(TAB_MIME, str(index).encode())
+                    drag = QDrag(self.bar)
+                    drag.setMimeData(mime)
+                    drag.exec(Qt.MoveAction)
+                return True
+        elif kind in (QEvent.DragEnter, QEvent.DragMove, QEvent.Drop):
+            if not event.mimeData().hasFormat(TAB_MIME):
+                return False
+            event.acceptProposedAction()
+            if kind == QEvent.Drop:
+                source = int(bytes(event.mimeData().data(TAB_MIME)).decode())
+                target = self.bar.tabAt(event.position().toPoint())
+                if target >= 0 and target != source:
+                    # Po wyjściu z pętli `drag.exec` — zmiana zakładek w jej środku to proszenie się o kłopoty.
+                    QTimer.singleShot(0, lambda: self.on_drop(source, target))
+            return True
+        return False
+
+
 class SplitPicker(QDialog):
-    """Wybór 2–4 otwartych sesji SSH do siatki."""
+    """Wybór 2–4 otwartych sesji (SSH/RDP) do siatki."""
 
     def __init__(self, parent, sessions, current=None):
         super().__init__(parent)
@@ -207,11 +304,28 @@ def selftest():
     assert b.terminal.channel.sent == ["uptime\r"], b.terminal.channel.sent
     assert c.terminal.channel.sent == [], "tylko do odczytu nie może dostać tekstu z siatki"
 
+    # RDP: kontrolka zamiast terminala, bez pisania do wszystkich; dorzucanie
+    # do gotowej siatki do MAX_PANES.
+    class _Rdp(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.tab_name, self.split = "rdp", None
+            self.control = QWidget()
+            QVBoxLayout(self).addWidget(self.control)
+
+    rdp, extra = _Rdp(), _Session("e")
+    assert can_split(rdp) and not can_split(a), "a jest już w siatce"
+    assert grid.add_session(rdp) and rdp.control.parent() is not rdp
+    assert not grid.add_session(extra), "piąty panel nie wchodzi"
+    a.terminal.send_text("df\r")  # rozsyłanie dalej działa, RDP pomijane
+    assert b.terminal.channel.sent == ["uptime\r", "df\r"], b.terminal.channel.sent
+
     grid.release()
-    assert released == [[a, b, c]] and a.split is None
+    assert rdp.control.parent() is rdp and rdp.split is None, "kontrolka RDP ma wrócić"
+    assert released == [[a, b, c, rdp]] and a.split is None
     assert a.splitter.widget(1) is a.terminal, "terminal ma wrócić na swoje miejsce"
     a.terminal.send_text("x")
-    assert b.terminal.channel.sent == ["uptime\r"], "po rozdzieleniu nic nie powiela"
+    assert b.terminal.channel.sent == ["uptime\r", "df\r"], "po rozdzieleniu nic nie powiela"
     grid.release()  # drugi raz = nic
     assert len(released) == 1
     del app

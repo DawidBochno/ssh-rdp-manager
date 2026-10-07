@@ -114,6 +114,7 @@ class RdpTab(QWidget):
     def __init__(self, conn, password=None, parent=None, autoconnect=True):
         super().__init__(parent)
         self.conn = conn
+        self.split = None  # SplitTab, w którym kontrolka akurat jest (split.py)
         self._ended = ""
         self.control = make_control()
 

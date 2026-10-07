@@ -56,6 +56,9 @@ class SettingsDialog(QDialog):
         self.session_log.setToolTip(t("tip_session_log"))
         self.restore_sessions = QCheckBox(t("settings_restore_sessions"))
         self.restore_sessions.setChecked(current["restore_sessions"])
+        self.suggest_commands = QCheckBox(t("settings_suggest_commands"))
+        self.suggest_commands.setChecked(current["suggest_commands"])
+        self.suggest_commands.setToolTip(t("tip_suggest_commands"))
         self.font_button = QPushButton()
         self.font_button.clicked.connect(self._pick_font)
         self._show_font()
@@ -68,6 +71,7 @@ class SettingsDialog(QDialog):
         form.addRow(self.timestamps)
         form.addRow(self.session_log)
         form.addRow(self.restore_sessions)
+        form.addRow(self.suggest_commands)
         form.addRow(t("settings_font"), self.font_button)
         form.addRow(t("settings_scrollback"), self.scrollback)
         form.addRow(t("settings_triggers"), self.triggers)
@@ -199,6 +203,7 @@ class SettingsDialog(QDialog):
             "timestamps": self.timestamps.isChecked(),
             "session_log": self.session_log.isChecked(),
             "restore_sessions": self.restore_sessions.isChecked(),
+            "suggest_commands": self.suggest_commands.isChecked(),
             "font": self._font,
             "scrollback": self.scrollback.value(),
             "triggers": self.triggers.toPlainText(),

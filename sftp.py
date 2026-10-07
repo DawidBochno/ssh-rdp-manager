@@ -18,7 +18,12 @@ import paramiko
 from PySide6.QtCore import QFileSystemWatcher, QMimeData, Qt, QUrl, Signal
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -27,6 +32,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -44,6 +50,96 @@ def open_sftp(client):
 def sorted_entries(entries):
     """Katalogi przed plikami, potem alfabetycznie bez wielkości liter."""
     return sorted(entries, key=lambda e: (not stat.S_ISDIR(e.st_mode), e.filename.lower()))
+
+
+def owner_names(longname):
+    """(użytkownik, grupa) z linii `ls -l`, którą serwer dokłada do `listdir_attr`; brak = ("", "")."""
+    parts = (longname or "").split()
+    return (parts[2], parts[3]) if len(parts) >= 4 else ("", "")
+
+
+def parse_mode(text):
+    """Uprawnienia wpisane ósemkowo ("755", "4755") albo None."""
+    try:
+        mode = int(text, 8)
+    except ValueError:
+        return None
+    return mode if 0 <= mode <= 0o7777 else None
+
+
+class PermissionsDialog(QDialog):
+    """chmod/chown z okienkiem: 9 pól (kto × r/w/x) zsynchronizowanych z zapisem ósemkowym.
+
+    Bity specjalne (setuid/setgid/sticky) zostają z pola ósemkowego — pola ich
+    nie ruszają. Właściciel jako UID/GID: SFTP zna tylko liczby, nazwy są
+    podpowiedzią z `longname`. Zmiana właściciela zwykle wymaga roota.
+    """
+
+    WHO = ("perm_owner", "perm_group", "perm_others")
+    WHAT = ("perm_read", "perm_write", "perm_exec")
+
+    def __init__(self, parent, name, attrs):
+        super().__init__(parent)
+        self.setWindowTitle(t("perm_title", name))
+        self.start_mode = stat.S_IMODE(attrs.st_mode or 0)
+        self.start_owner = (attrs.st_uid or 0, attrs.st_gid or 0)
+        grid = QGridLayout()
+        for col, what in enumerate(self.WHAT, 1):
+            grid.addWidget(QLabel(t(what)), 0, col)
+        self.boxes = {}
+        for row, who in enumerate(self.WHO):
+            grid.addWidget(QLabel(t(who)), row + 1, 0)
+            for col in range(3):
+                box = QCheckBox()
+                box.toggled.connect(self._from_boxes)
+                grid.addWidget(box, row + 1, col + 1)
+                self.boxes[0o400 >> (3 * row + col)] = box
+        self.octal = QLineEdit(f"{self.start_mode:03o}")
+        self.octal.setMaxLength(4)
+        self.octal.textEdited.connect(self._from_octal)
+        user, group = owner_names(getattr(attrs, "longname", ""))
+        self.uid, self.gid = QSpinBox(), QSpinBox()
+        for spin, value, label in ((self.uid, self.start_owner[0], user), (self.gid, self.start_owner[1], group)):
+            spin.setRange(0, 2**31 - 1)
+            spin.setValue(value)
+            spin.setSuffix(f"  ({label})" if label else "")
+            spin.setToolTip(t("perm_chown_tip"))
+        form = QFormLayout()
+        form.addRow(t("perm_octal"), self.octal)
+        form.addRow(t("perm_uid"), self.uid)
+        form.addRow(t("perm_gid"), self.gid)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(grid)
+        layout.addLayout(form)
+        layout.addWidget(self.buttons)
+        self._from_octal()
+
+    def _from_boxes(self):
+        mode = parse_mode(self.octal.text()) or 0
+        for bit, box in self.boxes.items():
+            mode = mode | bit if box.isChecked() else mode & ~bit
+        self.octal.setText(f"{mode:03o}")
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+
+    def _from_octal(self):
+        mode = parse_mode(self.octal.text())
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(mode is not None)
+        if mode is None:
+            return
+        for bit, box in self.boxes.items():
+            box.blockSignals(True)  # inaczej każde pole przepisywałoby tekst w trakcie pisania
+            box.setChecked(bool(mode & bit))
+            box.blockSignals(False)
+
+    def changes(self):
+        """(nowy tryb albo None, (uid, gid) albo None) — tylko to, co się zmieniło."""
+        mode = parse_mode(self.octal.text())
+        owner = (self.uid.value(), self.gid.value())
+        return (mode if mode not in (None, self.start_mode) else None,
+                owner if owner != self.start_owner else None)
 
 
 class _SftpListWidget(QListWidget):
@@ -265,6 +361,7 @@ class SftpPanel(QWidget):
             is_dir = stat.S_ISDIR(entry.st_mode)
             item = QListWidgetItem(f"{'📁' if is_dir else '📄'} {entry.filename}")
             item.setData(Qt.UserRole, (entry.filename, is_dir))
+            item.setData(Qt.UserRole + 1, entry)  # tryb, UID/GID — okno uprawnień
             self.list.addItem(item)
 
     def _child_path(self, name):
@@ -434,7 +531,7 @@ class SftpPanel(QWidget):
             menu.addAction(t("sftp_download"), lambda: self._download(self._child_path(name), name))
             menu.addAction(t("sftp_edit"), lambda: self._edit(self._child_path(name), name))
         menu.addAction(t("sftp_rename"), lambda: self._rename(name))
-        menu.addAction(t("sftp_chmod"), lambda: self._chmod(name))
+        menu.addAction(t("sftp_chmod"), lambda: self._chmod(name, item.data(Qt.UserRole + 1)))
         menu.addAction(t("menu_delete"), lambda: self._delete(name, is_dir))
         menu.exec(self.list.viewport().mapToGlobal(pos))
 
@@ -445,19 +542,22 @@ class SftpPanel(QWidget):
         sftp, old, new = self.sftp, self._child_path(name), self._child_path(new_name)
         self._call(lambda: sftp.rename(old, new), "err_rename")
 
-    def _chmod(self, name):
-        mode_text, ok = QInputDialog.getText(self, t("sftp_chmod"), t("sftp_chmod_prompt"))
-        if not ok or not mode_text:
+    def _chmod(self, name, attrs):
+        dialog = PermissionsDialog(self, name, attrs)
+        if dialog.exec() != QDialog.Accepted:
             return
-        try:
-            mode = int(mode_text, 8)
-            if not (0 <= mode <= 0o7777):
-                raise ValueError
-        except ValueError:
-            QMessageBox.warning(self, t("err_chmod"), t("err_chmod_bad"))
+        mode, owner = dialog.changes()
+        if mode is None and owner is None:
             return
         sftp, path = self.sftp, self._child_path(name)
-        self._call(lambda: sftp.chmod(path, mode), "err_chmod")
+
+        def work():
+            if mode is not None:
+                sftp.chmod(path, mode)
+            if owner is not None:
+                sftp.chown(path, *owner)
+
+        self._call(work, "err_chmod")
 
     def _delete(self, name, is_dir):
         if QMessageBox.question(
@@ -579,6 +679,29 @@ def selftest():
         QMessageBox.warning = original_warning
     assert warnings == ["brak uprawnień"], warnings
     assert panel.list.count() == 2, "po błędzie lista ma zostać odświeżona"
+
+    # Okno uprawnień: pola i zapis ósemkowy chodzą razem, bity specjalne zostają,
+    # do serwera idzie tylko to, co się zmieniło.
+    assert owner_names("-rw-r--r--   1 www-data adm  220 Jan 1 a.txt") == ("www-data", "adm")
+    assert owner_names("") == ("", "") and parse_mode("8") is None and parse_mode("4755") == 0o4755
+    file_attr = attr("a.txt", stat.S_IFREG | 0o4644)
+    file_attr.st_uid, file_attr.st_gid = 33, 4
+    file_attr.longname = "-rwSr--r-- 1 www-data adm 220 Jan 1 a.txt"
+    perms = PermissionsDialog(None, "a.txt", file_attr)
+    assert perms.octal.text() == "4644" and perms.boxes[0o200].isChecked() and not perms.boxes[0o100].isChecked()
+    assert perms.uid.suffix() == "  (www-data)" and perms.changes() == (None, None)
+    perms.boxes[0o100].setChecked(True)
+    perms.boxes[0o004].setChecked(False)
+    assert perms.octal.text() == "4740", perms.octal.text()
+    perms.octal.setText("75x")
+    perms._from_octal()
+    assert not perms.buttons.button(QDialogButtonBox.Ok).isEnabled(), "zły zapis ósemkowy przepuszczony"
+    perms.octal.setText("750")
+    perms._from_octal()
+    assert perms.boxes[0o010].isChecked() and not perms.boxes[0o002].isChecked()
+    perms.gid.setValue(0)
+    assert perms.changes() == (0o750, (33, 0)), perms.changes()
+    perms.deleteLater()
 
     # Po zamknięciu panel nie przyjmuje nowych zadań (wątek już zamknięty).
     panel.sftp = None

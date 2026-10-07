@@ -72,6 +72,7 @@ TEXTS = {
             "Ctrl+Shift+N — new connection\n"
             "Ctrl+Shift+T — quick connect\n"
             "Ctrl+Shift+W — close tab\n"
+            "Ctrl+Shift+H — search all terminals\n"
             "Ctrl+Shift+F — filter connection list\n"
             "Ctrl+Shift+P — command palette (connections, menu actions, scripts)\n"
             "Ctrl+Tab / Ctrl+Shift+Tab — next / previous tab\n"
@@ -441,8 +442,22 @@ TEXTS = {
         "menu_split": "Split screen…",
         "split_title": "Split screen",
         "split_pick": "Pick 2 to {0} open SSH sessions:",
-        "split_need_sessions": "Open at least two SSH sessions first.",
+        "split_need_sessions": "Open at least two sessions (SSH or RDP) first.",
         "split_tab": "⊞ Grid ({0})",
+        "termsearch_title": "Search all terminals",
+        "menu_termsearch": "Search all terminals…",
+        "termsearch_hint": "Text to find in the history of every open SSH terminal (min. 2 characters)",
+        "termsearch_count": "Found: {0}",
+        "termsearch_limit": " (showing the first {0})",
+        "settings_suggest_commands": "Suggest commands from history while typing",
+        "tip_suggest_commands": "Commands typed in any session. ↓ picks, Enter/Tab inserts, Esc hides. Lines starting with a space and input without echo (passwords) are not remembered.",
+        "split_full": "The grid already has {0} panes.",
+        "menu_workspaces": "Workspaces",
+        "workspace_save": "Save current tabs as…",
+        "workspace_delete": "Delete",
+        "workspace_name": "Workspace name (same name overwrites):",
+        "workspace_empty": "Open some connections from the list first — quick connections are not saved.",
+        "workspace_none": "(no saved workspaces)",
         "split_broadcast": "Type into all",
         "split_broadcast_tip": "Everything typed (keys, paste) goes to every terminal in the grid.\n"
                                "Read-only terminals are skipped.",
@@ -487,10 +502,19 @@ TEXTS = {
         "sftp_rename": "Rename…",
         "sftp_rename_prompt": "New name:",
         "err_rename": "Rename error",
-        "sftp_chmod": "Permissions (chmod)…",
-        "sftp_chmod_prompt": "Permissions (octal, e.g. 755):",
+        "sftp_chmod": "Permissions / owner…",
         "err_chmod": "Permissions error",
-        "err_chmod_bad": "Enter permissions as octal digits, e.g. 755.",
+        "perm_title": "Permissions: {0}",
+        "perm_owner": "Owner",
+        "perm_group": "Group",
+        "perm_others": "Others",
+        "perm_read": "Read",
+        "perm_write": "Write",
+        "perm_exec": "Execute",
+        "perm_octal": "Octal:",
+        "perm_uid": "Owner (UID):",
+        "perm_gid": "Group (GID):",
+        "perm_chown_tip": "Changing the owner usually requires being logged in as root",
         # --- status serwera w drzewie ---
         "menu_tree_status": "Server status in the tree",
         "status_online": "online",
@@ -653,6 +677,7 @@ TEXTS = {
             "Ctrl+Shift+N — nowe połączenie\n"
             "Ctrl+Shift+T — szybkie połączenie\n"
             "Ctrl+Shift+W — zamknij zakładkę\n"
+            "Ctrl+Shift+H — szukaj we wszystkich terminalach\n"
             "Ctrl+Shift+F — filtr listy połączeń\n"
             "Ctrl+Shift+P — paleta poleceń (połączenia, akcje menu, skrypty)\n"
             "Ctrl+Tab / Ctrl+Shift+Tab — następna / poprzednia zakładka\n"
@@ -1022,8 +1047,22 @@ TEXTS = {
         "menu_split": "Podziel ekran…",
         "split_title": "Podział ekranu",
         "split_pick": "Wybierz od 2 do {0} otwartych sesji SSH:",
-        "split_need_sessions": "Najpierw otwórz co najmniej dwie sesje SSH.",
+        "split_need_sessions": "Najpierw otwórz co najmniej dwie sesje (SSH lub RDP).",
         "split_tab": "⊞ Siatka ({0})",
+        "termsearch_title": "Szukaj we wszystkich terminalach",
+        "menu_termsearch": "Szukaj we wszystkich terminalach…",
+        "termsearch_hint": "Tekst do znalezienia w historii każdego otwartego terminala SSH (min. 2 znaki)",
+        "termsearch_count": "Znaleziono: {0}",
+        "termsearch_limit": " (pokazane pierwsze {0})",
+        "settings_suggest_commands": "Podpowiadaj polecenia z historii podczas pisania",
+        "tip_suggest_commands": "Polecenia wpisane w dowolnej sesji. ↓ wybiera, Enter/Tab wstawia, Esc chowa. Linie zaczynające się spacją i tekst bez echa (hasła) nie są zapamiętywane.",
+        "split_full": "Siatka ma już {0} panele.",
+        "menu_workspaces": "Obszary robocze",
+        "workspace_save": "Zapisz bieżące zakładki jako…",
+        "workspace_delete": "Usuń",
+        "workspace_name": "Nazwa obszaru (ta sama nazwa nadpisuje):",
+        "workspace_empty": "Najpierw otwórz połączenia z listy — szybkie połączenia nie są zapisywane.",
+        "workspace_none": "(brak zapisanych obszarów)",
         "split_broadcast": "Wpisuj do wszystkich",
         "split_broadcast_tip": "Wszystko, co wpiszesz (klawisze, wklejanie), trafia do każdego terminala w siatce.\n"
                                "Terminale tylko do odczytu są pomijane.",
@@ -1068,10 +1107,19 @@ TEXTS = {
         "sftp_rename": "Zmień nazwę…",
         "sftp_rename_prompt": "Nowa nazwa:",
         "err_rename": "Błąd zmiany nazwy",
-        "sftp_chmod": "Uprawnienia (chmod)…",
-        "sftp_chmod_prompt": "Uprawnienia (ósemkowo, np. 755):",
+        "sftp_chmod": "Uprawnienia / właściciel…",
         "err_chmod": "Błąd zmiany uprawnień",
-        "err_chmod_bad": "Podaj uprawnienia jako cyfry ósemkowe, np. 755.",
+        "perm_title": "Uprawnienia: {0}",
+        "perm_owner": "Właściciel",
+        "perm_group": "Grupa",
+        "perm_others": "Pozostali",
+        "perm_read": "Odczyt",
+        "perm_write": "Zapis",
+        "perm_exec": "Wykonanie",
+        "perm_octal": "Ósemkowo:",
+        "perm_uid": "Właściciel (UID):",
+        "perm_gid": "Grupa (GID):",
+        "perm_chown_tip": "Zmiana właściciela zwykle wymaga zalogowania jako root",
         # --- status serwera w drzewie ---
         "menu_tree_status": "Status serwera w drzewie",
         "status_online": "dostępny",
