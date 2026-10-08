@@ -52,10 +52,11 @@ def can_split(widget):
 
 
 def _return_pane(session):
-    if getattr(session, "terminal", None) is not None:
-        session.splitter.insertWidget(1, session.terminal)
+    splitter = getattr(session, "splitter", None)  # SessionTab: SFTP | terminal
+    if splitter is not None:
+        splitter.insertWidget(1, session.terminal)
     else:
-        session.layout().addWidget(session.control)
+        session.layout().addWidget(pane_widget(session), 1)  # RDP, VNC, Telnet/COM
 
 
 def grid_rows(count):
