@@ -11,6 +11,8 @@ w momencie budowania okna, a przebudowa całego GUI zabiłaby otwarte sesje SSH.
 
 from PySide6.QtCore import QSettings
 
+import appdata
+
 DEFAULT = "en"
 
 # Kod języka -> nazwa w menu (zawsze w tym języku, nie tłumaczona).
@@ -287,6 +289,7 @@ TEXTS = {
         "scanner_copy": "Copy",
         "scanner_copy_all": "All",
         "update_failed": "Could not download the update:\n\n{0}",
+        "update_portable": "The download page has opened. Unpack the new portable version over the old one (your connections stay in the folder).",
         # --- import z ~/.ssh/config ---
         "menu_import_ssh_config": "Import from ~/.ssh/config",
         "ssh_config_missing": "No ~/.ssh/config file found.",
@@ -911,6 +914,7 @@ TEXTS = {
         "scanner_copy": "Kopiuj",
         "scanner_copy_all": "Wszystkie",
         "update_failed": "Nie udało się pobrać aktualizacji:\n\n{0}",
+        "update_portable": "Otworzyła się strona pobierania. Rozpakuj nową wersję przenośną w miejsce starej (połączenia zostają w folderze).",
         # --- import z ~/.ssh/config ---
         "menu_import_ssh_config": "Importuj z ~/.ssh/config",
         "ssh_config_missing": "Nie znaleziono pliku ~/.ssh/config.",
@@ -1284,6 +1288,8 @@ def use(code):
 
 def settings():
     """Wspólny `QSettings` aplikacji — jedno miejsce, w którym siedzi nazwa klucza."""
+    if appdata.PORTABLE:  # pendrive: ustawienia jadą z programem, nie zostają w rejestrze
+        return QSettings(str(appdata.DATA_DIR / "settings.ini"), QSettings.IniFormat)
     return QSettings(*_SETTINGS)
 
 

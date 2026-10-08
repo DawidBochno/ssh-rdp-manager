@@ -30,3 +30,9 @@ monitor.db
 
 # Automatyczny zapis sesji (Ustawienia -> Terminal) — lokalny, nie repo.
 logs/
+
+# Budowanie paczek (build.py) — wynik, nie zrodlo.
+build/
+dist/
+*.spec
+version.txt

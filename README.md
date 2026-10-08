@@ -13,6 +13,18 @@ albo pulpit RDP w tym samym oknie.
 
 ## Instalacja i uruchomienie
 
+**Najprościej:** pobierz z [Releases](https://github.com/DawidBochno/ssh-rdp-manager/releases/latest)
+jedną z dwóch paczek (Python nie jest potrzebny):
+
+- `…-setup.exe` — instalator (bez uprawnień administratora). Połączenia i ustawienia
+  trzyma w `%APPDATA%\SSH-RDP-Manager`, więc odinstalowanie ich nie kasuje. Program sam
+  proponuje aktualizację, gdy wyjdzie nowe wydanie.
+- `…-portable.zip` — wersja przenośna, np. na pendrive: rozpakuj i uruchom
+  `SSH-RDP-Manager.exe`. Połączenia i ustawienia zostają w tym samym folderze
+  (oznacza go plik `portable.txt`).
+
+**Ze źródeł** (kopia z gita, aktualizacja przez `git pull` z programu):
+
 ```bash
 py -m pip install -r requirements.txt
 py main.py
@@ -265,6 +277,11 @@ Jak z tego korzystać bez znajomości kodu: otwórz PR na GitHubie (zakładka
 **Pull requests**), sprawdź, że przy **Selftest** jest zielony ✓, i przeczytaj
 komentarz przeglądu. Zielone + „✅ Można scalać” → przycisk **Merge pull request**.
 
+**Nowe wydanie** (`.github/workflows/release.yml`): wypchnięcie tagu, np.
+`git tag v1.0.0` i `git push origin v1.0.0`, buduje instalator i wersję przenośną
+(`build.py`, PyInstaller + Inno Setup), sprawdza paczkę selftestem i wystawia
+wydanie na GitHubie. Lokalnie: `py -m pip install pyinstaller`, potem `py build.py v1.0.0`.
+
 **Jednorazowa konfiguracja przeglądu Claude** (bez tego przegląd jest pomijany,
 Selftest działa i tak): w repozytorium **Settings → Secrets and variables →
 Actions → New repository secret**, nazwa `ANTHROPIC_API_KEY`, wartość — klucz
@@ -283,7 +300,9 @@ płatne tokeny API, zwykle grosze za PR).
 | `rdp.py` | Sesja RDP (kontrolka ActiveX Microsoftu) jako widget zakładki |
 | `scanner.py` | Skaner sieci i okno z wynikami |
 | `servers.py` | Wbudowane serwery HTTP i TFTP |
-| `update.py` | Sprawdzanie aktualizacji względem gałęzi na GitHubie |
+| `update.py` | Sprawdzanie aktualizacji: gałąź na GitHubie (kopia z gita) albo wydanie (`.exe`) |
+| `appdata.py` | Gdzie leżą dane: obok programu, w `%APPDATA%` albo obok `.exe` na pendrivie |
+| `build.py`, `installer.iss` | Budowanie instalatora i wersji przenośnej |
 | `i18n.py` | Napisy interfejsu po angielsku i po polsku |
 | `notify.py` | Powiadomienia systemowe (dymek z zasobnika) |
 | `tunnels.py` | Tunele SSH (przekierowanie portów) i okno do ich zarządzania |

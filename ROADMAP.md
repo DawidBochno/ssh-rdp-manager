@@ -94,7 +94,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 
 | # | Propozycja | Na wzór | Wielkość | Priorytet |
 |---|---|---|---|---|
-| 39 | **Instalator `.exe` i aktualizacje bez gita**, wersja przenośna (pendrive) | wszystkie | M | ⭐⭐ |
+| 39 | ~~**Instalator `.exe` i aktualizacje bez gita**, wersja przenośna (pendrive)~~ — zrobione 2026-10-08 (PyInstaller + Inno Setup, wydania z tagu `v*`) | wszystkie | M | ⭐⭐ |
 | 40 | **Szyfrowana synchronizacja połączeń** (plik na OneDrive/Dropbox/Git) | Termius, Royal TS | M | ⭐⭐ |
 | 41 | ~~**Szukanie w historii wszystkich otwartych terminali**~~ — zrobione 2026-10-06 | — | S | ⭐ |
 | 42 | ~~**Przeciąganie zakładki do siatki, RDP w siatce, zapamiętany układ**~~ — zrobione 2026-10-06 | Tabby, MobaXterm | M | ⭐ |
