@@ -82,6 +82,8 @@ import services
 import sftp
 import settings
 import split
+import suggest
+import termsearch
 import transfers
 import tunnels
 import update
@@ -1230,6 +1232,11 @@ class ConnectionTree(QTreeWidget):
             it += 1
 
 
+def session_key(conn):
+    """Klucz połączenia w zapisanych układach: (nazwa, host, port) — słownik nie przeżyje restartu."""
+    return [conn.get("name"), conn.get("host"), conn.get("port")]
+
+
 def tree_connections(tree):
     """Wszystkie zapisane połączenia z drzewa, płasko (żywe słowniki)."""
     found = []
@@ -1646,12 +1653,15 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._clear_activity)
         self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
+        # Zakładka upuszczona na drugą = siatka z obu (albo dorzucenie do siatki).
+        split.TabDragger(self.tabs.tabBar(), self._on_tab_dropped)
 
         # Monitoring w tle (monitor.py): ostatni wynik i stan per host:port.
         self.monitor_results = {}
         self._monitor_states = {}
         self._monitor_timer = None  # startuje z main(), jak status drzewa
         self._monitor_round = None
+        self._termsearch = None  # okno szukania we wszystkich terminalach, otwierane raz
 
         # "Home": pulpit startowy, zawsze pierwsza zakładka, bez przycisku zamknięcia.
         home_index = self.tabs.addTab(HomeTab(self), t("tab_home"))
@@ -1890,22 +1900,50 @@ class MainWindow(QMainWindow):
         stored = i18n.settings()
         stored.setValue("geometry", self.saveGeometry())
         stored.setValue("splitter", self.splitter.sizes())
-        stored.setValue("open_sessions", json.dumps(self.open_session_keys()))
+        stored.setValue("open_sessions", json.dumps(self.current_layout()))
 
-    def open_session_keys(self):
-        """Otwarte zakładki z drzewa jako (nazwa, host, port) — do przywrócenia po starcie.
+    def current_layout(self):
+        """Układ zakładek: {"tabs": [klucz...], "grids": [[klucz...]...]}, klucz = (nazwa, host, port).
 
-        Szybkie połączenia (bez wpisu w drzewie) pomijane — nie ma czego otworzyć.
-        ponytail: siatka (split.py) wraca jako zwykłe zakładki, bez układu.
+        Do przywrócenia po starcie i do obszarów roboczych. Szybkie połączenia
+        (bez wpisu w drzewie) pomijane — nie ma czego otworzyć.
         """
-        keys = []
+        tabs, grids = [], []
         for i in range(self.tabs.count()):
-            origin = getattr(self.tabs.widget(i), "origin", None)
-            if origin:
-                key = [origin.get("name"), origin.get("host"), origin.get("port")]
-                if key not in keys:  # zduplikowana sesja wraca raz
-                    keys.append(key)
-        return keys
+            widget = self.tabs.widget(i)
+            if isinstance(widget, split.SplitTab):
+                grid = [session_key(s.origin) for s in widget.sessions if getattr(s, "origin", None)]
+                if len(grid) >= 2:
+                    grids.append(grid)
+            origin = getattr(widget, "origin", None)
+            if origin and session_key(origin) not in tabs:  # zduplikowana sesja wraca raz
+                tabs.append(session_key(origin))
+        return {"tabs": tabs, "grids": grids}
+
+    def open_layout(self, layout):
+        """Otwiera zakładki z układu, potem składa z nich siatki. Usunięte z drzewa — pomijane."""
+        if isinstance(layout, list):
+            layout = {"tabs": layout}  # zapis sprzed siatek: sama lista kluczy
+        connections = tree_connections(self.tree)
+
+        def find(key):
+            return next((c for c in connections if session_key(c) == key), None)
+
+        for key in layout.get("tabs", []):
+            conn = find(key)
+            if conn is not None:
+                self._open_connection_tab(conn)
+        for keys in layout.get("grids", []):
+            sessions = [self._tab_of(find(key)) for key in keys]
+            sessions = [s for s in sessions if split.can_split(s)]
+            if len(sessions) >= 2:
+                self._make_split(sessions[:split.MAX_PANES])
+
+    def _tab_of(self, conn):
+        for i in range(self.tabs.count() if conn is not None else 0):
+            if getattr(self.tabs.widget(i), "origin", None) is conn:
+                return self.tabs.widget(i)
+        return None
 
     def restore_sessions(self):
         """Wołane z `main()` — `--selftest` nie ma się łączyć z serwerami."""
@@ -1913,17 +1951,60 @@ class MainWindow(QMainWindow):
         if not stored.value("restore_sessions", True, type=bool):
             return
         try:
-            keys = json.loads(stored.value("open_sessions", "[]") or "[]")
+            layout = json.loads(stored.value("open_sessions", "[]") or "[]")
         except ValueError:
             return
-        connections = tree_connections(self.tree)
-        for key in keys:
-            conn = next(
-                (c for c in connections if [c.get("name"), c.get("host"), c.get("port")] == key),
-                None,
-            )
-            if conn is not None:  # usunięte w międzyczasie — pomijamy po cichu
-                self._open_connection_tab(conn)
+        self.open_layout(layout)
+
+    # --- obszary robocze ----------------------------------------------------
+
+    def workspaces(self):
+        try:
+            found = json.loads(i18n.settings().value("workspaces", "{}") or "{}")
+        except ValueError:
+            return {}
+        return found if isinstance(found, dict) else {}
+
+    def _store_workspaces(self, found):
+        i18n.settings().setValue("workspaces", json.dumps(found))
+        self._fill_workspace_menu()
+
+    def _fill_workspace_menu(self):
+        """Pełne menu od razu (nie w `aboutToShow`) — paleta poleceń czyta je z paska."""
+        menu = self.workspace_menu
+        menu.clear()
+        found = self.workspaces()
+        for name in sorted(found, key=str.lower):
+            menu.addAction(name, lambda n=name: self.open_workspace(n))
+        if not found:
+            menu.addAction(t("workspace_none")).setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(t("workspace_save"), self._save_workspace)
+        delete = menu.addMenu(t("workspace_delete"))
+        delete.setEnabled(bool(found))
+        for name in sorted(found, key=str.lower):
+            delete.addAction(name, lambda n=name: self._delete_workspace(n))
+
+    def open_workspace(self, name):
+        layout = self.workspaces().get(name)
+        if layout:
+            self.open_layout(layout)
+
+    def _save_workspace(self):
+        layout = self.current_layout()
+        if not layout["tabs"]:
+            QMessageBox.information(self, t("menu_workspaces"), t("workspace_empty"))
+            return
+        name, ok = QInputDialog.getText(self, t("workspace_save"), t("workspace_name"))
+        if ok and name.strip():
+            found = self.workspaces()
+            found[name.strip()] = layout  # ta sama nazwa = nadpisanie
+            self._store_workspaces(found)
+
+    def _delete_workspace(self, name):
+        found = self.workspaces()
+        found.pop(name, None)
+        self._store_workspaces(found)
 
     def _build_menu(self):
         """Pasek menu u góry (wzorem MobaXterm), z akcjami znanymi już z menu drzewa."""
@@ -1951,6 +2032,11 @@ class MainWindow(QMainWindow):
         # Ustawienia w jednym oknie zamiast kilkunastu pozycji tutaj.
         view_menu.addAction(t("menu_settings"), self._open_settings, QKeySequence("Ctrl+Shift+S"))
         view_menu.addAction(t("menu_command_palette"), self._open_palette, QKeySequence("Ctrl+Shift+P"))
+        view_menu.addAction(t("menu_termsearch"), self._open_termsearch, QKeySequence("Ctrl+Shift+H"))
+
+        # Obszary robocze: nazwane układy zakładek i siatek (`current_layout`).
+        self.workspace_menu = menu.addMenu(t("menu_workspaces"))
+        self._fill_workspace_menu()
 
         # „Serwery wbudowane" — daemony po naszej stronie, wzorem MobaXterm.
         servers_menu = menu.addMenu(t("menu_servers"))
@@ -2046,6 +2132,7 @@ class MainWindow(QMainWindow):
             "timestamps": SshTerminal.timestamps,
             "session_log": session_log_enabled(),
             "restore_sessions": stored.value("restore_sessions", True, type=bool),
+            "suggest_commands": suggest.enabled(),
             "font": terminal_font(),
             "scrollback": scrollback(),
             "triggers": triggers_text(),
@@ -2092,6 +2179,7 @@ class MainWindow(QMainWindow):
         stored.setValue("timestamps", new["timestamps"])
         set_session_log_enabled(new["session_log"])  # dotyczy sesji otwartych od teraz
         stored.setValue("restore_sessions", new["restore_sessions"])
+        stored.setValue("suggest_commands", new["suggest_commands"])  # czytane przy każdym klawiszu
         if "font" in changed:
             set_terminal_font(new["font"])
             for session in sessions:
@@ -2494,11 +2582,32 @@ class MainWindow(QMainWindow):
             return
         patches.PatchDialog(self, targets).exec()
 
+    def _open_termsearch(self):
+        if self._termsearch is None:
+            self._termsearch = termsearch.TerminalSearch(self, self._open_terminals, self._show_terminal)
+        self._termsearch.show()
+        self._termsearch.raise_()
+        self._termsearch.activateWindow()
+        self._termsearch.query.setFocus()
+        self._termsearch.query.selectAll()
+
+    def _open_terminals(self):
+        return [
+            (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal)
+            for i in range(self.tabs.count()) if isinstance(self.tabs.widget(i), SessionTab)
+        ]
+
+    def _show_terminal(self, terminal):
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, SessionTab) and widget.terminal is terminal:
+                self.tabs.setCurrentWidget(widget.split or widget)  # w siatce — siatka
+
     def _open_split(self):
-        """Siatka 2–4 terminali (split.py); ich zakładki chowają się na ten czas."""
+        """Siatka 2–4 terminali/RDP (split.py); ich zakładki chowają się na ten czas."""
         sessions = [
             self.tabs.widget(i) for i in range(self.tabs.count())
-            if isinstance(self.tabs.widget(i), SessionTab) and self.tabs.widget(i).split is None
+            if split.can_split(self.tabs.widget(i))
         ]
         if len(sessions) < 2:
             QMessageBox.information(self, t("split_title"), t("split_need_sessions"))
@@ -2506,13 +2615,32 @@ class MainWindow(QMainWindow):
         picker = split.SplitPicker(self, sessions, self._current_session())
         if picker.exec() != QDialog.Accepted:
             return
-        chosen = picker.chosen()
-        grid = split.SplitTab(chosen, self._on_split_released)
+        self._make_split(picker.chosen())
+
+    def _make_split(self, sessions):
+        grid = split.SplitTab(sessions, self._on_split_released)
         grid.focus_changed.connect(self._show_current_stats)
-        for session in chosen:
+        for session in sessions:
             self.tabs.setTabVisible(self.tabs.indexOf(session), False)
-        self._add_tab(grid, t("split_tab", len(chosen)))
-        chosen[0].terminal.setFocus()
+        self._add_tab(grid, t("split_tab", len(sessions)))
+        split.pane_widget(sessions[0]).setFocus()
+        return grid
+
+    def _on_tab_dropped(self, source_index, target_index):
+        """Zakładka upuszczona na siatkę — dochodzi do niej; na inną sesję — nowa siatka z obu."""
+        source, target = self.tabs.widget(source_index), self.tabs.widget(target_index)
+        if not split.can_split(source):
+            return
+        if isinstance(target, split.SplitTab):
+            if not target.add_session(source):
+                self.statusBar().showMessage(t("split_full", split.MAX_PANES), 5000)
+                return
+            self.tabs.setTabVisible(self.tabs.indexOf(source), False)
+            target.tab_name = t("split_tab", len(target.sessions))
+            self._update_tab_text(target)
+            self.tabs.setCurrentWidget(target)
+        elif split.can_split(target) and target is not source:
+            self._make_split([target, source])
 
     def _on_split_released(self, grid, sessions):
         for session in sessions:
@@ -2832,6 +2960,7 @@ def selftest():
 
     global CONFIG_FILE
     app = QApplication.instance() or QApplication([])
+    suggest.record = lambda line: None  # testy nie piszą do prawdziwej historii poleceń
 
     # Nie dotykaj prawdziwego pliku użytkownika.
     with tempfile.TemporaryDirectory() as tmp:
@@ -3419,8 +3548,8 @@ def selftest():
     # port); po starcie otwierane z drzewa, usunięte pomijane, wyłączone = nic.
     window._add_tab(QWidget(), data["name"], data)
     window._add_tab(QWidget(), "szybkie")  # szybkie połączenie — bez wpisu w drzewie
-    keys = window.open_session_keys()
-    assert keys == [["srv-01", "10.0.0.1", 22]], keys
+    keys = window.current_layout()["tabs"]
+    assert window.current_layout() == {"tabs": [["srv-01", "10.0.0.1", 22]], "grids": []}, keys
     stored_sessions = {k: i18n.settings().value(k) for k in ("open_sessions", "restore_sessions")}
     opened = []
     real_open = window._open_connection_tab
@@ -3599,60 +3728,75 @@ def selftest():
 
     # Podział ekranu: zakładki sesji chowają się, Ctrl+Tab je omija, a
     # zamknięcie siatki to „Rozdziel” — sesje wracają, nic się nie rozłącza.
-    fakes = []
-    for name in ("s1", "s2"):
+    fakes, origins = [], []
+    for name in ("s1", "s2", "s3"):
         fake = QWidget()
         fake.split, fake.terminal = None, ssh_terminal.OfflineTerminal()
         fake.splitter = QSplitter(fake)
         fake.splitter.addWidget(QWidget())
         fake.splitter.addWidget(fake.terminal)
-        window._add_tab(fake, name)
+        origins.append({"name": name, "host": "10.0.0.9", "port": 22})
+        window._add_tab(fake, name, origins[-1])
         fakes.append(fake)
-    grid = split.SplitTab(fakes, window._on_split_released)
-    for fake in fakes:
-        window.tabs.setTabVisible(window.tabs.indexOf(fake), False)
-    window._add_tab(grid, "grid")
+    # Upuszczenie s2 na s1 = nowa siatka; s3 na siatkę = trzeci panel.
+    window._on_tab_dropped(window.tabs.indexOf(fakes[1]), window.tabs.indexOf(fakes[0]))
+    grid = fakes[0].split
+    assert grid is not None and grid.sessions == fakes[:2], "upuszczenie nie zrobiło siatki"
+    window._on_tab_dropped(window.tabs.indexOf(fakes[2]), window.tabs.indexOf(grid))
+    assert grid.sessions == fakes and window.tabs.tabText(window.tabs.indexOf(grid)) == t("split_tab", 3)
+    window._on_tab_dropped(window.tabs.indexOf(fakes[0]), window.tabs.indexOf(grid))
+    assert grid.sessions == fakes, "sesja z siatki nie może wejść drugi raz"
     assert window._current_session() is fakes[0], "w siatce narzędzia biorą sesję z siatki"
     order = window.tab_order()
     assert all(window.tabs.indexOf(f) not in order for f in fakes), "schowane w Ctrl+Tab"
+    # Zapamiętany układ i obszar roboczy: siatka wraca jako siatka.
+    layout = window.current_layout()
+    assert layout["grids"] == [[session_key(o) for o in origins]], layout
     window._close_tab(window.tabs.indexOf(grid))
     assert window.tabs.indexOf(grid) == -1 and fakes[0].split is None
     assert all(window.tabs.isTabVisible(window.tabs.indexOf(f)) for f in fakes)
+    stored_workspaces = i18n.settings().value("workspaces")
+    real_open, real_connections = window._open_connection_tab, tree_connections
+    window._open_connection_tab = lambda conn: None  # zakładki już są, nie łączymy
+    globals()["tree_connections"] = lambda tree: origins
+    try:
+        window._store_workspaces({"rano": layout})
+        assert [a.text() for a in window.workspace_menu.actions()][0] == "rano"
+        window.open_workspace("rano")
+        grid = fakes[0].split
+        assert grid is not None and grid.sessions == fakes, "obszar nie złożył siatki"
+        window._delete_workspace("rano")
+        assert window.workspaces() == {}
+    finally:
+        window._open_connection_tab = real_open
+        globals()["tree_connections"] = real_connections
+        if stored_workspaces is None:
+            i18n.settings().remove("workspaces")
+        else:
+            i18n.settings().setValue("workspaces", stored_workspaces)
+        window._fill_workspace_menu()
+    window._close_tab(window.tabs.indexOf(grid))
     for fake in fakes:
         window._close_tab(window.tabs.indexOf(fake))
 
-    # Testy okna nie kręcą pętli zdarzeń, więc zostawiają w kolejce zaległe
-    # zdarzenia (m.in. `deleteLater`). Bez opróżnienia wybuchały losowo (ok. 1 na
-    # 5 przebiegów, segfault) dopiero w pierwszej pętli lokalnej: `run_transfer`
-    # w `transfers.selftest()`.
-    for _ in range(3):
-        app.processEvents()
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    # Testy nie kręcą pętli zdarzeń, więc zostawiają w kolejce zaległe zdarzenia
+    # (m.in. `deleteLater`). Bez opróżnienia wybuchały losowo (segfault) dopiero
+    # w pierwszej pętli lokalnej (`run_transfer`) albo w `processEvents` dużo
+    # później — opróżnianie tylko raz, przed modułami, nie wystarczało (2026-10-07).
+    # Dlatego po KAŻDYM module.
+    def drain():
+        for _ in range(3):
+            app.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
-    i18n.selftest()
-
-    importers.selftest()
-    ssh_terminal.selftest()
-    i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
-    rdp.selftest()
-    servers.selftest()
-    update.selftest()
-    scanner.selftest()
-    notify.selftest()
-    tunnels_module.selftest()
-    logtail.selftest()
-    services.selftest()
-    containers.selftest()
-    processes.selftest()
-    multirun.selftest()
-    patches.selftest()
-    logsearch.selftest()
-    transfers.selftest()
-    sftp.selftest()
-    graphs.selftest()
-    credentials.selftest()
-    split.selftest()
-    monitor.selftest()
+    drain()
+    for module in (i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
+                   tunnels_module, logtail, services, containers, processes, multirun,
+                   patches, logsearch, transfers, sftp, graphs, credentials, split,
+                   suggest, termsearch, monitor):
+        module.selftest()
+        i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
+        drain()
     del app
     print("main selftest OK")
 

@@ -34,7 +34,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 1 | ✅ **Dziedziczenie ustawień z grupy** — login, klucz, port, bastion ustawione raz na folderze | mRemoteNG, Royal TS | M | ⭐⭐⭐ |
 | 2 | ✅ **Import z innych programów** — MobaXterm, PuTTY (rejestr), mRemoteNG, RDCMan, CSV | Royal TS, mRemoteNG | M | ⭐⭐⭐ |
 | 3 | ✅ **Przywracanie sesji po starcie** — otwarte zakładki (i siatka) wracają po ponownym uruchomieniu | Tabby, Windows Terminal | S | ⭐⭐⭐ |
-| 4 | **Obszary robocze** — zapisany zestaw zakładek/siatek („poranny przegląd”) otwierany jednym kliknięciem | Royal TS | M | ⭐⭐ |
+| 4 | ~~**Obszary robocze** — zapisany zestaw zakładek/siatek („poranny przegląd”) otwierany jednym kliknięciem~~ — zrobione 2026-10-06 (menu „Obszary robocze”) | Royal TS | M | ⭐⭐ |
 | 5 | **VNC** jako typ połączenia | MobaXterm, mRemoteNG | M | ⭐⭐ |
 | 6 | **Telnet i port szeregowy (COM)** — przełączniki, routery, konsole UPS | SecureCRT, Tabby | M | ⭐⭐ |
 | 7 | **PowerShell Remoting / WinRM** dla Windows bez OpenSSH | Devolutions RDM | M | ⭐ |
@@ -47,7 +47,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | # | Propozycja | Na wzór | Wielkość | Priorytet |
 |---|---|---|---|---|
 | 11 | ✅ **Biblioteka poleceń (snippets) ze zmiennymi** — `systemctl restart {usługa}`, per grupa, w palecie | Termius | M | ⭐⭐⭐ |
-| 12 | **Podpowiadanie poleceń** z historii wszystkich sesji | WindTerm, Termius | M | ⭐⭐ |
+| 12 | ~~**Podpowiadanie poleceń** z historii wszystkich sesji~~ — zrobione 2026-10-06 (bez linii po Tab/strzałkach i bez haseł) | WindTerm, Termius | M | ⭐⭐ |
 | 13 | ✅ **Pasek „compose”** — wieloliniowe polecenie edytowane przed wysłaniem, opcjonalnie do wielu sesji | Xshell, SecureCRT | S | ⭐⭐ |
 | 14 | ✅ **Klikalne adresy URL i IP** w terminalu (Ctrl+klik) | Tabby, Windows Terminal | S | ⭐⭐ |
 | 15 | ✅ **Automatyczny zapis wszystkich sesji do plików** z rotacją | SecureCRT, MobaXterm | S | ⭐⭐ |
@@ -88,7 +88,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 |---|---|---|---|---|
 | 36 | ~~**Przesyłanie całych folderów + wznawianie przerwanego transferu**~~ — zrobione 2026-10-06 (wznawianie na żądanie z kolejki) | WinSCP | M | ⭐⭐ |
 | 37 | **Porównanie i synchronizacja katalogów** (lokalny ↔ zdalny) | WinSCP | L | ⭐ |
-| 38 | **Edytor uprawnień** (chmod/chown z okienkiem) | WinSCP | S | ⭐ |
+| 38 | ~~**Edytor uprawnień** (chmod/chown z okienkiem)~~ — zrobione 2026-10-06 (UID/GID liczbowo) | WinSCP | S | ⭐ |
 
 ### Wygoda i dystrybucja
 
@@ -96,8 +96,8 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 |---|---|---|---|---|
 | 39 | **Instalator `.exe` i aktualizacje bez gita**, wersja przenośna (pendrive) | wszystkie | M | ⭐⭐ |
 | 40 | **Szyfrowana synchronizacja połączeń** (plik na OneDrive/Dropbox/Git) | Termius, Royal TS | M | ⭐⭐ |
-| 41 | **Szukanie w historii wszystkich otwartych terminali** | — | S | ⭐ |
-| 42 | **Przeciąganie zakładki do siatki, RDP w siatce, zapamiętany układ** | Tabby, MobaXterm | M | ⭐ |
+| 41 | ~~**Szukanie w historii wszystkich otwartych terminali**~~ — zrobione 2026-10-06 | — | S | ⭐ |
+| 42 | ~~**Przeciąganie zakładki do siatki, RDP w siatce, zapamiętany układ**~~ — zrobione 2026-10-06 | Tabby, MobaXterm | M | ⭐ |
 
 ## Rekomendowana kolejność (najpierw tanie i odczuwalne)
 
