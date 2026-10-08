@@ -3779,40 +3779,24 @@ def selftest():
     for fake in fakes:
         window._close_tab(window.tabs.indexOf(fake))
 
-    # Testy okna nie kręcą pętli zdarzeń, więc zostawiają w kolejce zaległe
-    # zdarzenia (m.in. `deleteLater`). Bez opróżnienia wybuchały losowo (ok. 1 na
-    # 5 przebiegów, segfault) dopiero w pierwszej pętli lokalnej: `run_transfer`
-    # w `transfers.selftest()`.
-    for _ in range(3):
-        app.processEvents()
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    # Testy nie kręcą pętli zdarzeń, więc zostawiają w kolejce zaległe zdarzenia
+    # (m.in. `deleteLater`). Bez opróżnienia wybuchały losowo (segfault) dopiero
+    # w pierwszej pętli lokalnej (`run_transfer`) albo w `processEvents` dużo
+    # później — opróżnianie tylko raz, przed modułami, nie wystarczało (2026-10-07).
+    # Dlatego po KAŻDYM module.
+    def drain():
+        for _ in range(3):
+            app.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
-    i18n.selftest()
-
-    importers.selftest()
-    ssh_terminal.selftest()
-    i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
-    rdp.selftest()
-    servers.selftest()
-    update.selftest()
-    scanner.selftest()
-    notify.selftest()
-    tunnels_module.selftest()
-    logtail.selftest()
-    services.selftest()
-    containers.selftest()
-    processes.selftest()
-    multirun.selftest()
-    patches.selftest()
-    logsearch.selftest()
-    transfers.selftest()
-    sftp.selftest()
-    graphs.selftest()
-    credentials.selftest()
-    split.selftest()
-    suggest.selftest()
-    termsearch.selftest()
-    monitor.selftest()
+    drain()
+    for module in (i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
+                   tunnels_module, logtail, services, containers, processes, multirun,
+                   patches, logsearch, transfers, sftp, graphs, credentials, split,
+                   suggest, termsearch, monitor):
+        module.selftest()
+        i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
+        drain()
     del app
     print("main selftest OK")
 
