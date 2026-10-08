@@ -77,6 +77,7 @@ import multirun
 import notify
 import patches
 import processes
+import rawterm
 import scanner
 import services
 import sftp
@@ -87,6 +88,8 @@ import termsearch
 import transfers
 import tunnels
 import update
+import vnc
+import winrmtab
 from credentials import CAN_STORE_PASSWORDS, decrypt_password, encrypt_password
 from i18n import t
 from rdp import RDP_PORT, open_rdp
@@ -379,6 +382,16 @@ class _TreeStatusCheck(QThread):
 
 
 SSH_PORT = 22
+# Protokoły w formularzu (wartość, napis — klucz i18n albo nazwa własna) i ich porty.
+# Port COM nie ma portu sieciowego: „host” to nazwa portu, prędkość osobno (`baud`).
+PROTOCOLS = (("ssh", "SSH"), ("rdp", "RDP"), ("vnc", "VNC"), ("telnet", "Telnet"),
+             ("serial", "proto_serial"), ("winrm", "WinRM (PowerShell)"))
+DEFAULT_PORTS = {"ssh": SSH_PORT, "rdp": RDP_PORT, "vnc": vnc.VNC_PORT,
+                 "telnet": rawterm.TELNET_PORT, "winrm": winrmtab.WINRM_PORT}
+
+
+def default_port(protocol):
+    return DEFAULT_PORTS.get(protocol or "ssh", SSH_PORT)
 
 
 def parse_tags(text):
@@ -446,7 +459,7 @@ class GroupDialog(QDialog):
 
 
 class ConnectionDialog(QDialog):
-    """Formularz danych połączenia — SSH albo RDP."""
+    """Formularz danych połączenia — SSH, RDP, VNC, Telnet, port COM, WinRM."""
 
     # Klucze, które formularz odczytuje/zapisuje. Reszta (np. "bookmarks"
     # zakładek SFTP, "tunnels" tuneli SSH) ma zostać nietknięta przy edycji.
@@ -454,7 +467,7 @@ class ConnectionDialog(QDialog):
         "name", "host", "port", "username", "protocol", "key_file",
         "jump_host", "startup", "notes", "redirect_drives", "tags",
         "password", "passphrase", "credential", "monitor", "tls_port", "forward_agent",
-        "environment",
+        "environment", "baud", "rdp_gateway", "rdp_multimon",
     }
 
     def __init__(self, parent=None, data=None, inherited=None):
@@ -466,8 +479,8 @@ class ConnectionDialog(QDialog):
         self._inherited = inherited = inherited or {}
 
         self.protocol = QComboBox()
-        self.protocol.addItem("SSH", "ssh")
-        self.protocol.addItem("RDP", "rdp")
+        for value, label in PROTOCOLS:
+            self.protocol.addItem(t(label) if label == "proto_serial" else label, value)
         self.protocol.setCurrentIndex(
             max(0, self.protocol.findData(data.get("protocol", "ssh")))
         )
@@ -516,6 +529,17 @@ class ConnectionDialog(QDialog):
         # lokalne pliki zdalnemu serwerowi. Schowek idzie zawsze (jak w mstsc).
         self.redirect_drives = QCheckBox(t("chk_redirect_drives"))
         self.redirect_drives.setChecked(bool(data.get("redirect_drives")))
+        # Brama RD Gateway (RDP przez internet bez VPN) i wiele monitorów — tylko RDP.
+        self.rdp_gateway = QLineEdit(data.get("rdp_gateway", ""))
+        self.rdp_gateway.setPlaceholderText(t("ph_rdp_gateway"))
+        self.rdp_multimon = QCheckBox(t("chk_rdp_multimon"))
+        self.rdp_multimon.setChecked(bool(data.get("rdp_multimon")))
+        self.rdp_multimon.setToolTip(t("tip_rdp_multimon"))
+        # Port COM: prędkość; „host” to nazwa portu (COM3).
+        self.baud = QComboBox()
+        self.baud.setEditable(True)
+        self.baud.addItems([str(rate) for rate in rawterm.BAUD_RATES])
+        self.baud.setCurrentText(str(data.get("baud", 9600)))
 
         self.monitor = QCheckBox(t("chk_monitor"))
         self.monitor.setChecked(bool(data.get("monitor")))
@@ -595,6 +619,9 @@ class ConnectionDialog(QDialog):
         form.addRow(t("fld_notes"), self.notes)
         self._redirect_drives_row = form.rowCount()
         form.addRow("", self.redirect_drives)
+        form.addRow(t("fld_rdp_gateway"), self.rdp_gateway)
+        form.addRow("", self.rdp_multimon)
+        form.addRow(t("fld_baud"), self.baud)
         form.addRow("", self.save_password)
         form.addRow("", self.monitor)
         form.addRow(t("fld_tls_port"), self.tls_port)
@@ -650,23 +677,36 @@ class ConnectionDialog(QDialog):
     # --- protokół -----------------------------------------------------------
 
     def _default_port(self):
-        return RDP_PORT if self.protocol.currentData() == "rdp" else SSH_PORT
+        return default_port(self.protocol.currentData())
 
     def _protocol_changed(self):
-        """Tytuł, domyślny port i widoczność pola klucza idą za protokołem."""
-        is_rdp = self.protocol.currentData() == "rdp"
-        self.setWindowTitle(t("dlg_rdp_connection") if is_rdp else t("dlg_ssh_connection"))
-        # Port zmieniamy tylko wtedy, gdy stoi na domyślnym dla drugiego
-        # protokołu — ręcznie wpisanego numeru nie wolno nadpisać.
-        other_default = SSH_PORT if is_rdp else RDP_PORT
-        if self.port.value() == other_default:
+        """Tytuł, domyślny port i widoczność pól idą za protokołem."""
+        protocol = self.protocol.currentData()
+        is_ssh, is_rdp, is_serial = protocol == "ssh", protocol == "rdp", protocol == "serial"
+        self.setWindowTitle(t("dlg_rdp_connection") if is_rdp else t("dlg_ssh_connection") if is_ssh
+                            else t("dlg_connection", self.protocol.currentText()))
+        # Port zmieniamy tylko wtedy, gdy stoi na domyślnym któregoś protokołu —
+        # ręcznie wpisanego numeru nie wolno nadpisać.
+        if self.port.value() in DEFAULT_PORTS.values():
             self.port.setValue(self._default_port())
-        self._form.setRowVisible(self._key_row, not is_rdp)
-        self._form.setRowVisible(self._passphrase_row, not is_rdp)
-        self._form.setRowVisible(self._jump_host_row, not is_rdp)
-        self._form.setRowVisible(self._forward_agent_row, not is_rdp)
-        self._form.setRowVisible(self._startup_row, not is_rdp)
-        self._form.setRowVisible(self._redirect_drives_row, is_rdp)
+        form = self._form
+        for row in (self._key_row, self._passphrase_row, self._jump_host_row,
+                    self._forward_agent_row, self._startup_row):
+            form.setRowVisible(row, is_ssh)
+        form.setRowVisible(self._redirect_drives_row, is_rdp)
+        form.setRowVisible(self.rdp_gateway, is_rdp)
+        form.setRowVisible(self.rdp_multimon, is_rdp)
+        form.setRowVisible(self.baud, is_serial)
+        form.setRowVisible(self.port, not is_serial)
+        form.setRowVisible(self.monitor, not is_serial)
+        form.setRowVisible(self.tls_port, not is_serial)
+        # Telnet i konsola COM logują się w samym terminalu — konto/hasło nic tu nie dają.
+        own_login = protocol not in ("telnet", "serial")
+        for widget in (self.username, self.password, self.credential.parentWidget()):
+            form.setRowVisible(widget, own_login)
+        form.labelForField(self.host).setText(t("fld_serial_port") if is_serial else t("fld_host"))
+        ports = rawterm.serial_ports() if is_serial else []
+        self.host.setPlaceholderText(t("ph_serial_ports", ", ".join(ports)) if ports else "")
 
     def _pick_key_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -682,8 +722,16 @@ class ConnectionDialog(QDialog):
             QMessageBox.warning(self, t("err_missing_data_title"), t("err_missing_host"))
             return
         port = self.port.value()
-        if self.protocol.currentData() == "rdp":
-            # RDP łączy kontrolka ActiveX — sprawdzamy tylko, czy port odpowiada.
+        if self.protocol.currentData() == "serial":
+            try:
+                rawterm.open_serial(host, self.baud.currentText() or 9600).close()
+            except Exception as error:  # zajęty port, zła nazwa, brak pyserial
+                QMessageBox.warning(self, t("btn_test_connection"), t("err_connect_body", error))
+            else:
+                QMessageBox.information(self, t("btn_test_connection"), t("test_ok"))
+            return
+        if self.protocol.currentData() != "ssh":
+            # Poza SSH łączy kontrolka/osobny klient — sprawdzamy tylko, czy port odpowiada.
             ok = _TreeStatusCheck._check(host, port)
             (QMessageBox.information if ok else QMessageBox.warning)(
                 self, t("btn_test_connection"),
@@ -745,6 +793,12 @@ class ConnectionDialog(QDialog):
             data["notes"] = self.notes.toPlainText().strip()
         if protocol == "rdp" and self.redirect_drives.isChecked():
             data["redirect_drives"] = True
+        if protocol == "rdp" and self.rdp_gateway.text().strip():
+            data["rdp_gateway"] = self.rdp_gateway.text().strip()
+        if protocol == "rdp" and self.rdp_multimon.isChecked():
+            data["rdp_multimon"] = True
+        if protocol == "serial":
+            data["baud"] = int(self.baud.currentText()) if self.baud.currentText().isdigit() else 9600
         if self.monitor.isChecked():
             data["monitor"] = True
         if self.tls_port.value():
@@ -1214,8 +1268,8 @@ class ConnectionTree(QTreeWidget):
             if item.type() == CONNECTION_TYPE:
                 data = item.data(0, CONNECTION_DATA) or {}
                 host = data.get("host")
-                if host:
-                    port = data.get("port") or (RDP_PORT if data.get("protocol") == "rdp" else 22)
+                if host and data.get("protocol") != "serial":  # port COM nie ma czego pingować
+                    port = data.get("port") or default_port(data.get("protocol"))
                     targets[id(item)] = (host, int(port))
             it += 1
         return targets
@@ -1781,7 +1835,7 @@ class MainWindow(QMainWindow):
                 "name": conn.get("name", conn["host"]),
                 "protocol": protocol,
                 "host": conn["host"],
-                "port": int(conn.get("port") or (RDP_PORT if protocol == "rdp" else SSH_PORT)),
+                "port": int(conn.get("port") or default_port(protocol)),
                 "jump_host": conn.get("jump_host"),
                 "username": auth["username"],
                 "key_file": auth["key_file"],
@@ -2438,6 +2492,9 @@ class MainWindow(QMainWindow):
         if conn.get("protocol", "ssh") == "rdp":
             self._open_rdp_tab({**conn, "username": auth["username"]}, password, origin=conn)
             return
+        if conn.get("protocol", "ssh") != "ssh":
+            self._open_other_tab({**conn, "username": auth["username"]}, password, origin=conn)
+            return
 
         # Zapisane hasło odszyfrowujemy, w przeciwnym razie pytamy.
         # Puste = logowanie kluczem z agenta lub ~/.ssh.
@@ -2594,13 +2651,14 @@ class MainWindow(QMainWindow):
     def _open_terminals(self):
         return [
             (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal)
-            for i in range(self.tabs.count()) if isinstance(self.tabs.widget(i), SessionTab)
+            for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), (SessionTab, rawterm.RawTab))
         ]
 
     def _show_terminal(self, terminal):
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
-            if isinstance(widget, SessionTab) and widget.terminal is terminal:
+            if getattr(widget, "terminal", None) is terminal:
                 self.tabs.setCurrentWidget(widget.split or widget)  # w siatce — siatka
 
     def _open_split(self):
@@ -2696,6 +2754,9 @@ class MainWindow(QMainWindow):
         if conn["protocol"] == "rdp":
             self._open_rdp_tab(conn, password)
             return
+        if conn["protocol"] != "ssh":
+            self._open_other_tab(conn, password)
+            return
         self._connect_and_add_tab(conn, password, dialog.passphrase.text() or None)
 
     def _open_rdp_tab(self, conn, password, origin=None):
@@ -2705,6 +2766,46 @@ class MainWindow(QMainWindow):
             return
         tab.session_ended.connect(lambda text, w=tab: self._show_stats(w, text))
         self._add_tab(tab, conn["name"], origin)
+
+    def _open_other_tab(self, conn, password, origin=None):
+        """Telnet, port COM, VNC, WinRM. Błąd = komunikat i brak zakładki."""
+        protocol, host = conn["protocol"], conn["host"]
+        port = int(conn.get("port") or default_port(protocol))
+        if password is None and protocol in ("vnc", "winrm"):
+            password, ok = QInputDialog.getText(
+                self, t("dlg_auth_title"), t("dlg_auth_body", conn.get("username", ""), host),
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
+        try:
+            if protocol in ("telnet", "serial"):
+                channel = in_background(self, (
+                    lambda: rawterm.open_telnet(host, port)) if protocol == "telnet" else (
+                    lambda: rawterm.open_serial(host, conn.get("baud") or 9600)))
+                tab = rawterm.RawTab(rawterm.RawTerminal(channel))
+            elif protocol == "vnc":
+                sock = in_background(self, lambda: socket.create_connection((host, port), timeout=10))
+                sock.settimeout(None)
+                tab = vnc.VncTab(conn, sock, password or "")
+            else:
+                tab = winrmtab.WinrmTab(conn, winrmtab.open_session(conn, password))
+        except ImportError as error:
+            QMessageBox.warning(self, t("err_connect_title"), t("lib_missing", error.name))
+            return
+        except Exception as error:  # zajęty port COM, odmowa połączenia, zła nazwa hosta
+            QMessageBox.warning(self, t("err_connect_title"), t("err_connect_body", error))
+            return
+        ended = getattr(tab, "session_ended", None)  # VNC/WinRM; terminal pokazuje koniec sam
+        if ended is not None:
+            ended.connect(lambda text, w=tab: self._show_stats(w, text))
+        terminal = getattr(tab, "terminal", None)
+        if terminal is not None:
+            terminal.start_log(conn["name"])
+            terminal.confirm_send = lambda c=conn, s=tab: self._confirm_prod(c, s)
+            terminal.activity.connect(lambda w=tab: self._mark_activity(w))
+        self._add_tab(tab, conn["name"], origin)
+        (terminal or tab).setFocus()
 
     def _connect_and_add_tab(self, conn, password, passphrase=None, auth=None):
         # `auth` osobno, nie wmieszane w `conn` — `conn` to żywy słownik z drzewa
@@ -3379,6 +3480,29 @@ def selftest():
     custom.protocol.setCurrentIndex(custom.protocol.findData("rdp"))
     assert custom.port.value() == 2222, "własny port musi przeżyć zmianę protokołu"
 
+    # Pozostałe protokoły: port za protokołem, pola tylko tam, gdzie mają sens.
+    form = dialog._form
+    for protocol, port in (("vnc", 5900), ("telnet", 23), ("winrm", 5985), ("ssh", SSH_PORT)):
+        dialog.protocol.setCurrentIndex(dialog.protocol.findData(protocol))
+        assert dialog.port.value() == port, (protocol, dialog.port.value())
+    dialog.protocol.setCurrentIndex(dialog.protocol.findData("telnet"))
+    assert not form.isRowVisible(dialog.password) and not form.isRowVisible(dialog.key_file.parentWidget())
+    dialog.protocol.setCurrentIndex(dialog.protocol.findData("serial"))
+    assert form.isRowVisible(dialog.baud) and not form.isRowVisible(dialog.port)
+    assert form.labelForField(dialog.host).text() == t("fld_serial_port")
+    dialog.host.setText("COM3")
+    dialog.baud.setCurrentText("115200")
+    assert {k: dialog.values()[k] for k in ("protocol", "host", "baud")} == {
+        "protocol": "serial", "host": "COM3", "baud": 115200}
+    dialog.protocol.setCurrentIndex(dialog.protocol.findData("rdp"))
+    assert form.isRowVisible(dialog.rdp_gateway) and not form.isRowVisible(dialog.baud)
+    assert form.labelForField(dialog.host).text() == t("fld_host")
+    dialog.rdp_gateway.setText("gw.firma.pl")
+    dialog.rdp_multimon.setChecked(True)
+    rdp_values = dialog.values()
+    assert rdp_values["rdp_gateway"] == "gw.firma.pl" and rdp_values["rdp_multimon"] and "baud" not in rdp_values
+    assert ConnectionDialog(data={"protocol": "vnc", "host": "h"}).windowTitle() == "VNC connection"
+
     # Klucz prywatny zapisuje się tylko dla SSH.
     # Konto współdzielone: formularz nie trzyma własnych haseł, pola są wyszarzone,
     # a łączenie bierze login z konta. Plik kont w temp — nie w profilu użytkownika.
@@ -3779,6 +3903,31 @@ def selftest():
     for fake in fakes:
         window._close_tab(window.tabs.indexOf(fake))
 
+    # Telnet z drzewa: zakładka z terminalem (bez SFTP) na prawdziwym gnieździe,
+    # wchodzi do siatki i wraca z niej; narzędzia SSH jej nie biorą.
+    listener = socket.create_server(("127.0.0.1", 0))
+    switch = {"name": "sw01", "protocol": "telnet", "host": "127.0.0.1",
+              "port": listener.getsockname()[1]}
+    window._open_other_tab(switch, None, origin=switch)
+    peer, _ = listener.accept()
+    raw = window.tabs.currentWidget()
+    assert isinstance(raw, rawterm.RawTab) and raw.origin is switch and raw.tab_name == "sw01"
+    assert window._open_terminals()[-1] == ("sw01", raw.terminal), "szukanie w terminalach pomija Telnet"
+    raw.terminal.send_text("enable\r")
+    assert peer.recv(64) == b"enable\r\n"
+    window._close_tab(window.tabs.indexOf(raw))
+    assert raw.terminal.reader.isFinished(), "zamknięcie zakładki Telnet zostawiło czytnik"
+    peer.close()
+    listener.close()
+    refused = []
+    real_warning = QMessageBox.warning
+    QMessageBox.warning = lambda *args: refused.append(args[2])
+    try:
+        window._open_other_tab({"name": "x", "protocol": "serial", "host": "COM_NIE_MA"}, None)
+    finally:
+        QMessageBox.warning = real_warning
+    assert refused and window.tabs.currentWidget() is not None, "zły port COM ma dać komunikat"
+
     # Testy nie kręcą pętli zdarzeń, więc zostawiają w kolejce zaległe zdarzenia
     # (m.in. `deleteLater`). Bez opróżnienia wybuchały losowo (segfault) dopiero
     # w pierwszej pętli lokalnej (`run_transfer`) albo w `processEvents` dużo
@@ -3793,7 +3942,7 @@ def selftest():
     for module in (i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
                    tunnels_module, logtail, services, containers, processes, multirun,
                    patches, logsearch, transfers, sftp, graphs, credentials, split,
-                   suggest, termsearch, monitor):
+                   suggest, termsearch, monitor, rawterm, vnc, winrmtab):
         module.selftest()
         i18n.use("en")  # ssh_terminal.selftest() bawi się językiem
         drain()

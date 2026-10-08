@@ -45,6 +45,13 @@ RDP_PROGIDS = [
 # w metaobiekcie Qt (`OnDisconnected` nie ma wśród sygnałów), a odpytanie jednej
 # właściwości raz na sekundę jest tańsze niż ręczne wiązanie punktu połączenia.
 POLL_MS = 1000
+RESIZE_DELAY_MS = 500  # po ostatniej zmianie rozmiaru zakładki — dopiero wtedy nowa rozdzielczość
+
+
+def desktop_size(size):
+    """Rozdzielczość dla serwera z rozmiaru zakładki: 640×480 – 8192, szerokość parzysta."""
+    width = min(max(640, size.width()), 8192) // 2 * 2  # nieparzystą RDP odrzuca
+    return width, min(max(480, size.height()), 8192)
 
 
 def make_control():
@@ -74,6 +81,16 @@ def rdp_file_text(conn):
     ]
     if conn.get("username"):
         lines.append(f"username:s:{conn['username']}")
+    if conn.get("rdp_gateway"):
+        lines += [
+            f"gatewayhostname:s:{conn['rdp_gateway']}",
+            "gatewayusagemethod:i:1",         # zawsze przez bramę
+            "gatewayprofileusagemethod:i:1",  # ustawienia z pliku, nie z profilu Windows
+            "gatewaycredentialssource:i:4",   # mstsc sam wybierze sposób logowania
+            "promptcredentialonce:i:1",       # jedno hasło do bramy i serwera
+        ]
+    if conn.get("rdp_multimon"):
+        lines.append("use multimon:i:1")
     return "\n".join(lines) + "\n"
 
 
@@ -128,6 +145,9 @@ class RdpTab(QWidget):
         self._configure(conn, password)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._check_state)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._update_resolution)
         if autoconnect:
             self.connect_now()
 
@@ -151,13 +171,46 @@ class RdpTab(QWidget):
             # Dyski lokalne: opt-in per połączenie — to widoczność plików
             # z tego komputera dla zdalnego serwera, nie każdy tego chce.
             advanced.setProperty("RedirectDrives", bool(conn.get("redirect_drives")))
+            # Zanim serwer zmieni rozdzielczość (albo gdy nie umie — starsze
+            # Windowsy), obraz skaluje się do zakładki zamiast obcinać.
+            advanced.setProperty("SmartSizing", True)
+
+        # Brama RD Gateway: RDP przez HTTPS bez VPN. Te same dane logowania co
+        # do serwera (`GatewayCredSharing`), jak „użyj moich poświadczeń” w mstsc.
+        gateway = conn.get("rdp_gateway")
+        transport = control.querySubObject("TransportSettings2") if gateway else None
+        if transport is not None:
+            transport.setProperty("GatewayHostname", gateway)
+            transport.setProperty("GatewayUsageMethod", 1)         # zawsze przez bramę
+            transport.setProperty("GatewayProfileUsageMethod", 1)  # nasze ustawienia, nie profil
+            transport.setProperty("GatewayCredsSource", 4)         # dowolny sposób logowania
+            transport.setProperty("GatewayCredSharing", 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Odczekanie: przeciąganie krawędzi okna to dziesiątki zdarzeń, serwer
+        # ma dostać jedno — końcowy rozmiar.
+        if hasattr(self, "_resize_timer"):
+            self._resize_timer.start(RESIZE_DELAY_MS)
+
+    def _update_resolution(self):
+        """Zmiana rozdzielczości w trakcie sesji (Windows 8.1 / 2012 R2 i nowsze).
+
+        Starszy serwer odrzuci wywołanie — wtedy zostaje `SmartSizing`.
+        """
+        if self.control.dynamicCall("Connected") != 1:
+            return
+        width, height = desktop_size(self.size())
+        self.control.dynamicCall(
+            "UpdateSessionDisplaySettings(uint,uint,uint,uint,uint,uint,uint)",
+            [width, height, width, height, 0, 100, 100],
+        )
 
     def connect_now(self):
-        size = self.size()
-        # Rozdzielczość ustala się PRZED połączeniem; zmiana w locie wymaga
-        # UpdateSessionDisplaySettings, co dokładamy dopiero gdy będzie potrzebne.
-        self.control.dynamicCall("SetDesktopWidth(int)", [max(640, size.width())])
-        self.control.dynamicCall("SetDesktopHeight(int)", [max(480, size.height())])
+        width, height = desktop_size(self.size())
+        # Rozdzielczość na start; dalej idzie za zakładką (`_update_resolution`).
+        self.control.dynamicCall("SetDesktopWidth(int)", [width])
+        self.control.dynamicCall("SetDesktopHeight(int)", [height])
         self.control.dynamicCall("Connect()")
         self._timer.start(POLL_MS)
 
@@ -193,8 +246,12 @@ def open_rdp(parent, conn, password=None):
     if sys.platform != "win32":
         QMessageBox.warning(parent, t("dlg_rdp_connection"), t("rdp_needs_windows"))
         return None
-    if make_control() is None:
-        QMessageBox.information(parent, t("dlg_rdp_connection"), t("rdp_no_control"))
+    # Wiele monitorów: zakładka nie rozciągnie się na kilka ekranów — to umie
+    # tylko pełnoekranowe okno mstsc.
+    multimon = bool(conn.get("rdp_multimon"))
+    if multimon or make_control() is None:
+        if not multimon:
+            QMessageBox.information(parent, t("dlg_rdp_connection"), t("rdp_no_control"))
         error = launch_mstsc(conn)
         if error:
             QMessageBox.warning(
@@ -220,6 +277,11 @@ def selftest():
     assert "password" not in text, "hasło nie ma prawa trafić do pliku .rdp"
     # Port domyślny, gdy wpis go nie ma.
     assert "full address:s:h:3389" in rdp_file_text({"host": "h"})
+    gateway_text = rdp_file_text(dict(conn, rdp_gateway="gw.firma.pl", rdp_multimon=True))
+    assert "gatewayhostname:s:gw.firma.pl" in gateway_text and "gatewayusagemethod:i:1" in gateway_text
+    assert "use multimon:i:1" in gateway_text and "gateway" not in text and "multimon" not in text
+    from PySide6.QtCore import QSize
+    assert desktop_size(QSize(1023, 300)) == (1022, 480) and desktop_size(QSize(9999, 9999)) == (8192, 8192)
 
     # Plik .rdp (host/login) nie moze zostac w %TEMP% na stale — sprzatanie
     # czeka na koniec "procesu" mstsc, tu podstawionego zamiast prawdziwego.
@@ -256,8 +318,17 @@ def selftest():
     drives_tab = RdpTab(drives_conn, "tajne", autoconnect=False)
     advanced = drives_tab.control.querySubObject("AdvancedSettings9")
     assert advanced.property("RedirectDrives") is True, "opt-in nie dotarl do kontrolki"
+    assert advanced.property("SmartSizing") is True, "obraz ma się skalować do zakładki"
     drives_tab.close_session()
     drives_tab.deleteLater()
+
+    gateway_tab = RdpTab(dict(conn, rdp_gateway="gw.firma.pl"), "tajne", autoconnect=False)
+    transport = gateway_tab.control.querySubObject("TransportSettings2")
+    assert transport.property("GatewayHostname") == "gw.firma.pl", "brama nie doszła do kontrolki"
+    assert transport.property("GatewayUsageMethod") == 1 and transport.property("GatewayCredSharing") == 1
+    gateway_tab._update_resolution()  # niepołączona — nic nie wysyła, nie wywraca się
+    gateway_tab.close_session()
+    gateway_tab.deleteLater()
 
     print("rdp selftest OK")
 

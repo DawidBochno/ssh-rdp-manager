@@ -35,12 +35,12 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 2 | ✅ **Import z innych programów** — MobaXterm, PuTTY (rejestr), mRemoteNG, RDCMan, CSV | Royal TS, mRemoteNG | M | ⭐⭐⭐ |
 | 3 | ✅ **Przywracanie sesji po starcie** — otwarte zakładki (i siatka) wracają po ponownym uruchomieniu | Tabby, Windows Terminal | S | ⭐⭐⭐ |
 | 4 | ~~**Obszary robocze** — zapisany zestaw zakładek/siatek („poranny przegląd”) otwierany jednym kliknięciem~~ — zrobione 2026-10-06 (menu „Obszary robocze”) | Royal TS | M | ⭐⭐ |
-| 5 | **VNC** jako typ połączenia | MobaXterm, mRemoteNG | M | ⭐⭐ |
-| 6 | **Telnet i port szeregowy (COM)** — przełączniki, routery, konsole UPS | SecureCRT, Tabby | M | ⭐⭐ |
-| 7 | **PowerShell Remoting / WinRM** dla Windows bez OpenSSH | Devolutions RDM | M | ⭐ |
+| 5 | ~~**VNC** jako typ połączenia~~ — zrobione 2026-10-08 (VNC; własny klient, Raw+CopyRect) | MobaXterm, mRemoteNG | M | ⭐⭐ |
+| 6 | ~~**Telnet i port szeregowy (COM)** — przełączniki, routery, konsole UPS~~ — zrobione 2026-10-08 | SecureCRT, Tabby | M | ⭐⭐ |
+| 7 | ~~**PowerShell Remoting / WinRM** dla Windows bez OpenSSH~~ — zrobione 2026-10-08 (konsola PowerShell, polecenie po poleceniu) | Devolutions RDM | M | ⭐ |
 | 8 | **Przekierowanie X11** (okienkowe programy z Linuksa) | MobaXterm | L | ⭐ |
 | 9 | **Import z chmury / AD** — lista maszyn z AWS, Azure, Proxmox albo Active Directory | Royal TS, RDM | L | ⭐ |
-| 10 | **RDP: wiele monitorów, brama RD Gateway, zmiana rozdzielczości w locie** | wszystkie | L | ⭐⭐ |
+| 10 | ~~**RDP: wiele monitorów, brama RD Gateway, zmiana rozdzielczości w locie**~~ — zrobione 2026-10-08 (brama RD Gateway, rozdzielczość w locie; wiele monitorów przez mstsc) | wszystkie | L | ⭐⭐ |
 
 ### Terminal
 

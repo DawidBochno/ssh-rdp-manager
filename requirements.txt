@@ -1,3 +1,5 @@
 PySide6
 paramiko
 pyte
+pyserial
+pywinrm
