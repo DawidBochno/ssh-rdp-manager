@@ -28,6 +28,7 @@ from pathlib import Path
 import paramiko
 from PySide6.QtCore import QThread, Signal
 
+import appdata
 from i18n import t
 from scanner import cert_info
 from ssh_terminal import (
@@ -41,7 +42,7 @@ from ssh_terminal import (
     parse_windows_stats,
 )
 
-DB_FILE = Path(__file__).with_name("monitor.db")
+DB_FILE = appdata.DATA_DIR / "monitor.db"
 INTERVAL_DEFAULT = 300  # sekund
 CHECK_TIMEOUT = 10  # sekund na połączenie — runda ma się skończyć, zanim zamkniemy okno
 KEEP_DAYS = 30  # tyle historii trzymamy w bazie

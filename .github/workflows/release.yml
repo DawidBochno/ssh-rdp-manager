@@ -1,0 +1,60 @@
+# Wydanie: po wypchnieciu tagu `v*` (np. `git tag v1.0.0 && git push origin v1.0.0`) buduje
+# instalator .exe i wersje przenosna .zip (build.py), sprawdza paczke selftestem
+# i wystawia wydanie na GitHubie - z niego bierze aktualizacje zainstalowany program.
+# Na PR zmieniajacym budowanie robi to samo bez wydania (paczki jako artefakt do pobrania).
+name: Wydanie
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - build.py
+      - installer.iss
+      - appdata.py
+      - update.py
+      - requirements.txt
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Zaleznosci
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Inno Setup
+        run: if (!(Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Budowanie
+        run: python build.py $env:VERSION
+      - name: Selftest paczki
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # Okienkowy .exe nie ma konsoli - liczy sie kod wyjscia; blad = okno bledu = zawieszenie.
+          $p = Start-Process dist\portable\SSH-RDP-Manager\SSH-RDP-Manager.exe -ArgumentList "--selftest" -PassThru
+          $null = $p.Handle  # bez tego ExitCode bywa pusty
+          if (!$p.WaitForExit(600000)) { Stop-Process $p -Force; throw "selftest paczki zawisl" }
+          if ($p.ExitCode -ne 0) { throw "selftest paczki: kod $($p.ExitCode)" }
+      - name: Wydanie na GitHubie
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:VERSION (Get-Item dist\*-setup.exe, dist\*-portable.zip) --generate-notes
+      - name: Paczki jako artefakt
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: paczki
+          path: |
+            dist/*-setup.exe
+            dist/*-portable.zip

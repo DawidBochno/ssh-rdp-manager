@@ -31,13 +31,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+import appdata
 from i18n import t
 
 # Hasła szyfrujemy DPAPI: klucz jest przypisany do konta Windows,
 # więc plik skopiowany na inny komputer jest bezużyteczny.
 CAN_STORE_PASSWORDS = sys.platform == "win32"
 
-CREDENTIALS_FILE = Path(__file__).with_name("credentials.json")
+CREDENTIALS_FILE = appdata.DATA_DIR / "credentials.json"
 AUTH_KEYS = ("username", "password", "key_file", "passphrase")
 
 

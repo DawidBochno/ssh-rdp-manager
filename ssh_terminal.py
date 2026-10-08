@@ -71,6 +71,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import appdata
 import i18n
 import notify
 import suggest
@@ -427,7 +428,7 @@ PROD_CONFIRM_IDLE = 600  # sekund ciszy, po których produkcja pyta znowu
 
 # Automatyczny zapis sesji: plik na sesję w `logs/` obok programu, starsze
 # niż SESSION_LOG_DAYS kasowane przy otwarciu nowego (to cała „rotacja”).
-SESSION_LOG_DIR = Path(__file__).with_name("logs")
+SESSION_LOG_DIR = appdata.DATA_DIR / "logs"
 SESSION_LOG_DAYS = 30
 
 
@@ -688,7 +689,7 @@ def apply_output(cursor, text):
 
 # Zaakceptowane klucze serwerów — własny plik obok connections.json.
 # `~/.ssh/known_hosts` czytamy tylko do odczytu (to plik OpenSSH, nie nasz).
-KNOWN_HOSTS_FILE = Path(__file__).with_name("known_hosts")
+KNOWN_HOSTS_FILE = appdata.DATA_DIR / "known_hosts"
 KEEPALIVE_SECONDS = 30
 _known_hosts_lock = threading.Lock()
 
@@ -2245,7 +2246,7 @@ SCRIPTS = [
 
 # Własne skrypty użytkownika: ten sam kształt słownika co wyżej, tylko "label"
 # jest gotowym napisem, nie kluczem tłumaczenia (własnego skryptu nie tłumaczymy).
-USER_SCRIPTS_FILE = Path(__file__).with_name("scripts.json")
+USER_SCRIPTS_FILE = appdata.DATA_DIR / "scripts.json"
 
 
 def load_user_scripts(path=USER_SCRIPTS_FILE):

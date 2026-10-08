@@ -7,6 +7,7 @@ import copy
 import xml.etree.ElementTree as ET
 import hashlib
 import json
+import os
 import re
 import socket
 import sqlite3
@@ -16,12 +17,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import paramiko
-from PySide6.QtCore import QCoreApplication, QEvent, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
     QCloseEvent,
     QColor,
+    QDesktopServices,
     QIcon,
     QKeySequence,
     QPainter,
@@ -63,6 +65,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import appdata
 import containers
 import credentials
 import disks
@@ -256,7 +259,7 @@ GROUP_ICON = "📁"
 
 # Zapisujemy obok skryptu; .gitignore trzyma ten plik poza repozytorium.
 # Hasła NIE trafiają tutaj — celowo, plik jest zwykłym tekstem.
-CONFIG_FILE = Path(__file__).with_name("connections.json")
+CONFIG_FILE = appdata.DATA_DIR / "connections.json"
 
 # Ikona (emoji) jako sposób odróżnienia elementów; trzymana osobno od nazwy.
 ICON_DATA = Qt.UserRole + 2
@@ -1773,6 +1776,21 @@ class MainWindow(QMainWindow):
     def _offer_update(self, revision):
         answer = QMessageBox.question(self, t("update_title"), t("update_body", revision))
         if answer != QMessageBox.Yes:
+            return
+        if update.VERSION:  # paczka .exe, nie kopia z gita
+            installer = self._update_check.installer
+            if appdata.PORTABLE or not installer:
+                QDesktopServices.openUrl(QUrl(update.RELEASES_URL))
+                QMessageBox.information(self, t("update_title"), t("update_portable"))
+                return
+            try:
+                path = in_background(self, lambda: update.download(installer))
+            except Exception as error:  # brak sieci w trakcie, pełny dysk
+                QMessageBox.warning(self, t("update_title"), t("update_failed", error))
+                return
+            # Instalator sam zamyka i ponownie uruchamia program; /SILENT = sam pasek postępu.
+            os.startfile(path, arguments="/SILENT")
+            QApplication.quit()
             return
         error = in_background(self, update.pull)  # git pull: do 60 s, nie na wątku GUI
         if error:
@@ -3939,7 +3957,7 @@ def selftest():
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     drain()
-    for module in (i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
+    for module in (appdata, i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
                    tunnels_module, logtail, services, containers, processes, multirun,
                    patches, logsearch, transfers, sftp, graphs, credentials, split,
                    suggest, termsearch, monitor, rawterm, vnc, winrmtab):
@@ -3967,6 +3985,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Paczka .exe bez konsoli ma `sys.stdout`/`stderr` = None — `print`, log serwera HTTP
+    # (`servers.py`) czy traceback w wątku wywalałyby się na `.write`.
+    if sys.stdout is None:
+        sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
     if "--selftest" in sys.argv:
         selftest()
     else:
