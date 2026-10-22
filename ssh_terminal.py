@@ -617,6 +617,9 @@ def install_find(editor):
         context = editor.createStandardContextMenu()
         context.addSeparator()
         context.addAction(t("find_menu"), bar.show_bar)
+        ask_ai = getattr(editor, "ask_ai", None)  # terminal sesji — ustawia okno główne
+        if ask_ai is not None:
+            context.addAction(t("ai_menu"), ask_ai)
         context.exec(editor.viewport().mapToGlobal(pos))
 
     editor.customContextMenuRequested.connect(menu)

@@ -80,7 +80,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 32 | **Podgląd zapory** (ufw/firewalld/Windows Firewall) | Webmin | M | ⭐ |
 | 33 | ✅ **Wyszukiwanie w logach na wielu serwerach naraz** (grep po grupie, wynik per serwer) | — | M | ⭐⭐ |
 | 34 | **Scenariusze na grupie serwerów** — kroki po kolei, stop przy błędzie, harmonogram | Ansible (lekko) | L | ⭐⭐ |
-| 35 | **Asystent AI w terminalu** — wyjaśnij błąd/log, zaproponuj polecenie (wysyłka po kliknięciu) | Warp, Termius | M | ⭐⭐ |
+| 35 | ~~**Asystent AI w terminalu** — wyjaśnij błąd/log, zaproponuj polecenie (wysyłka po kliknięciu)~~ — zrobione 2026-10-08 (Claude API, polecenie wstawiane bez Entera) | Warp, Termius | M | ⭐⭐ |
 
 ### Pliki (SFTP)
 

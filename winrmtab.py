@@ -14,7 +14,7 @@ Moduł nie nazywa się `winrm.py` — przykryłby bibliotekę z pip (jak `contai
 
 import threading
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QVBoxLayout, QWidget
 
 from i18n import t

@@ -66,6 +66,7 @@ from PySide6.QtWidgets import (
 )
 
 import appdata
+import assistant
 import containers
 import credentials
 import disks
@@ -164,6 +165,7 @@ TOOLS = (
     ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
     ("menu_known_hosts", "_manage_known_hosts"),
+    ("menu_ai", "_open_ai"),
 )
 
 
@@ -2221,6 +2223,8 @@ class MainWindow(QMainWindow):
             "monitor_interval": int(stored.value("monitor_interval", monitor.INTERVAL_DEFAULT)),
             "telegram_token": telegram_config()[0],
             "telegram_chat": telegram_config()[1],
+            "ai_key": assistant.api_key(),
+            "ai_model": assistant.model(),
             "lock": stored.value("lock_enabled", False, type=bool),
             "lock_timeout": int(stored.value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
             "pin_set": bool(stored.value("lock_pin_hash")),
@@ -2279,6 +2283,10 @@ class MainWindow(QMainWindow):
         stored.setValue("monitor_interval", new["monitor_interval"])
         if changed & {"telegram_token", "telegram_chat"}:
             set_telegram_config(new["telegram_token"], new["telegram_chat"])
+        if "ai_key" in changed:
+            assistant.set_api_key(new["ai_key"])
+        if "ai_model" in changed:
+            assistant.set_model(new["ai_model"])
         if "monitor_interval" in changed and self._monitor_timer:
             self._monitor_timer.start(new["monitor_interval"] * 1000)
 
@@ -2596,6 +2604,20 @@ class MainWindow(QMainWindow):
             return
         services.ServiceDialog(self, session.terminal.client).exec()
 
+    def _open_ai(self, terminal=None):
+        """Asystent AI dla terminala (z menu pod prawym klikiem) albo bieżącej sesji."""
+        terminal = terminal or getattr(self._current_session(), "terminal", None)
+        if terminal is None:
+            QMessageBox.information(self, t("ai_title"), t("ai_need_terminal"))
+            return None
+        key = assistant.api_key()
+        if not key:
+            QMessageBox.information(self, t("ai_title"), t("ai_no_key"))
+            return None
+        dialog = assistant.AssistantDialog(self, terminal, key, assistant.model())
+        dialog.show()  # bez exec — w tym czasie można pisać w terminalu
+        return dialog
+
     def _open_disks(self):
         session = self._current_session()
         if not isinstance(session, SessionTab):
@@ -2821,6 +2843,7 @@ class MainWindow(QMainWindow):
         if terminal is not None:
             terminal.start_log(conn["name"])
             terminal.confirm_send = lambda c=conn, s=tab: self._confirm_prod(c, s)
+            terminal.ask_ai = lambda term=terminal: self._open_ai(term)
             terminal.activity.connect(lambda w=tab: self._mark_activity(w))
         self._add_tab(tab, conn["name"], origin)
         (terminal or tab).setFocus()
@@ -2852,6 +2875,7 @@ class MainWindow(QMainWindow):
         session.startup = conn.get("startup")
         session.terminal.start_log(conn["name"])
         session.terminal.confirm_send = lambda c=conn, s=session: self._confirm_prod(c, s)
+        session.terminal.ask_ai = lambda term=session.terminal: self._open_ai(term)
         session.compose_to_all.connect(self._send_to_all_sessions)
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
@@ -3933,6 +3957,21 @@ def selftest():
     assert window._open_terminals()[-1] == ("sw01", raw.terminal), "szukanie w terminalach pomija Telnet"
     raw.terminal.send_text("enable\r")
     assert peer.recv(64) == b"enable\r\n"
+    # Asystent AI: bez klucza komunikat, z kluczem okno dla tego terminala (bez sieci).
+    infos = []
+    real_info, real_key = QMessageBox.information, assistant.api_key
+    QMessageBox.information = lambda *args: infos.append(args[2])
+    try:
+        assistant.api_key = lambda: ""
+        assert raw.terminal.ask_ai() is None and infos == [t("ai_no_key")], infos
+        assistant.api_key = lambda: "klucz"
+        ai = raw.terminal.ask_ai()
+        assert ai is not None and ai.terminal is raw.terminal and ai.key == "klucz"
+        ai.close()
+        window.tabs.setCurrentIndex(0)  # Home
+        assert window._open_ai() is None and infos[-1] == t("ai_need_terminal"), infos
+    finally:
+        QMessageBox.information, assistant.api_key = real_info, real_key
     window._close_tab(window.tabs.indexOf(raw))
     assert raw.terminal.reader.isFinished(), "zamknięcie zakładki Telnet zostawiło czytnik"
     peer.close()
@@ -3953,11 +3992,11 @@ def selftest():
     # Dlatego po KAŻDYM module.
     def drain():
         for _ in range(3):
-            app.processEvents()
+            QApplication.processEvents()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     drain()
-    for module in (appdata, i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
+    for module in (appdata, assistant, i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
                    tunnels_module, logtail, services, containers, processes, multirun,
                    patches, logsearch, transfers, sftp, graphs, credentials, split,
                    suggest, termsearch, monitor, rawterm, vnc, winrmtab):

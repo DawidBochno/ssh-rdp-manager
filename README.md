@@ -38,6 +38,12 @@ py main.py --selftest
 
 ## Co potrafi
 
+**Asystent AI** (prawy klik w terminalu → **Zapytaj AI o to…** albo **Programy → Asystent AI**):
+wyjaśnia błąd lub log z terminala i proponuje polecenia. Wysyła do Claude zaznaczony
+fragment albo ostatnie 60 linii — widać je w oknie i można poprawić (np. usunąć hasła)
+przed kliknięciem **Zapytaj**. Proponowane polecenie wpisuje się do terminala **bez Entera**,
+uruchamiasz je sam. Wymaga klucza API Claude (Ustawienia → Asystent AI; płatne za użycie).
+
 **Połączenia**
 
 - **Paleta poleceń** (Ctrl+Shift+P): jedno pole szuka po połączeniach (nazwa,
@@ -316,6 +322,7 @@ płatne tokeny API, zwykle grosze za PR).
 | `keygen.py` | Generator kluczy SSH |
 | `monitor.py` | Monitoring serwerów w tle, historia w SQLite |
 | `importers.py` | Import połączeń z PuTTY, MobaXterm, mRemoteNG i CSV |
+| `assistant.py` | Asystent AI (Claude API) w terminalu |
 | `split.py` | Podział ekranu i pisanie do wielu terminali |
 | `ROADMAP.md` | Porównanie z rynkiem i plan rozwoju |
 

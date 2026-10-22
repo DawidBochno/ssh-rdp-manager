@@ -6,7 +6,7 @@ osobno (`AltScreenView`). Okno nie jest modalne: wynik przenosi do zakładki
 i zaznacza trafienie, a okno zostaje do kolejnych skoków.
 """
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 

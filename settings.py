@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from assistant import MODELS
 from i18n import t
 
 MIN_PIN = 4
@@ -128,6 +129,21 @@ class SettingsDialog(QDialog):
         form.addRow(hint)
         form.addRow(telegram_test)
 
+        # --- Asystent AI (assistant.py) ---
+        self.ai_key = QLineEdit(current["ai_key"])
+        self.ai_key.setEchoMode(QLineEdit.Password)
+        self.ai_key.setPlaceholderText("sk-ant-...")
+        self.ai_model = QComboBox()
+        self.ai_model.addItems(MODELS)
+        self.ai_model.setCurrentText(current["ai_model"])
+        form = self._tab(tabs, t("settings_tab_ai"))
+        form.addRow(t("settings_ai_key"), self.ai_key)
+        form.addRow(t("settings_ai_model"), self.ai_model)
+        hint = QLabel(t("settings_ai_hint"))
+        hint.setWordWrap(True)
+        hint.setOpenExternalLinks(True)
+        form.addRow(hint)
+
         # --- Bezpieczeństwo ---
         self.lock = QCheckBox(t("menu_lock"))
         self.lock.setChecked(current["lock"])
@@ -218,6 +234,8 @@ class SettingsDialog(QDialog):
             "monitor_interval": self.monitor_interval.value(),
             "telegram_token": self.telegram_token.text().strip(),
             "telegram_chat": self.telegram_chat.text().strip(),
+            "ai_key": self.ai_key.text().strip(),
+            "ai_model": self.ai_model.currentText(),
             "lock": self.lock.isChecked(),
             "lock_timeout": self.lock_timeout.value(),
             "new_pin": self.new_pin.text(),
