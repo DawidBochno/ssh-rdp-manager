@@ -65,7 +65,7 @@ Priorytet: ⭐⭐⭐ = najpierw (duży zysk, mały koszt).
 | 22 | ✅ **Agent SSH (Pageant/OpenSSH) i przekazywanie agenta** | wszystkie | S | ⭐⭐ |
 | 23 | ✅ **Logowanie z kodem 2FA** (keyboard-interactive, TOTP) | SecureCRT, Termius | M | ⭐⭐ |
 | 24 | ✅ **Okno zapamiętanych kluczy serwerów** — podgląd i usuwanie wpisów `known_hosts` | Bitvise | S | ⭐⭐ |
-| 25 | **Nagrywanie sesji i dziennik audytu** (kto, gdzie, jakie polecenie) | WindTerm, RDM | M | ⭐⭐ |
+| 25 | ~~**Nagrywanie sesji i dziennik audytu** (kto, gdzie, jakie polecenie)~~ — zrobione 2026-10-22 (`audit.jsonl` + nagrania `.cast` z odtwarzaczem; RDP/VNC/WinRM tylko „połączono”) | WindTerm, RDM | M | ⭐⭐ |
 
 ### Monitoring i administracja
 

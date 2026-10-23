@@ -158,6 +158,10 @@ class SettingsDialog(QDialog):
         form.addRow(t("settings_lock_timeout"), self.lock_timeout)
         form.addRow(t("settings_new_pin"), self.new_pin)
         self.lock.toggled.connect(self.lock_timeout.setEnabled)
+        self.audit_log = QCheckBox(t("settings_audit_log"))
+        self.audit_log.setChecked(current["audit_log"])
+        self.audit_log.setToolTip(t("tip_audit_log"))
+        form.addRow(self.audit_log)
 
         # Stan wyszarzenia od razu zgodny z checkboxami, nie dopiero po kliknięciu.
         self.tree_status_interval.setEnabled(self.tree_status.isChecked())
@@ -239,4 +243,5 @@ class SettingsDialog(QDialog):
             "lock": self.lock.isChecked(),
             "lock_timeout": self.lock_timeout.value(),
             "new_pin": self.new_pin.text(),
+            "audit_log": self.audit_log.isChecked(),
         }
