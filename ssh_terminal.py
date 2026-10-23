@@ -449,9 +449,22 @@ def session_log_path(name, folder=None, now=None):
 
 def prune_session_logs(folder=None, days=SESSION_LOG_DAYS, now=None):
     cutoff = (now or time.time()) - days * 86400
-    for path in (folder or SESSION_LOG_DIR).glob("*.log"):
-        if path.stat().st_mtime < cutoff:
+    for path in (folder or SESSION_LOG_DIR).iterdir():
+        # audit.jsonl (dziennik audytu) nie wygasa — tylko zapisy i nagrania sesji.
+        if path.suffix in (".log", ".cast") and path.stat().st_mtime < cutoff:
             path.unlink(missing_ok=True)
+
+
+# Nagranie sesji: format asciicast v2 (asciinema) — nagłówek JSON, potem linia
+# `[sekunda, "o", tekst]` na każdy kawałek wyjścia, surowy (z ANSI, z htopem),
+# więc da się je odtworzyć u nas (`audit.ReplayDialog`) albo w asciinema.
+def cast_header(cols, rows, now=None):
+    return json.dumps({"version": 2, "width": cols, "height": rows,
+                       "timestamp": int(now or time.time())}) + "\n"
+
+
+def cast_line(elapsed, text):
+    return json.dumps([round(elapsed, 3), "o", text], ensure_ascii=False) + "\n"
 
 
 def log_text(text):
@@ -1700,6 +1713,8 @@ class SshTerminal(QPlainTextEdit):
 
     def _append(self, text):
         self.activity.emit()
+        if self._cast_file is not None:
+            self._write("_cast_file", cast_line(time.monotonic() - self._cast_start, text))
         was_alt = self._alt_screen.alt_active
         self._alt_stream.feed(text)
         now_alt = self._alt_screen.alt_active
@@ -1777,6 +1792,11 @@ class SshTerminal(QPlainTextEdit):
     read_only = False
     _held_cr = ""
     _log_file = None
+    _cast_file = None
+    _cast_start = 0.0
+    # Dziennik audytu: okno ustawia `audit(zdarzenie, tekst)` (audit.write z
+    # nazwą i hostem połączenia); None = terminal bez połączenia z drzewa.
+    audit = None
     # Serwer produkcyjny: okno ustawia funkcję pytającą „na pewno?”. Pyta przy
     # pierwszym wysłaniu i po PROD_CONFIRM_IDLE ciszy — nie przy każdym klawiszu.
     confirm_send = None
@@ -1790,19 +1810,52 @@ class SshTerminal(QPlainTextEdit):
         try:
             folder.mkdir(exist_ok=True)
             prune_session_logs(folder)
+            path = session_log_path(name, folder)
             # buffering=1: linia od razu na dysku — awaria programu nie zjada końcówki.
-            self._log_file = open(session_log_path(name, folder), "a", encoding="utf-8", buffering=1)
+            self._log_file = open(path, "a", encoding="utf-8", buffering=1)
+            self._cast_file = open(path.with_suffix(".cast"), "w", encoding="utf-8", buffering=1)
+            cols, rows = self._pty_size if self._pty_size[0] else (80, 24)
+            self._cast_file.write(cast_header(cols, rows))
+            self._cast_start = time.monotonic()
         except OSError:
-            self._log_file = None  # brak zapisu nie może blokować sesji
+            self._close_logs()  # brak zapisu nie może blokować sesji
 
     def _write_log(self, text):
-        if self._log_file is None:
-            return
+        if self._log_file is not None:
+            self._write("_log_file", log_text(text))
+
+    def _write(self, attr, text):
         try:
-            self._log_file.write(log_text(text))
+            getattr(self, attr).write(text)
         except OSError:
-            self._log_file.close()  # pełny dysk — dalej bez zapisu
-            self._log_file = None
+            getattr(self, attr).close()  # pełny dysk — dalej bez zapisu
+            setattr(self, attr, None)
+
+    def _close_logs(self):
+        for attr in ("_log_file", "_cast_file"):
+            if getattr(self, attr) is not None:
+                getattr(self, attr).close()
+                setattr(self, attr, None)
+
+    def _audit_input(self, data):
+        """Enter = wpis „command” w dzienniku audytu.
+
+        Sam Enter: linia widoczna na ekranie (prompt + polecenie) — tak łapie też
+        dopełnienie Tabem i strzałki; hasło bez echa zostaje „Password:”.
+        Wklejone/makro/pole polecenia z `\\r`: sam wysłany tekst.
+        ponytail: wklejone hasło zakończone Enterem trafi do dziennika jawnie —
+        jak do historii powłoki; rozpoznawanie haseł w wklejce to zgadywanie.
+        """
+        if self.audit is None or not isinstance(data, str) or "\r" not in data:
+            return
+        if self._alt_screen.alt_active:
+            return  # Enter w vim/mc to nie polecenie
+        if data == "\r":
+            line = self.document().lastBlock().text().strip()
+        else:
+            line = data.replace("\r", "\n").strip()
+        if line:
+            self.audit("command", line)
 
     def send_text(self, data):
         """Jedyna droga od użytkownika do powłoki — tu pilnuje tryb tylko do odczytu."""
@@ -1814,6 +1867,7 @@ class SshTerminal(QPlainTextEdit):
                 return False
         self._sent_at = now
         self.channel.send(data)
+        self._audit_input(data)
         self._remember_commands(data)
         self.sent.emit(data)  # siatka (split.py) powiela to do pozostałych terminali
         return True
@@ -1911,9 +1965,10 @@ class SshTerminal(QPlainTextEdit):
         """Zamyka kanał i połączenie; bezpieczne do wielokrotnego wywołania."""
         self._closing = True
         self._close_client()
-        if self._log_file is not None:
-            self._log_file.close()
-            self._log_file = None
+        self._close_logs()
+        if self.audit is not None:
+            self.audit("disconnect", "")
+            self.audit = None  # drugie wywołanie nie dopisze drugiego rozłączenia
 
     def _close_client(self):
         if self.channel and not self.channel.closed:
@@ -2916,6 +2971,8 @@ def selftest():
     suggest.load_history = lambda: ["systemctl status nginx", "ls"]
     try:
         typing = OfflineTerminal()
+        audited = []
+        typing.audit = lambda event, text: audited.append((event, text))
 
         def press(key, text=""):
             typing.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier, text))
@@ -2930,6 +2987,13 @@ def selftest():
             press(Qt.Key_A, char)
         press(Qt.Key_Return)
         assert recorded == ["uptime"], recorded
+        # Dziennik audytu: linia z ekranu (hasło bez echa = sam prompt), wklejka wprost.
+        assert audited == [("command", "$ uptime"), ("command", "[sudo] password for x:")], audited
+        typing.send_text("pwd\rwhoami\r")
+        assert audited[-1] == ("command", "pwd\nwhoami") and len(audited) == 3
+        typing.send_text("ls")
+        assert len(audited) == 3, "bez Entera to nie polecenie"
+        typing.send_text("\x15")
         typing._append("\r\n$ ")
         press(Qt.Key_A, "s")
         press(Qt.Key_A, "y")
@@ -2974,9 +3038,21 @@ def selftest():
             logged.start_log("web", folder)
             assert not old.exists(), "stary log miał zniknąć"
             logged._append("uptime\r\n 10:00 up\r\n")
-            logged._log_file.close()
+            logged._close_logs()
             files = list(folder.glob("web_*.log"))
             assert len(files) == 1 and files[0].read_text(encoding="utf-8") == "uptime\n 10:00 up\n"
+            # Nagranie obok: nagłówek asciicast + surowy kawałek z `\r`.
+            cast = files[0].with_suffix(".cast").read_text(encoding="utf-8").splitlines()
+            assert json.loads(cast[0])["version"] == 2 and len(cast) == 2
+            assert json.loads(cast[1])[1:] == ["o", "uptime\r\n 10:00 up\r\n"]
+            old_cast = folder / "stary.cast"
+            old_cast.write_text("x")
+            os.utime(old_cast, (0, 0))
+            audit_file = folder / "audit.jsonl"
+            audit_file.write_text("x")
+            os.utime(audit_file, (0, 0))
+            prune_session_logs(folder)
+            assert not old_cast.exists() and audit_file.exists(), "dziennik audytu nie wygasa"
     finally:
         if stored_log is None:
             i18n.settings().remove("session_log")

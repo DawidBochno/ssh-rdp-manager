@@ -67,6 +67,7 @@ from PySide6.QtWidgets import (
 
 import appdata
 import assistant
+import audit
 import containers
 import credentials
 import disks
@@ -165,6 +166,7 @@ TOOLS = (
     ("menu_credentials", "_manage_credentials"),
     ("menu_keygen", "_open_keygen"),
     ("menu_known_hosts", "_manage_known_hosts"),
+    ("menu_audit", "_open_audit"),
     ("menu_ai", "_open_ai"),
 )
 
@@ -2228,6 +2230,7 @@ class MainWindow(QMainWindow):
             "lock": stored.value("lock_enabled", False, type=bool),
             "lock_timeout": int(stored.value("lock_timeout", LOCK_TIMEOUT_DEFAULT)),
             "pin_set": bool(stored.value("lock_pin_hash")),
+            "audit_log": audit.enabled(),
         }
 
     def _open_settings(self):
@@ -2254,6 +2257,7 @@ class MainWindow(QMainWindow):
         stored.setValue("highlighting", new["highlighting"])
         stored.setValue("timestamps", new["timestamps"])
         set_session_log_enabled(new["session_log"])  # dotyczy sesji otwartych od teraz
+        stored.setValue("audit_log", new["audit_log"])  # czytane przy każdym wpisie
         stored.setValue("restore_sessions", new["restore_sessions"])
         stored.setValue("suggest_commands", new["suggest_commands"])  # czytane przy każdym klawiszu
         if "font" in changed:
@@ -2642,6 +2646,17 @@ class MainWindow(QMainWindow):
     def _manage_known_hosts(self):
         KnownHostsDialog(self).exec()
 
+    def _open_audit(self):
+        audit.AuditDialog(self).exec()
+
+    @staticmethod
+    def _audit_connect(conn, terminal=None):
+        """Wpis „połączono” w dzienniku; terminal dostaje haczyk na polecenia i rozłączenie.
+        ponytail: RDP/VNC/WinRM tylko „połączono” — bez poleceń i bez rozłączenia."""
+        audit.write("connect", conn["name"], conn["host"])
+        if terminal is not None:
+            terminal.audit = lambda event, text, c=conn: audit.write(event, c["name"], c["host"], text)
+
     def _manage_credentials(self):
         credentials.CredentialManager(self, self.tree.nodes).exec()
         self.tree.refresh_tooltips()  # nazwa/login konta mogły się zmienić
@@ -2805,6 +2820,7 @@ class MainWindow(QMainWindow):
         if tab is None:
             return
         tab.session_ended.connect(lambda text, w=tab: self._show_stats(w, text))
+        self._audit_connect(conn)
         self._add_tab(tab, conn["name"], origin)
 
     def _open_other_tab(self, conn, password, origin=None):
@@ -2845,6 +2861,7 @@ class MainWindow(QMainWindow):
             terminal.confirm_send = lambda c=conn, s=tab: self._confirm_prod(c, s)
             terminal.ask_ai = lambda term=terminal: self._open_ai(term)
             terminal.activity.connect(lambda w=tab: self._mark_activity(w))
+        self._audit_connect(conn, terminal)
         self._add_tab(tab, conn["name"], origin)
         (terminal or tab).setFocus()
 
@@ -2876,6 +2893,7 @@ class MainWindow(QMainWindow):
         session.terminal.start_log(conn["name"])
         session.terminal.confirm_send = lambda c=conn, s=session: self._confirm_prod(c, s)
         session.terminal.ask_ai = lambda term=session.terminal: self._open_ai(term)
+        self._audit_connect(conn, session.terminal)
         session.compose_to_all.connect(self._send_to_all_sessions)
         session.terminal.stats_changed.connect(
             lambda text, w=session: self._show_stats(w, text)
@@ -3104,6 +3122,7 @@ def selftest():
     global CONFIG_FILE
     app = QApplication.instance() or QApplication([])
     suggest.record = lambda line: None  # testy nie piszą do prawdziwej historii poleceń
+    audit.AUDIT_FILE = Path(tempfile.gettempdir()) / "ssh-rdp-selftest-audit.jsonl"  # ani do dziennika
 
     # Nie dotykaj prawdziwego pliku użytkownika.
     with tempfile.TemporaryDirectory() as tmp:
@@ -3288,6 +3307,9 @@ def selftest():
 
     # Celowo nieistniejąca ścieżka: reszta testu nie może ruszyć pliku użytkownika.
     CONFIG_FILE = Path(tempfile.gettempdir()) / "nie-istnieje-selftest.json"
+    # Testy niżej zapisują drzewo właśnie tutaj — bez kasowania kolejne uruchomienie
+    # wczytywało stare „srv-01” i przywracanie sesji brało nie ten słownik.
+    CONFIG_FILE.unlink(missing_ok=True)
     window = MainWindow()
     root = window.tree.topLevelItem(0)
 
@@ -3996,7 +4018,7 @@ def selftest():
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     drain()
-    for module in (appdata, assistant, i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
+    for module in (appdata, assistant, audit, i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
                    tunnels_module, logtail, services, containers, processes, multirun,
                    patches, logsearch, transfers, sftp, graphs, credentials, split,
                    suggest, termsearch, monitor, rawterm, vnc, winrmtab):
