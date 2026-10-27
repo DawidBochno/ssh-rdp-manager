@@ -80,6 +80,7 @@ import monitor
 import multirun
 import notify
 import patches
+import scenarios
 import processes
 import rawterm
 import scanner
@@ -160,6 +161,7 @@ TOOLS = (
     ("menu_processes", "_open_processes"),
     ("menu_docker", "_open_docker"),
     ("menu_multirun", "_open_multirun"),
+    ("menu_scenarios", "_open_scenarios"),
     ("menu_patches", "_open_patches"),
     ("menu_split", "_open_split"),
     ("menu_credentials", "_manage_credentials"),
@@ -2646,34 +2648,37 @@ class MainWindow(QMainWindow):
         credentials.CredentialManager(self, self.tree.nodes).exec()
         self.tree.refresh_tooltips()  # nazwa/login konta mogły się zmienić
 
-    def _open_multirun(self):
-        targets = [
+    def _session_targets(self):
+        """[(nazwa zakładki, klient SSH)] wszystkich otwartych sesji SSH."""
+        return [
             (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
             for i in range(self.tabs.count())
             if isinstance(self.tabs.widget(i), SessionTab)
         ]
+
+    def _open_multirun(self):
+        targets = self._session_targets()
         if not targets:
             QMessageBox.information(self, t("multirun_title"), t("scripts_need_session"))
             return
         multirun.MultiRunDialog(self, targets).exec()
 
+    def _open_scenarios(self):
+        targets = self._session_targets()
+        if not targets:
+            QMessageBox.information(self, t("scenario_title"), t("scripts_need_session"))
+            return
+        scenarios.ScenarioDialog(self, targets).exec()
+
     def _open_logsearch(self):
-        targets = [
-            (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
-            for i in range(self.tabs.count())
-            if isinstance(self.tabs.widget(i), SessionTab)
-        ]
+        targets = self._session_targets()
         if not targets:
             QMessageBox.information(self, t("logsearch_title"), t("scripts_need_session"))
             return
         logsearch.LogSearchDialog(self, targets).exec()
 
     def _open_patches(self):
-        targets = [
-            (self.tabs.widget(i).tab_name, self.tabs.widget(i).terminal.client)
-            for i in range(self.tabs.count())
-            if isinstance(self.tabs.widget(i), SessionTab)
-        ]
+        targets = self._session_targets()
         if not targets:
             QMessageBox.information(self, t("patches_title"), t("scripts_need_session"))
             return
@@ -3996,7 +4001,7 @@ def selftest():
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     drain()
-    for module in (appdata, assistant, i18n, importers, ssh_terminal, rdp, servers, update, scanner, notify,
+    for module in (appdata, assistant, i18n, importers, scenarios, ssh_terminal, rdp, servers, update, scanner, notify,
                    tunnels_module, logtail, services, containers, processes, multirun,
                    patches, logsearch, transfers, sftp, graphs, credentials, split,
                    suggest, termsearch, monitor, rawterm, vnc, winrmtab):
